@@ -72,6 +72,8 @@ namespace Js
         m_isTopLevel(false),
         m_isPublicLibraryCode(false),
         m_scriptContext(scriptContext),
+        deferredPrototypeType(nullptr),
+        undeferredFunctionType(nullptr),
         m_utf8SourceInfo(utf8SourceInfo),
         m_functionNumber(functionNumber),
         m_defaultEntryPointInfo(nullptr),
@@ -492,6 +494,7 @@ namespace Js
         m_uScriptId(uScriptId),
         cleanedUp(false),
         sourceInfoCleanedUp(false),
+        profiledLdLenCount(0),
         profiledLdElemCount(0),
         profiledStElemCount(0),
         profiledCallSiteCount(0),
@@ -621,6 +624,7 @@ namespace Js
         m_uScriptId(proxy->GetUtf8SourceInfo()->GetSrcInfo()->sourceContextInfo->sourceContextId),
         cleanedUp(false),
         sourceInfoCleanedUp(false),
+        profiledLdLenCount(0),
         profiledLdElemCount(0),
         profiledStElemCount(0),
         profiledCallSiteCount(0),
@@ -1470,6 +1474,8 @@ namespace Js
         other->SetCachedSourceString(this->GetCachedSourceString());
         CopyDeferParseField(m_isAsmjsMode);
         CopyDeferParseField(m_isAsmJsFunction);
+        CopyDeferParseField(deferredPrototypeType);
+        CopyDeferParseField(undeferredFunctionType);
 
         other->SetFunctionObjectTypeList(this->GetFunctionObjectTypeList());
 
@@ -2013,6 +2019,16 @@ namespace Js
         return type;
     }
 
+    ScriptFunctionType * FunctionProxy::GetUndeferredFunctionType() const
+    {
+        return undeferredFunctionType;
+    }
+
+    void FunctionProxy::SetUndeferredFunctionType(ScriptFunctionType * type)
+    {
+        undeferredFunctionType = type;
+    }
+
     JavascriptMethod FunctionProxy::GetDirectEntryPoint(ProxyEntryPointInfo* entryPoint) const
     {
         Assert(entryPoint->jsMethod != nullptr);
@@ -2053,6 +2069,8 @@ namespace Js
         {
             func(this->deferredPrototypeType);
         }
+        // NOTE: We deliberately do not map the undeferredFunctionType here, since it's in the list
+        // of registered function object types we processed above.
     }
 
     FunctionProxy::FunctionTypeWeakRefList* FunctionProxy::EnsureFunctionObjectTypeList()
@@ -2779,14 +2797,14 @@ namespace Js
             this->m_sourceIndex = sourceIndex;
             this->m_cchStartOffset = node->ichMin;
             this->m_cchLength = node->LengthInCodepoints();
-            this->m_lineNumber = node->sxFnc.lineNumber;
-            this->m_columnNumber = node->sxFnc.columnNumber;
+            this->m_lineNumber = node->AsParseNodeFnc()->lineNumber;
+            this->m_columnNumber = node->AsParseNodeFnc()->columnNumber;
             this->m_isEval = isEval;
             this->m_isDynamicFunction = isDynamicFunction;
 
             // It would have been better if we detect and reject large source buffer earlier before parsing
-            size_t cbMin = node->sxFnc.cbMin;
-            size_t lengthInBytes = node->sxFnc.LengthInBytes();
+            size_t cbMin = node->AsParseNodeFnc()->cbMin;
+            size_t lengthInBytes = node->AsParseNodeFnc()->LengthInBytes();
             if (cbMin > UINT_MAX || lengthInBytes > UINT_MAX)
             {
                 Js::Throw::OutOfMemory();
@@ -2810,10 +2828,10 @@ namespace Js
             {
                 // In the global function case with a @cc_on, we modify some of these values so it might
                 // not match on reparse (see ParseableFunctionInfo::Parse()).
-                AssertMsg(this->StartOffset() == node->sxFnc.cbMin, "Mismatched source start offset");
+                AssertMsg(this->StartOffset() == node->AsParseNodeFnc()->cbMin, "Mismatched source start offset");
                 AssertMsg(this->m_cchStartOffset == node->ichMin, "Mismatched source character start offset");
                 AssertMsg(this->m_cchLength == node->LengthInCodepoints(), "Mismatched source length");
-                AssertMsg(this->LengthInBytes() == node->sxFnc.LengthInBytes(), "Mismatched source encoded byte length");
+                AssertMsg(this->LengthInBytes() == node->AsParseNodeFnc()->LengthInBytes(), "Mismatched source encoded byte length");
             }
 
             AssertMsg(this->m_isEval == isEval, "Mismatched source type");
@@ -2978,9 +2996,9 @@ namespace Js
     void FunctionBody::SaveState(ParseNodePtr pnode)
     {
         Assert(!this->IsReparsed());
-        this->SetChildCallsEval(!!pnode->sxFnc.ChildCallsEval());
-        this->SetCallsEval(!!pnode->sxFnc.CallsEval());
-        this->SetHasReferenceableBuiltInArguments(!!pnode->sxFnc.HasReferenceableBuiltInArguments());
+        this->SetChildCallsEval(!!pnode->AsParseNodeFnc()->ChildCallsEval());
+        this->SetCallsEval(!!pnode->AsParseNodeFnc()->CallsEval());
+        this->SetHasReferenceableBuiltInArguments(!!pnode->AsParseNodeFnc()->HasReferenceableBuiltInArguments());
     }
 
     void FunctionBody::RestoreState(ParseNodePtr pnode)
@@ -2989,22 +3007,22 @@ namespace Js
 #if ENABLE_DEBUG_CONFIG_OPTIONS
         char16 debugStringBuffer[MAX_FUNCTION_BODY_DEBUG_STRING_SIZE];
 #endif
-        if(!!pnode->sxFnc.ChildCallsEval() != this->GetChildCallsEval())
+        if(!!pnode->AsParseNodeFnc()->ChildCallsEval() != this->GetChildCallsEval())
         {
             OUTPUT_VERBOSE_TRACE(Js::DebuggerPhase, _u("Child calls eval is different on debug reparse: %s(%s)\n"), this->GetExternalDisplayName(), this->GetDebugNumberSet(debugStringBuffer));
         }
-        if(!!pnode->sxFnc.CallsEval() != this->GetCallsEval())
+        if(!!pnode->AsParseNodeFnc()->CallsEval() != this->GetCallsEval())
         {
             OUTPUT_VERBOSE_TRACE(Js::DebuggerPhase, _u("Calls eval is different on debug reparse: %s(%s)\n"), this->GetExternalDisplayName(), this->GetDebugNumberSet(debugStringBuffer));
         }
-        if(!!pnode->sxFnc.HasReferenceableBuiltInArguments() != this->HasReferenceableBuiltInArguments())
+        if(!!pnode->AsParseNodeFnc()->HasReferenceableBuiltInArguments() != this->HasReferenceableBuiltInArguments())
         {
             OUTPUT_VERBOSE_TRACE(Js::DebuggerPhase, _u("Referenceable Built in args is different on debug reparse: %s(%s)\n"), this->GetExternalDisplayName(), this->GetDebugNumberSet(debugStringBuffer));
         }
 
-        pnode->sxFnc.SetChildCallsEval(this->GetChildCallsEval());
-        pnode->sxFnc.SetCallsEval(this->GetCallsEval());
-        pnode->sxFnc.SetHasReferenceableBuiltInArguments(this->HasReferenceableBuiltInArguments());
+        pnode->AsParseNodeFnc()->SetChildCallsEval(this->GetChildCallsEval());
+        pnode->AsParseNodeFnc()->SetCallsEval(this->GetCallsEval());
+        pnode->AsParseNodeFnc()->SetHasReferenceableBuiltInArguments(this->HasReferenceableBuiltInArguments());
     }
 
     // Retrieves statement map for given byte code offset.
@@ -3662,6 +3680,23 @@ namespace Js
         {
             this->SetOriginalEntryPoint((JavascriptMethod)InterpreterThunkEmitter::ConvertToEntryPoint(this->m_dynamicInterpreterThunk));
         }
+
+#if DBG
+        if (GetScriptContext()->GetThreadContext()->NoDynamicThunks())
+        {
+            Assert(this->m_dynamicInterpreterThunk == nullptr);
+#ifdef ASMJS_PLAT
+            if (m_isAsmJsFunction)
+            {
+                Assert(this->GetOriginalEntryPoint_Unchecked() == (JavascriptMethod)&Js::InterpreterStackFrame::StaticInterpreterAsmThunk);
+            }
+            else
+#endif
+            {
+                Assert(this->GetOriginalEntryPoint_Unchecked() == (JavascriptMethod)&Js::InterpreterStackFrame::StaticInterpreterThunk);
+            }
+        }
+#endif
     }
 
     JavascriptMethod FunctionBody::EnsureDynamicInterpreterThunk(FunctionEntryPointInfo* entryPointInfo)
@@ -3671,7 +3706,6 @@ namespace Js
         // We need to ensure dynamic profile info even if we didn't generate a dynamic interpreter thunk
         // This happens when we go through CheckCodeGen thunk, to DelayDynamicInterpreterThunk, to here
         // but the background codegen thread updated the entry point with the native entry point.
-
         this->EnsureDynamicProfileInfo();
 
         Assert(HasValidEntryPoint());
@@ -4853,6 +4887,11 @@ namespace Js
             this->deferredPrototypeType->SetEntryPoint(this->GetDefaultEntryPointInfo()->jsMethod);
             this->deferredPrototypeType->SetEntryPointInfo(this->GetDefaultEntryPointInfo());
         }
+        if (this->undeferredFunctionType)
+        {
+            this->undeferredFunctionType->SetEntryPoint(this->GetDefaultEntryPointInfo()->jsMethod);
+            this->undeferredFunctionType->SetEntryPointInfo(this->GetDefaultEntryPointInfo());
+        }
 
 #if DBG
         if (!this->HasValidEntryPoint())
@@ -4933,6 +4972,7 @@ namespace Js
         this->SetStatementMaps(nullptr);
         this->SetCodeGenGetSetRuntimeData(nullptr);
         this->SetPropertyIdOnRegSlotsContainer(nullptr);
+        this->profiledLdLenCount = 0;
         this->profiledLdElemCount = 0;
         this->profiledStElemCount = 0;
         this->profiledCallSiteCount = 0;
@@ -5090,6 +5130,7 @@ namespace Js
 
             // Abandon the shared type so a new function will get a new one
             this->deferredPrototypeType = nullptr;
+            this->undeferredFunctionType = nullptr;
             this->SetAttributes((FunctionInfo::Attributes) (this->GetAttributes() | FunctionInfo::Attributes::DeferredParse));
         }
 
@@ -5149,6 +5190,11 @@ namespace Js
             // as they may point to old native code gen regions which age gone now.
             this->deferredPrototypeType->SetEntryPoint(this->GetDefaultEntryPointInfo()->jsMethod);
             this->deferredPrototypeType->SetEntryPointInfo(this->GetDefaultEntryPointInfo());
+        }
+        if (this->undeferredFunctionType)
+        {
+            this->undeferredFunctionType->SetEntryPoint(this->GetDefaultEntryPointInfo()->jsMethod);
+            this->undeferredFunctionType->SetEntryPointInfo(this->GetDefaultEntryPointInfo());
         }
         ReinitializeExecutionModeAndLimits();
     }
@@ -6374,6 +6420,7 @@ namespace Js
         profiledArrayCallSiteCount = 0;
         profiledReturnTypeCount = 0;
         profiledSlotCount = 0;
+        profiledLdLenCount = 0;
         profiledLdElemCount = 0;
         profiledStElemCount = 0;
 #endif
@@ -7514,15 +7561,8 @@ namespace Js
 
     bool FunctionBody::CheckCalleeContextForInlining(FunctionProxy* calleeFunctionProxy)
     {
-        if (this->GetScriptContext() == calleeFunctionProxy->GetScriptContext())
-        {
-            if (this->GetHostSourceContext() == calleeFunctionProxy->GetHostSourceContext() &&
-                this->GetSecondaryHostSourceContext() == calleeFunctionProxy->GetSecondaryHostSourceContext())
-            {
-                return true;
-            }
-        }
-        return false;
+        return this->GetScriptContext() == calleeFunctionProxy->GetScriptContext() &&
+            this->GetSecondaryHostSourceContext() == calleeFunctionProxy->GetSecondaryHostSourceContext();
     }
 
 #if ENABLE_NATIVE_CODEGEN
@@ -8861,17 +8901,16 @@ namespace Js
             if (this->xdataInfo != nullptr)
             {
 #ifdef _WIN32
-                if (this->xdataInfo->functionTable)
+                PHASE_PRINT_TESTTRACE1(Js::XDataPhase, _u("EntryPointInfo::Cleanup: Freeing: function table: %llx, codeAddress: %%llx\n"), this->xdataInfo->functionTable, this->GetNativeEntrypoint());
+                if (this->xdataInfo->functionTable
+                    && !DelayDeletingFunctionTable::AddEntry(this->xdataInfo->functionTable))
                 {
-                    if (!DelayDeletingFunctionTable::AddEntry(this->xdataInfo->functionTable))
-                    {
-                        PHASE_PRINT_TESTTRACE1(Js::XDataPhase, _u("EntryPointInfo::Cleanup: Failed to add to slist, table: %llx, address: %%llx\n"), this->xdataInfo->functionTable, this->GetNativeAddress());
-                        DelayDeletingFunctionTable::DeleteFunctionTable(this->xdataInfo->functionTable);
-                    }
+                    PHASE_PRINT_TESTTRACE1(Js::XDataPhase, _u("EntryPointInfo::Cleanup: Failed to add to slist, table: %llx, address: %%llx\n"), this->xdataInfo->functionTable, this->GetNativeEntrypoint());
+                    DelayDeletingFunctionTable::DeleteFunctionTable(this->xdataInfo->functionTable);
                 }
 #endif
                 XDataAllocator::Unregister(this->xdataInfo);
-#if defined(_M_ARM32_OR_ARM64)
+#if defined(_M_ARM)
                 if (JITManager::GetJITManager()->IsOOPJITEnabled())
 #endif
                 {
@@ -8879,7 +8918,8 @@ namespace Js
                 }
                 this->xdataInfo = nullptr;
             }
-#endif
+#endif //PDATA_ENABLED
+
             this->OnCleanup(isShutdown);
 
             FreeJitTransferData();
@@ -9013,13 +9053,11 @@ namespace Js
 #if PDATA_ENABLED && defined(_WIN32)
         if (this->xdataInfo)
         {
-            if (this->xdataInfo->functionTable)
+            if (this->xdataInfo->functionTable
+                && !DelayDeletingFunctionTable::AddEntry(this->xdataInfo->functionTable))
             {
-                if (!DelayDeletingFunctionTable::AddEntry(this->xdataInfo->functionTable))
-                {
-                    PHASE_PRINT_TESTTRACE1(Js::XDataPhase, _u("EntryPointInfo::ResetOnLazyBailoutFailure: Failed to add to slist, table: %llx, address: %llx\n"), this->xdataInfo->functionTable, this->nativeAddress);
-                    DelayDeletingFunctionTable::DeleteFunctionTable(this->xdataInfo->functionTable);
-                }
+                PHASE_PRINT_TESTTRACE1(Js::XDataPhase, _u("EntryPointInfo::ResetOnLazyBailoutFailure: Failed to add to slist, table: %llx, address: %llx\n"), this->xdataInfo->functionTable, this->nativeAddress);
+                DelayDeletingFunctionTable::DeleteFunctionTable(this->xdataInfo->functionTable);
             }
         }
 #endif

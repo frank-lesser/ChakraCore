@@ -356,10 +356,10 @@ namespace TTD
             {
             case TTDMode::RecordMode:
             case TTDMode::ReplayMode:
-            case TTDMode::DebuggerMode:
                 TTDAssert(i == 0, "One of these should always be first on the stack.");
                 cm = m;
                 break;
+            case TTDMode::DebuggerAttachedMode:
             case TTDMode::CurrentlyEnabled:
             case TTDMode::ExcludedExecutionTTAction:
             case TTDMode::ExcludedExecutionDebuggerAction:
@@ -507,6 +507,7 @@ namespace TTD
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(ExternalCbRegisterCall, None, ExternalCbRegisterCallEventLogEntry, nullptr, nullptr, NSLogEvents::ExternalCbRegisterCallEventLogEntry_Emit, NSLogEvents::ExternalCbRegisterCallEventLogEntry_Parse);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(ExternalCallTag, None, ExternalCallEventLogEntry, nullptr, NSLogEvents::ExternalCallEventLogEntry_UnloadEventMemory, NSLogEvents::ExternalCallEventLogEntry_Emit, NSLogEvents::ExternalCallEventLogEntry_Parse);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(ExplicitLogWriteTag, None, ExplicitLogWriteEventLogEntry, nullptr, nullptr, NSLogEvents::ExplicitLogWriteEntry_Emit, NSLogEvents::ExplicitLogWriteEntry_Parse);
+        TTD_CREATE_EVENTLIST_VTABLE_ENTRY(TTDInnerLoopLogWriteTag, None, TTDInnerLoopLogWriteEventLogEntry, nullptr, nullptr, NSLogEvents::TTDInnerLoopLogWriteEventLogEntry_Emit, NSLogEvents::TTDInnerLoopLogWriteEventLogEntry_Parse);
 
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(CreateScriptContextActionTag, GlobalAPIWrapper, JsRTCreateScriptContextAction, NSLogEvents::CreateScriptContext_Execute, NSLogEvents::CreateScriptContext_UnloadEventMemory, NSLogEvents::CreateScriptContext_Emit, NSLogEvents::CreateScriptContext_Parse);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(SetActiveScriptContextActionTag, GlobalAPIWrapper, JsRTSingleVarArgumentAction, SetActiveScriptContext_Execute);
@@ -536,7 +537,7 @@ namespace TTD
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(AddWeakRootRefActionTag, GlobalAPIWrapper, JsRTSingleVarArgumentAction, AddWeakRootRef_Execute);
 
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(AllocateObjectActionTag, ContextAPINoScriptWrapper, JsRTResultOnlyAction, AllocateObject_Execute);
-        TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(AllocateExternalObjectActionTag, ContextAPINoScriptWrapper, JsRTResultOnlyAction, AllocateExternalObject_Execute);
+        TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(AllocateExternalObjectActionTag, ContextAPINoScriptWrapper, JsRTSingleVarArgumentAction, AllocateExternalObject_Execute);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(AllocateArrayActionTag, ContextAPINoScriptWrapper, JsRTIntegralArgumentAction, AllocateArrayAction_Execute);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(AllocateArrayBufferActionTag, ContextAPIWrapper, JsRTIntegralArgumentAction, AllocateArrayBufferAction_Execute);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(AllocateExternalArrayBufferActionTag, ContextAPINoScriptWrapper, JsRTByteBufferAction, NSLogEvents::AllocateExternalArrayBufferAction_Execute, NSLogEvents::JsRTByteBufferAction_UnloadEventMemory<NSLogEvents::EventKind::AllocateExternalArrayBufferActionTag>, NSLogEvents::JsRTByteBufferAction_Emit<NSLogEvents::EventKind::AllocateExternalArrayBufferActionTag>, NSLogEvents::JsRTByteBufferAction_Parse<NSLogEvents::EventKind::AllocateExternalArrayBufferActionTag>);
@@ -620,7 +621,7 @@ namespace TTD
         this->m_eventList.UnloadEventList();
     }
 
-    void EventLog::InitForTTDRecord()
+    void EventLog::InitForTTDRecord(bool debug)
     {
         //pin all the current properties so they don't move/disappear on us
         for(Js::PropertyId pid = TotalNumberOfBuiltInProperties; pid < this->m_threadContext->GetMaxPropertyId(); ++pid)
@@ -630,17 +631,18 @@ namespace TTD
         }
 
         this->SetGlobalMode(TTDMode::RecordMode);
+        if (debug)
+        {
+            this->PushMode(TTDMode::DebuggerAttachedMode);
+        }
     }
 
     void EventLog::InitForTTDReplay(TTDataIOInfo& iofp, const char* parseUri, size_t parseUriLength, bool debug)
     {
+        this->SetGlobalMode(TTDMode::ReplayMode);
         if (debug)
         {
-            this->SetGlobalMode(TTDMode::DebuggerMode);
-        }
-        else
-        {
-            this->SetGlobalMode(TTDMode::ReplayMode);
+            this->PushMode(TTDMode::DebuggerAttachedMode);
         }
 
         this->ParseLogInto(iofp, parseUri, parseUriLength);
@@ -666,9 +668,20 @@ namespace TTD
         }
     }
 
+    void EventLog::LoadLastSourceLineInfo(TTInnerLoopLastStatementInfo& lsi, TTD::TTDebuggerSourceLocation& dsl) const
+    {
+        auto iter = this->m_eventList.GetIteratorAtLast_ReplayOnly();
+        if(iter.IsValid() && iter.Current()->EventKind == NSLogEvents::EventKind::TTDInnerLoopLogWriteTag)
+        {
+            const NSLogEvents::TTDInnerLoopLogWriteEventLogEntry* ilevt = NSLogEvents::GetInlineEventDataAs<NSLogEvents::TTDInnerLoopLogWriteEventLogEntry, NSLogEvents::EventKind::TTDInnerLoopLogWriteTag>(iter.Current());
+            lsi.SetLastLine(ilevt->EventTime, ilevt->FunctionTime, ilevt->LoopTime, ilevt->Line, ilevt->Column);
+            dsl.SetLocationFullRaw(ilevt->SourceScriptLogId, ilevt->EventTime, ilevt->FunctionTime, ilevt->LoopTime, ilevt->TopLevelBodyId, ilevt->FunctionLine, ilevt->FunctionColumn, ilevt->Line, ilevt->Column);
+        }
+    }
+
     void EventLog::SetGlobalMode(TTDMode m)
     {
-        TTDAssert(m == TTDMode::RecordMode || m == TTDMode::ReplayMode || m == TTDMode::DebuggerMode, "These are the only valid global modes");
+        TTDAssert(m == TTDMode::RecordMode || m == TTDMode::ReplayMode, "These are the only valid global modes");
 
         this->m_modeStack.SetAt(0, m);
         this->UpdateComputedMode();
@@ -687,7 +700,7 @@ namespace TTD
 
     void EventLog::PushMode(TTDMode m)
     {
-        TTDAssert(m == TTDMode::CurrentlyEnabled || m == TTDMode::ExcludedExecutionTTAction || m == TTDMode::ExcludedExecutionDebuggerAction ||
+        TTDAssert(m == TTDMode::DebuggerAttachedMode || m == TTDMode::CurrentlyEnabled || m == TTDMode::ExcludedExecutionTTAction || m == TTDMode::ExcludedExecutionDebuggerAction ||
             m == TTDMode::DebuggerSuppressGetter || m == TTDMode::DebuggerSuppressBreakpoints || m == TTDMode::DebuggerLogBreakpoints, "These are the only valid mode modifiers to push");
 
         this->m_modeStack.Push(m);
@@ -696,7 +709,7 @@ namespace TTD
 
     void EventLog::PopMode(TTDMode m)
     {
-        TTDAssert(m == TTDMode::CurrentlyEnabled || m == TTDMode::ExcludedExecutionTTAction || m == TTDMode::ExcludedExecutionDebuggerAction ||
+        TTDAssert(m == TTDMode::DebuggerAttachedMode || m == TTDMode::CurrentlyEnabled || m == TTDMode::ExcludedExecutionTTAction || m == TTDMode::ExcludedExecutionDebuggerAction ||
             m == TTDMode::DebuggerSuppressGetter || m == TTDMode::DebuggerSuppressBreakpoints || m == TTDMode::DebuggerLogBreakpoints, "These are the only valid mode modifiers to pop");
         TTDAssert(this->m_modeStack.Peek() == m, "Push/Pop is not matched so something went wrong.");
 
@@ -721,7 +734,10 @@ namespace TTD
         ctx->TTDShouldPerformReplayAction = (cm & (TTDMode::ReplayMode | TTDMode::CurrentlyEnabled | TTDMode::AnyExcludedMode)) == (TTDMode::ReplayMode | TTDMode::CurrentlyEnabled);
         ctx->TTDShouldPerformRecordOrReplayAction = (ctx->TTDShouldPerformRecordAction | ctx->TTDShouldPerformReplayAction);
 
-        ctx->TTDShouldPerformDebuggerAction = (cm & (TTDMode::DebuggerMode | TTDMode::CurrentlyEnabled | TTDMode::AnyExcludedMode)) == (TTDMode::DebuggerMode | TTDMode::CurrentlyEnabled);
+        ctx->TTDShouldPerformRecordDebuggerAction = (cm & (TTDMode::RecordDebuggerMode | TTDMode::CurrentlyEnabled | TTDMode::AnyExcludedMode)) == (TTDMode::RecordDebuggerMode | TTDMode::CurrentlyEnabled);
+        ctx->TTDShouldPerformReplayDebuggerAction = (cm & ( TTDMode::ReplayDebuggerMode | TTDMode::CurrentlyEnabled | TTDMode::AnyExcludedMode)) == (TTDMode::ReplayDebuggerMode | TTDMode::CurrentlyEnabled);
+        ctx->TTDShouldPerformRecordOrReplayDebuggerAction = (ctx->TTDShouldPerformRecordDebuggerAction | ctx->TTDShouldPerformReplayDebuggerAction);
+
         ctx->TTDShouldSuppressGetterInvocationForDebuggerEvaluation = (cm & TTDMode::DebuggerSuppressGetter) == TTDMode::DebuggerSuppressGetter;
     }
 
@@ -734,12 +750,7 @@ namespace TTD
 
     bool EventLog::IsDebugModeFlagSet() const
     {
-        return (this->m_currentMode & TTDMode::DebuggerMode) == TTDMode::DebuggerMode;
-    }
-
-    bool EventLog::ShouldDoGetterInvocationSupression() const
-    {
-        return (this->m_currentMode & TTD::TTDMode::DebuggerMode) == TTD::TTDMode::DebuggerMode;
+        return (this->m_currentMode & TTDMode::DebuggerAttachedMode) == TTDMode::DebuggerAttachedMode;
     }
 
     void EventLog::AddPropertyRecord(const Js::PropertyRecord* record)
@@ -996,7 +1007,7 @@ namespace TTD
         return wcEvent->ContainsValue;
     }
 
-    NSLogEvents::EventLogEntry* EventLog::RecordExternalCallEvent(Js::JavascriptFunction* func, int32 rootDepth, uint32 argc, Js::Var* argv, bool checkExceptions)
+    NSLogEvents::EventLogEntry* EventLog::RecordExternalCallEvent(Js::JavascriptFunction* func, int32 rootDepth, const Js::Arguments& args, bool checkExceptions)
     {
         NSLogEvents::ExternalCallEventLogEntry* ecEvent = nullptr;
         NSLogEvents::EventLogEntry* evt = this->RecordGetInitializedEvent<NSLogEvents::ExternalCallEventLogEntry, NSLogEvents::EventKind::ExternalCallTag>(&ecEvent);
@@ -1004,7 +1015,7 @@ namespace TTD
         //We never fail with an exception (instead we set the HasRecordedException in script context)
         evt->ResultStatus = 0;
 
-        NSLogEvents::ExternalCallEventLogEntry_ProcessArgs(evt, rootDepth, func, argc, argv, checkExceptions, this->m_eventSlabAllocator);
+        NSLogEvents::ExternalCallEventLogEntry_ProcessArgs(evt, rootDepth, func, args, checkExceptions, this->m_eventSlabAllocator);
 
 #if ENABLE_TTD_INTERNAL_DIAGNOSTICS
         NSLogEvents::ExternalCallEventLogEntry_ProcessDiagInfoPre(evt, func, this->m_eventSlabAllocator);
@@ -1026,7 +1037,7 @@ namespace TTD
 #endif
     }
 
-    void EventLog::ReplayExternalCallEvent(Js::JavascriptFunction* function, uint32 argc, Js::Var* argv, Js::Var* result)
+    void EventLog::ReplayExternalCallEvent(Js::JavascriptFunction* function, const Js::Arguments& args, Js::Var* result)
     {
         TTDAssert(result != nullptr, "Must be non-null!!!");
         TTDAssert(*result == nullptr, "And initialized to a default value.");
@@ -1043,16 +1054,28 @@ namespace TTD
 #endif
 
         //make sure we log all of the passed arguments in the replay host
-        TTDAssert(argc + 1 == ecEvent->ArgCount, "Mismatch in args!!!");
+        TTDAssert(args.Info.Count + 1 == ecEvent->ArgCount, "Mismatch in args!!!");
 
         TTDVar recordedFunction = ecEvent->ArgArray[0];
         NSLogEvents::PassVarToHostInReplay(executeContext, recordedFunction, function);
 
-        for(uint32 i = 0; i < argc; ++i)
+        for(uint32 i = 0; i < args.Info.Count; ++i)
         {
-            Js::Var replayVar = argv[i];
+            Js::Var replayVar = args.Values[i];
             TTDVar recordedVar = ecEvent->ArgArray[i + 1];
             NSLogEvents::PassVarToHostInReplay(executeContext, recordedVar, replayVar);
+        }
+
+        if (args.HasNewTarget())
+        {
+            TTDAssert(ecEvent->NewTarget != nullptr, "Mismatch in new.target!!!");
+            Js::Var replayVar = args.GetNewTarget();
+            TTDVar recordedVar = ecEvent->NewTarget;
+            NSLogEvents::PassVarToHostInReplay(executeContext, recordedVar, replayVar);
+        }
+        else
+        {
+            TTDAssert(ecEvent->NewTarget == nullptr, "Mismatch in new.target!!!");
         }
 
         //replay anything that happens in the external call
@@ -2062,10 +2085,11 @@ namespace TTD
         actionPopper.InitializeWithEventAndEnterWResult(evt, &(cAction->Result));
     }
 
-    void EventLog::RecordJsRTAllocateExternalObject(TTDJsRTActionResultAutoRecorder& actionPopper)
+    void EventLog::RecordJsRTAllocateExternalObject(TTDJsRTActionResultAutoRecorder& actionPopper, Js::Var prototype)
     {
-        NSLogEvents::JsRTResultOnlyAction* cAction = nullptr;
-        NSLogEvents::EventLogEntry* evt = this->RecordGetInitializedEvent<NSLogEvents::JsRTResultOnlyAction, NSLogEvents::EventKind::AllocateExternalObjectActionTag>(&cAction);
+        NSLogEvents::JsRTSingleVarArgumentAction* cAction = nullptr;
+        NSLogEvents::EventLogEntry* evt = this->RecordGetInitializedEvent<NSLogEvents::JsRTSingleVarArgumentAction, NSLogEvents::EventKind::AllocateExternalObjectActionTag>(&cAction);
+        NSLogEvents::SetVarItem_0(cAction, TTD_CONVERT_JSVAR_TO_TTDVAR(prototype));
 
         actionPopper.InitializeWithEventAndEnterWResult(evt, &(cAction->Result));
     }
@@ -2498,6 +2522,26 @@ namespace TTD
         actionPopper.InitializeWithEventAndEnterWResult(evt, &(cAction->Result));
 
         return evt;
+    }
+
+    void EventLog::InnerLoopEmitLog(const TTDebuggerSourceLocation& writeLocation, const char* emitUri, size_t emitUriLength)
+    {
+        NSLogEvents::TTDInnerLoopLogWriteEventLogEntry* evt = nullptr;
+        this->RecordGetInitializedEvent<NSLogEvents::TTDInnerLoopLogWriteEventLogEntry, NSLogEvents::EventKind::TTDInnerLoopLogWriteTag>(&evt);
+
+        evt->SourceScriptLogId = writeLocation.GetScriptLogTagId();
+        evt->EventTime = writeLocation.GetRootEventTime();
+        evt->FunctionTime = writeLocation.GetFunctionTime();
+        evt->LoopTime = writeLocation.GetLoopTime();
+
+        evt->TopLevelBodyId = writeLocation.GetTopLevelBodyId();
+        evt->FunctionLine = writeLocation.GetFunctionSourceLine();
+        evt->FunctionColumn = writeLocation.GetFunctionSourceColumn();
+
+        evt->Line = writeLocation.GetSourceLine();
+        evt->Column = writeLocation.GetSourceColumn();
+
+        this->EmitLog(emitUri, emitUriLength);
     }
 
     void EventLog::EmitLog(const char* emitUri, size_t emitUriLength)

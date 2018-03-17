@@ -104,6 +104,7 @@ PHASE(All)
                 PHASE(TrackCompoundedIntOverflow)
             PHASE(Forward)
                 PHASE(ValueTable)
+                PHASE(ValueNumbering)
                 PHASE(PathDependentValues)
                     PHASE(TrackRelativeIntBounds)
                         PHASE(BoundCheckElimination)
@@ -357,6 +358,8 @@ PHASE(All)
         PHASE(Error)
         PHASE(PropertyRecord)
         PHASE(TypePathDynamicSize)
+        PHASE(ShareTypesWithAttributes)
+        PHASE(ShareAccessorTypes)
         PHASE(ConditionalCompilation)
         PHASE(InterpreterProfile)
         PHASE(InterpreterAutoProfile)
@@ -385,15 +388,6 @@ PHASE(All)
 #define DEFAULT_CONFIG_AsmJsEdge            (false)
 #define DEFAULT_CONFIG_AsmJsStopOnError     (false)
 
-#ifdef ENABLE_SIMDJS
-#ifdef COMPILE_DISABLE_Simdjs
-    // If Simdjs needs to be disabled by compile flag, DEFAULT_CONFIG_SIMDJS should be false
-    #define DEFAULT_CONFIG_SIMDJS               (false)
-#else
-    #define DEFAULT_CONFIG_SIMDJS               (false)
-#endif
-#endif // #ifdef ENABLE_SIMDJS
-
 #define DEFAULT_CONFIG_Wasm               (true)
 #define DEFAULT_CONFIG_WasmI64            (false)
 #if ENABLE_FAST_ARRAYBUFFER
@@ -409,6 +403,8 @@ PHASE(All)
 #define DEFAULT_CONFIG_WasmMaxTableSize     (10000000)
 #define DEFAULT_CONFIG_WasmSimd             (false)
 #define DEFAULT_CONFIG_WasmSignExtends      (false)
+#define DEFAULT_CONFIG_WasmThreads          (false)
+#define DEFAULT_CONFIG_WasmMultiValue       (false)
 #define DEFAULT_CONFIG_BgJitDelayFgBuffer   (0)
 #define DEFAULT_CONFIG_BgJitPendingFuncCap  (31)
 #define DEFAULT_CONFIG_CurrentSourceInfo    (true)
@@ -489,6 +485,15 @@ PHASE(All)
 #define DEFAULT_CONFIG_MaxJitThreadCount        (2)
 #define DEFAULT_CONFIG_ForceMaxJitThreadCount   (false)
 
+#define DEFAULT_CONFIG_MitigateSpectre (true)
+
+#define DEFAULT_CONFIG_PoisonVarArrayLoad (true)
+#define DEFAULT_CONFIG_PoisonIntArrayLoad (true)
+#define DEFAULT_CONFIG_PoisonFloatArrayLoad (true)
+#define DEFAULT_CONFIG_PoisonTypedArrayLoad (true)
+#define DEFAULT_CONFIG_PoisonStringLoad (true)
+#define DEFAULT_CONFIG_PoisonObjects (true)
+
 #ifdef RECYCLER_PAGE_HEAP
 #define DEFAULT_CONFIG_PageHeap             ((Js::Number) PageHeapMode::PageHeapModeOff)
 #define DEFAULT_CONFIG_PageHeapAllocStack   (false)
@@ -553,13 +558,14 @@ PHASE(All)
 #define DEFAULT_CONFIG_ES6DefaultArgs          (true)
 #define DEFAULT_CONFIG_ES6Destructuring        (true)
 #define DEFAULT_CONFIG_ES6ForLoopSemantics     (true)
-#define DEFAULT_CONFIG_ES6FunctionName         (true)
+
 #ifdef COMPILE_DISABLE_ES6FunctionNameFull
     // If ES6FunctionNameFull needs to be disabled by compile flag, COMPILE_DISABLE_ES6FunctionNameFull should be false
     #define DEFAULT_CONFIG_ES6FunctionNameFull     (false)
 #else
     #define DEFAULT_CONFIG_ES6FunctionNameFull     (false)
 #endif
+
 #define DEFAULT_CONFIG_ES6Generators           (true)
 #define DEFAULT_CONFIG_ES6IsConcatSpreadable   (true)
 #define DEFAULT_CONFIG_ES6Math                 (true)
@@ -894,17 +900,11 @@ FLAGNR(Boolean, WasmFold              , "Enable i32/i64 const folding", DEFAULT_
 FLAGNR(Boolean, WasmIgnoreResponse    , "Ignore the type of the Response object", DEFAULT_CONFIG_WasmIgnoreResponse)
 FLAGNR(Number,  WasmMaxTableSize      , "Maximum size allowed to the WebAssembly.Table", DEFAULT_CONFIG_WasmMaxTableSize)
 FLAGNR(Boolean, WasmSignExtends       , "Use new WebAssembly sign extension operators", DEFAULT_CONFIG_WasmSignExtends)
+FLAGNR(Boolean, WasmThreads           , "Enable WebAssembly threads feature", DEFAULT_CONFIG_WasmThreads)
+FLAGNR(Boolean, WasmMultiValue        , "Use new WebAssembly multi-value", DEFAULT_CONFIG_WasmMultiValue)
 #ifdef ENABLE_WASM_SIMD
 FLAGNR(Boolean, WasmSimd              , "Enable SIMD in WebAssembly", DEFAULT_CONFIG_WasmSimd)
 #endif
-
-#ifdef ENABLE_SIMDJS
-#ifndef COMPILE_DISABLE_Simdjs
-    #define COMPILE_DISABLE_Simdjs 0
-#endif
-FLAGPR_REGOVR_EXP(Boolean, ES6, Simdjs, "Enable Simdjs", DEFAULT_CONFIG_SIMDJS)
-FLAGR(Boolean, Simd128TypeSpec, "Enable type-specialization of Simd128 symbols", false)
-#endif // #ifdef ENABLE_SIMDJS
 
 FLAGNR(Boolean, AssertBreak           , "Debug break on assert", false)
 FLAGNR(Boolean, AssertPopUp           , "Pop up asserts (default: false)", false)
@@ -1036,12 +1036,12 @@ FLAGPR           (Boolean, ES6, ES6DateParseFix        , "Enable ES6 Date.parse 
 FLAGPR           (Boolean, ES6, ES6DefaultArgs         , "Enable ES6 Default Arguments"                             , DEFAULT_CONFIG_ES6DefaultArgs)
 FLAGPR           (Boolean, ES6, ES6Destructuring       , "Enable ES6 Destructuring"                                 , DEFAULT_CONFIG_ES6Destructuring)
 FLAGPR           (Boolean, ES6, ES6ForLoopSemantics    , "Enable ES6 for loop per iteration bindings"               , DEFAULT_CONFIG_ES6ForLoopSemantics)
-FLAGPR           (Boolean, ES6, ES6FunctionName        , "Enable ES6 function.name"                                 , DEFAULT_CONFIG_ES6FunctionName)
 
 #ifndef COMPILE_DISABLE_ES6FunctionNameFull
     #define COMPILE_DISABLE_ES6FunctionNameFull 0
 #endif
 FLAGPR_REGOVR_EXP(Boolean, ES6, ES6FunctionNameFull    , "Enable ES6 Full function.name"                            , DEFAULT_CONFIG_ES6FunctionNameFull)
+
 FLAGPR           (Boolean, ES6, ES6Generators          , "Enable ES6 generators"                                    , DEFAULT_CONFIG_ES6Generators)
 FLAGPR           (Boolean, ES6, ES7ExponentiationOperator, "Enable ES7 exponentiation operator (**)"                , DEFAULT_CONFIG_ES7ExponentionOperator)
 
@@ -1232,6 +1232,15 @@ FLAGNR(Number,  LoopBodySizeThresholdToDisableOpts, "Minimum bytecode size of a 
 
 FLAGNR(Number,  MaxJitThreadCount     , "Number of maximum allowed parallel jit threads (actual number is factor of number of processors and other heuristics)", DEFAULT_CONFIG_MaxJitThreadCount)
 FLAGNR(Boolean, ForceMaxJitThreadCount, "Force the number of parallel jit threads as specified by MaxJitThreadCount flag (creation guaranteed)", DEFAULT_CONFIG_ForceMaxJitThreadCount)
+
+FLAGR(Boolean, MitigateSpectre, "Use mitigations for Spectre", DEFAULT_CONFIG_MitigateSpectre)
+
+FLAGPR(Boolean, MitigateSpectre, PoisonVarArrayLoad, "Poison loads from Var arrays", DEFAULT_CONFIG_PoisonVarArrayLoad)
+FLAGPR(Boolean, MitigateSpectre, PoisonIntArrayLoad, "Poison loads from Int arrays", DEFAULT_CONFIG_PoisonIntArrayLoad)
+FLAGPR(Boolean, MitigateSpectre, PoisonFloatArrayLoad, "Poison loads from Float arrays", DEFAULT_CONFIG_PoisonFloatArrayLoad)
+FLAGPR(Boolean, MitigateSpectre, PoisonTypedArrayLoad, "Poison loads from TypedArrays", DEFAULT_CONFIG_PoisonTypedArrayLoad)
+FLAGPR(Boolean, MitigateSpectre, PoisonStringLoad, "Poison indexed loads from strings", DEFAULT_CONFIG_PoisonStringLoad)
+FLAGPR(Boolean, MitigateSpectre, PoisonObjects, "Poison objects after type checks", DEFAULT_CONFIG_PoisonObjects)
 
 FLAGNR(Number,  MinInterpretCount     , "Minimum number of times a function must be interpreted", 0)
 FLAGNR(Number,  MinSimpleJitRunCount  , "Minimum number of times a function must be run in simple jit", 0)

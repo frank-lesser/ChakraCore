@@ -232,14 +232,6 @@ ServerScriptContext::GetRecyclerAllowNativeCodeBumpAllocation() const
     return m_contextData.recyclerAllowNativeCodeBumpAllocation != 0;
 }
 
-#ifdef ENABLE_SIMDJS
-bool
-ServerScriptContext::IsSIMDEnabled() const
-{
-    return m_contextData.isSIMDEnabled != 0;
-}
-#endif
-
 intptr_t
 ServerScriptContext::GetBuiltinFunctionsBaseAddr() const
 {
@@ -390,7 +382,7 @@ ServerScriptContext::Release()
 Field(Js::Var)*
 ServerScriptContext::GetModuleExportSlotArrayAddress(uint moduleIndex, uint slotIndex)
 {
-    Assert(m_moduleRecords.ContainsKey(moduleIndex));
+    AssertOrFailFast(m_moduleRecords.ContainsKey(moduleIndex));
     auto record = m_moduleRecords.Item(moduleIndex);
     return record->localExportSlotsAddr;
 }

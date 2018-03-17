@@ -105,8 +105,6 @@ namespace Js
     protected:
         DEFINE_VTABLE_CTOR(JavascriptArray, ArrayObject);
         DEFINE_MARSHAL_OBJECT_TO_SCRIPT_CONTEXT(JavascriptArray);
-    private:
-        Field(bool) isInitialized;
     protected:
         Field(SparseArraySegmentBase*) head;
         union SegmentUnionType
@@ -570,6 +568,7 @@ namespace Js
 
         template<typename T>
         static void UnshiftHelper(JavascriptArray* pArr, uint32 unshiftElements, Js::Var * elements);
+        static Var UnshiftObjectHelper(Js::Arguments& args, ScriptContext * scriptContext);
 
         template<typename T>
         static void GrowArrayHeadHelperForUnshift(JavascriptArray* pArr, uint32 unshiftElements, ScriptContext * scriptContext);
@@ -595,8 +594,9 @@ namespace Js
         static void ArraySpliceHelper(JavascriptArray* pNewArr, JavascriptArray* pArr, uint32 start, uint32 deleteLen,
                                                     Var* insertArgs, uint32 insertLen, ScriptContext *scriptContext);
         template<typename T>
-        static void ArraySegmentSpliceHelper(JavascriptArray *pnewArr, SparseArraySegment<T> *seg, SparseArraySegment<T> **prev, uint32 start, uint32 deleteLen,
-                                                    Var* insertArgs, uint32 insertLen, Recycler *recycler);
+        static void ArraySegmentSpliceHelper(
+            JavascriptArray *pnewArr, SparseArraySegment<T> *seg, Field(SparseArraySegment<T>*) *prev,
+            uint32 start, uint32 deleteLen, Var* insertArgs, uint32 insertLen, Recycler *recycler);
         template<typename T>
         static RecyclableObject* ObjectSpliceHelper(RecyclableObject* pObj, T len, T start, T deleteLen,
                                                     Var* insertArgs, uint32 insertLen, ScriptContext *scriptContext, RecyclableObject* pNewObj = nullptr);

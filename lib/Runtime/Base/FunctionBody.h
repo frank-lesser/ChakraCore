@@ -437,7 +437,12 @@ namespace Js
     public:
         void SetSerializedRpcData(const unsigned char* data, size_t size)
         {
-            Assert(serializedRpcData == nullptr);
+            if (this->serializedRpcData != nullptr)
+            {
+                // We may have multiple codegens happen for same entrypoint
+                const unsigned char* rpcData = this->serializedRpcData;
+                HeapDeleteArray(this->serializedRpcDataSize, rpcData);
+            }
             serializedRpcData = data;
             serializedRpcDataSize = size;
         }
@@ -1285,6 +1290,8 @@ namespace Js
         ProxyEntryPointInfo* GetDefaultEntryPointInfo() const;
         ScriptFunctionType * GetDeferredPrototypeType() const;
         ScriptFunctionType * EnsureDeferredPrototypeType();
+        ScriptFunctionType * GetUndeferredFunctionType() const;
+        void SetUndeferredFunctionType(ScriptFunctionType * type);
         JavascriptMethod GetDirectEntryPoint(ProxyEntryPointInfo* entryPoint) const;
 
         // Function object type list methods
@@ -1363,6 +1370,7 @@ namespace Js
         FieldNoBarrier(ScriptContext*) m_scriptContext;   // Memory context for this function body
         FieldWithBarrier(Utf8SourceInfo*) m_utf8SourceInfo;
         FieldWithBarrier(ScriptFunctionType*) deferredPrototypeType;
+        FieldWithBarrier(ScriptFunctionType*) undeferredFunctionType;
         FieldWithBarrier(ProxyEntryPointInfo*) m_defaultEntryPointInfo; // The default entry point info for the function proxy
 
         FieldWithBarrier(uint) m_functionNumber;  // Per thread global function number
@@ -2972,7 +2980,10 @@ namespace Js
         bool AllocProfiledSlotId(ProfileId* profileId) { if (this->profiledSlotCount != Constants::NoProfileId) { *profileId = this->profiledSlotCount++; return true; } return false; }
         ProfileId GetProfiledSlotCount() const { return this->profiledSlotCount; }
 
-        ProfileId AllocProfiledLdElemId(ProfileId* profileId) { if (this->profiledLdElemCount != Constants::NoProfileId) { *profileId = this->profiledLdElemCount++; return true; } return false; }
+        bool AllocProfiledLdLenId(ProfileId* profileId) { if (this->profiledLdLenCount != Constants::NoProfileId) { *profileId = this->profiledLdLenCount++; return true; } return false; }
+        ProfileId GetProfiledLdLenCount() const { return this->profiledLdLenCount; }
+
+        bool AllocProfiledLdElemId(ProfileId* profileId) { if (this->profiledLdElemCount != Constants::NoProfileId) { *profileId = this->profiledLdElemCount++; return true; } return false; }
         ProfileId GetProfiledLdElemCount() const { return this->profiledLdElemCount; }
 
         bool AllocProfiledStElemId(ProfileId* profileId) { if (this->profiledStElemCount != Constants::NoProfileId) { *profileId = this->profiledStElemCount++; return true; } return false; }
@@ -3598,8 +3609,9 @@ namespace Js
         static uint const EncodedSlotCountSlotIndex = 0;
         static uint const ScopeMetadataSlotIndex = 1;    // Either a FunctionBody* or DebuggerScope*
         static uint const FirstSlotIndex = 2;
+
     public:
-        ScopeSlots(Var* slotArray) : slotArray((Field(Var)*)slotArray)
+        ScopeSlots(Field(Var)* slotArray) : slotArray(slotArray)
         {
         }
 
@@ -3710,7 +3722,7 @@ namespace Js
         bool   GetStrictMode() const { return strictMode; }
         void   SetStrictMode(bool flag) { this->strictMode = flag; }
 
-        void** GetDataAddress() { return (void**)&this->scopes; }
+        Field(void*)* GetDataAddress() { return this->scopes; }
         static uint32 GetOffsetOfStrictMode() { return offsetof(FrameDisplay, strictMode); }
         static uint32 GetOffsetOfLength() { return offsetof(FrameDisplay, length); }
         static uint32 GetOffsetOfScopes() { return offsetof(FrameDisplay, scopes); }

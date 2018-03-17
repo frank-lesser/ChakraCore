@@ -44,6 +44,7 @@ enum ThreadContextFlags
     ThreadContextFlagEvalDisabled                  = 0x00000002,
     ThreadContextFlagNoJIT                         = 0x00000004,
     ThreadContextFlagDisableFatalOnOOM             = 0x00000008,
+    ThreadContextFlagNoDynamicThunks               = 0x00000010,
 };
 
 const int LS_MAX_STACK_SIZE_KB = 300;
@@ -392,29 +393,8 @@ public:
         this->langTel.Reset();
     }
 #endif
-
-#if ENABLE_NATIVE_CODEGEN && defined(ENABLE_SIMDJS)
-    // used by inliner. Maps Simd FuncInfo (library func) to equivalent opcode.
-    typedef JsUtil::BaseDictionary<Js::FunctionInfo *, Js::OpCode, ArenaAllocator> FuncInfoToOpcodeMap;
-    FuncInfoToOpcodeMap * simdFuncInfoToOpcodeMap;
-
-    struct SimdFuncSignature
-    {
-        bool valid;
-        uint argCount;          // actual arguments count (excluding this)
-        ValueType returnType;
-        ValueType *args;        // argument types
-    };
-
-    SimdFuncSignature *simdOpcodeToSignatureMap;
-
-    void AddSimdFuncToMaps(Js::OpCode op, ...);
-    void AddSimdFuncInfo(Js::OpCode op, Js::FunctionInfo *funcInfo);
-    Js::OpCode GetSimdOpcodeFromFuncInfo(Js::FunctionInfo * funcInfo);
-    void GetSimdFuncSignatureFromOpcode(Js::OpCode op, SimdFuncSignature &funcSignature);
-#endif
-
-#if defined(ENABLE_SIMDJS) || defined(ENABLE_WASM_SIMD)
+    
+#ifdef ENABLE_WASM_SIMD
 #if _M_IX86 || _M_AMD64
     // auxiliary SIMD values in memory to help JIT'ed code. E.g. used for Int8x16 shuffle.
     _x86_SIMDValue X86_TEMP_SIMD[SIMD_TEMP_SIZE];
@@ -966,6 +946,11 @@ public:
         return this->TestThreadContextFlag(ThreadContextFlagNoJIT);
     }
 
+    bool NoDynamicThunks() const
+    {
+        return this->TestThreadContextFlag(ThreadContextFlagNoDynamicThunks);
+    }
+
 #ifdef ENABLE_DEBUG_CONFIG_OPTIONS
     Js::Var GetMemoryStat(Js::ScriptContext* scriptContext);
     void SetAutoProxyName(LPCWSTR objectName);
@@ -1327,7 +1312,7 @@ public:
 
     virtual intptr_t GetThreadStackLimitAddr() const override;
 
-#if ENABLE_NATIVE_CODEGEN && (defined(ENABLE_SIMDJS) || defined(ENABLE_WASM_SIMD)) && (defined(_M_IX86) || defined(_M_X64))
+#if ENABLE_NATIVE_CODEGEN && defined(ENABLE_WASM_SIMD)
     virtual intptr_t GetSimdTempAreaAddr(uint8 tempIndex) const override;
 #endif
 
@@ -1590,10 +1575,6 @@ public:
     template <class Fn>
     inline Js::Var ExecuteImplicitCall(Js::RecyclableObject * function, Js::ImplicitCallFlags flags, Fn implicitCall)
     {
-        // For now, we will not allow Function that is marked as HasNoSideEffect to be called, and we will just bailout.
-        // These function may still throw exceptions, so we will need to add checks with RecordImplicitException
-        // so that we don't throw exception when disableImplicitCall is set before we allow these function to be called
-        // as an optimization.  (These functions are valueOf and toString calls for built-in non primitive types)
 
         Js::FunctionInfo::Attributes attributes = Js::FunctionInfo::GetAttributes(function);
 
@@ -1603,7 +1584,16 @@ public:
         {
             // Has no side effect means the function does not change global value or
             // will check for implicit call flags
-            return implicitCall();
+            Js::Var result = implicitCall();
+
+            // If the value is on stack we need to bailout so that it can be boxed.
+            // Instead of putting this in valueOf (or other builtins which have no side effect) adding
+            // the check here to cover any other scenario we might miss.
+            if (IsOnStack(result))
+            {
+                AddImplicitCallFlags(flags);
+            }
+            return result;
         }
 
         // Don't call the implicit call if disable implicit call
@@ -1619,15 +1609,40 @@ public:
         {
             // Has no side effect means the function does not change global value or
             // will check for implicit call flags
-            return implicitCall();
+            Js::Var result = implicitCall();
+
+            // If the value is on stack we need to bailout so that it can be boxed.
+            // Instead of putting this in valueOf (or other builtins which have no side effect) adding
+            // the check here to cover any other scenario we might miss.
+            if (IsOnStack(result))
+            {
+                AddImplicitCallFlags(flags);
+            }
+            return result;
         }
 
         // Save and restore implicit flags around the implicit call
+        struct RestoreFlags
+        {
+            ThreadContext * const ctx;
+            const Js::ImplicitCallFlags flags;
+            const Js::ImplicitCallFlags savedFlags;
 
-        Js::ImplicitCallFlags saveImplicitCallFlags = this->GetImplicitCallFlags();
-        Js::Var result = implicitCall();
-        this->SetImplicitCallFlags((Js::ImplicitCallFlags)(saveImplicitCallFlags | flags));
-        return result;
+            RestoreFlags(ThreadContext *ctx, Js::ImplicitCallFlags flags) :
+                ctx(ctx),
+                flags(flags),
+                savedFlags(ctx->GetImplicitCallFlags())
+            {
+            }
+
+            ~RestoreFlags()
+            {
+                ctx->SetImplicitCallFlags(static_cast<Js::ImplicitCallFlags>(savedFlags | flags));
+            }
+        };
+
+        RestoreFlags restoreFlags(this, flags);
+        return implicitCall();
     }
     bool HasNoSideEffect(Js::RecyclableObject * function) const;
     bool HasNoSideEffect(Js::RecyclableObject * function, Js::FunctionInfo::Attributes attr) const;

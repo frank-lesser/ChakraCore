@@ -35,6 +35,14 @@
 #endif // FreeBSD or unix ?
 #endif // _WIN32 ?
 
+#ifdef HAS_ICU
+#define INTL_LIBRARY_TEXT "icu"
+#elif defined(_WIN32)
+#define INTL_LIBRARY_TEXT "winglob"
+#else
+#define INTL_LIBRARY_TEXT ""
+#endif
+
 MessageQueue* WScriptJsrt::messageQueue = nullptr;
 std::map<std::string, JsModuleRecord>  WScriptJsrt::moduleRecordMap;
 std::map<JsModuleRecord, std::string>  WScriptJsrt::moduleDirMap;
@@ -202,15 +210,9 @@ JsValueRef WScriptJsrt::LoadScriptFileHelper(JsValueRef callee, JsValueRef *argu
             if (FAILED(hr))
             {
                 // check if have it registered
-                AutoString *data;
-                if (!SourceMap::Find(fileName, &data))
-                {
-                    fprintf(stderr, "Couldn't load file '%s'\n", fileName.GetString());
-                    IfJsrtErrorSetGo(ChakraRTInterface::JsGetUndefinedValue(&returnValue));
-                    return returnValue;
-                }
-
-                fileContent = data->GetString();
+                fprintf(stderr, "Couldn't load file '%s'\n", fileName.GetString());
+                IfJsrtErrorSetGo(ChakraRTInterface::JsGetUndefinedValue(&returnValue));
+                return returnValue;
             }
 
             returnValue = LoadScript(callee, *fileName, fileContent, *scriptInjectType ? *scriptInjectType : "self", isSourceModule, WScriptJsrt::FinalizeFree, true);
@@ -233,6 +235,67 @@ Error:
         ChakraRTInterface::JsSetException(errorObject);
     }
 
+    return returnValue;
+}
+
+JsValueRef __stdcall WScriptJsrt::GetModuleNamespace(JsValueRef callee, bool isConstructCall, JsValueRef *arguments, unsigned short argumentCount, void *callbackState)
+{
+    JsErrorCode errorCode = JsNoError;
+    JsValueRef returnValue = JS_INVALID_REFERENCE;
+    LPCWSTR errorMessage = _u("");
+    char fullPath[_MAX_PATH];
+
+    if (argumentCount < 2)
+    {
+        errorCode = JsErrorInvalidArgument;
+        errorMessage = _u("Need an argument for WScript.GetModuleNamespace");
+    }
+    else
+    {
+        AutoString specifierStr(arguments[1]);
+        errorCode = specifierStr.GetError();
+
+        if (errorCode == JsNoError)
+        {
+            if (_fullpath(fullPath, specifierStr.GetString(), _MAX_PATH) == nullptr)
+            {
+                errorCode = JsErrorInvalidArgument;
+            }
+            else
+            {
+                auto moduleEntry = moduleRecordMap.find(fullPath);
+                if (moduleEntry == moduleRecordMap.end())
+                {
+                    errorCode = JsErrorInvalidArgument;
+                    errorMessage = _u("Need to supply a path for an already loaded module for WScript.GetModuleNamespace");
+                }
+                else
+                {
+                    errorCode = ChakraRTInterface::JsGetModuleNamespace(moduleEntry->second, &returnValue);
+                    if (errorCode == JsErrorModuleNotEvaluated)
+                    {
+                        errorMessage = _u("GetModuleNamespace called with un-evaluated module");
+                    }
+                }
+            }
+        }
+    }
+
+    if (errorCode != JsNoError)
+    {
+        JsValueRef errorObject;
+        JsValueRef errorMessageString;
+
+        if (wcscmp(errorMessage, _u("")) == 0)
+        {
+            errorMessage = ConvertErrorCodeToMessage(errorCode);
+        }
+
+        ERROR_MESSAGE_TO_STRING(errCode, errorMessage, errorMessageString);
+
+        ChakraRTInterface::JsCreateError(errorMessageString, &errorObject);
+        ChakraRTInterface::JsSetException(errorObject);
+    }
     return returnValue;
 }
 
@@ -846,6 +909,11 @@ bool WScriptJsrt::Initialize()
 #else
     const char* LINK_TYPE = "shared";
 #endif
+#ifdef HAS_ICU
+    int icuVersion = PlatformAgnostic::ICUHelpers::GetICUMajorVersion();
+#else
+    int icuVersion = -1;
+#endif
 
     JsValueRef wscript;
     IfJsrtErrorFail(ChakraRTInterface::JsCreateObject(&wscript), false);
@@ -865,7 +933,9 @@ bool WScriptJsrt::Initialize()
     IfFalseGo(WScriptJsrt::InstallObjectsOnObject(wscript, "LoadTextFile", LoadTextFileCallback));
     IfFalseGo(WScriptJsrt::InstallObjectsOnObject(wscript, "Flag", FlagCallback));
     IfFalseGo(WScriptJsrt::InstallObjectsOnObject(wscript, "RegisterModuleSource", RegisterModuleSourceCallback));
-
+    IfFalseGo(WScriptJsrt::InstallObjectsOnObject(wscript, "GetModuleNamespace", GetModuleNamespace));
+    IfFalseGo(WScriptJsrt::InstallObjectsOnObject(wscript, "GetProxyProperties", GetProxyPropertiesCallback));
+    
     // ToDo Remove
     IfFalseGo(WScriptJsrt::InstallObjectsOnObject(wscript, "Edit", EmptyCallback));
 
@@ -931,6 +1001,18 @@ bool WScriptJsrt::Initialize()
         DEST_PLATFORM_TEXT, strlen(DEST_PLATFORM_TEXT), &osValue), false);
     IfJsrtErrorFail(ChakraRTInterface::JsSetProperty(platformObject, osProperty,
         osValue, true), false);
+
+    // set Internationalization library
+    JsPropertyIdRef intlLibraryProp;
+    IfJsrtErrorFail(CreatePropertyIdFromString("INTL_LIBRARY", &intlLibraryProp), false);
+    JsValueRef intlLibraryStr;
+    IfJsrtErrorFail(ChakraRTInterface::JsCreateString(INTL_LIBRARY_TEXT, strlen(INTL_LIBRARY_TEXT), &intlLibraryStr), false);
+    IfJsrtErrorFail(ChakraRTInterface::JsSetProperty(platformObject, intlLibraryProp, intlLibraryStr, true), false);
+    JsPropertyIdRef icuVersionProp;
+    IfJsrtErrorFail(CreatePropertyIdFromString("ICU_VERSION", &icuVersionProp), false);
+    JsValueRef icuVersionNum;
+    IfJsrtErrorFail(ChakraRTInterface::JsIntToNumber(icuVersion, &icuVersionNum), false);
+    IfJsrtErrorFail(ChakraRTInterface::JsSetProperty(platformObject, icuVersionProp, icuVersionNum, true), false);
 
     IfJsrtErrorFail(ChakraRTInterface::JsSetProperty(wscript, platformProperty,
         platformObject, true), false);
@@ -1105,16 +1187,9 @@ JsValueRef __stdcall WScriptJsrt::LoadTextFileCallback(JsValueRef callee, bool i
             if (FAILED(hr))
             {
                 // check if have it registered
-                AutoString *data;
-                if (!SourceMap::Find(fileName, &data))
-                {
-                    fprintf(stderr, "Couldn't load file '%s'\n", fileName.GetString());
-                    IfJsrtErrorSetGo(ChakraRTInterface::JsGetUndefinedValue(&returnValue));
-                    return returnValue;
-                }
-
-                fileContent = data->GetString();
-                lengthBytes = (UINT) data->GetLength();
+                fprintf(stderr, "Couldn't load file '%s'\n", fileName.GetString());
+                IfJsrtErrorSetGo(ChakraRTInterface::JsGetUndefinedValue(&returnValue));
+                return returnValue;
             }
 
             IfJsrtErrorSetGo(ChakraRTInterface::JsCreateString(
@@ -1276,17 +1351,9 @@ JsValueRef __stdcall WScriptJsrt::LoadBinaryFileCallback(JsValueRef callee,
             if (FAILED(hr))
             {
                 // check if have it registered
-                AutoString *data;
-                if (!SourceMap::Find(fileName, &data))
-                {
-                    fprintf(stderr, "Couldn't load file '%s'\n", fileName.GetString());
-                    IfJsrtErrorSetGoLabel(ChakraRTInterface::JsGetUndefinedValue(&returnValue), Error);
-                    return returnValue;
-                }
-
-                isHeapAlloc = false;
-                fileContent = data->GetString();
-                lengthBytes = (UINT) data->GetLength();
+                fprintf(stderr, "Couldn't load file '%s'\n", fileName.GetString());
+                IfJsrtErrorSetGoLabel(ChakraRTInterface::JsGetUndefinedValue(&returnValue), Error);
+                return returnValue;
             }
 
             JsValueRef arrayBuffer;
@@ -1511,6 +1578,57 @@ Error:
     return returnValue;
 }
 
+JsValueRef __stdcall WScriptJsrt::GetProxyPropertiesCallback(JsValueRef callee, bool isConstructCall, JsValueRef *arguments, unsigned short argumentCount, void *callbackState)
+{
+    HRESULT hr = E_FAIL;
+    JsValueRef returnValue = JS_INVALID_REFERENCE;
+    JsValueRef undefined = JS_INVALID_REFERENCE;
+    JsErrorCode errorCode = JsNoError;
+
+    IfJsrtErrorSetGo(ChakraRTInterface::JsGetUndefinedValue(&undefined));
+
+    returnValue = undefined;
+
+    if (argumentCount > 1)
+    {
+        bool isProxy = false;
+        JsValueRef target;
+        JsValueRef handler;
+        IfJsrtErrorSetGo(ChakraRTInterface::JsGetProxyProperties(arguments[1], &isProxy, &target, &handler));
+
+        if (isProxy)
+        {
+            JsPropertyIdRef targetProperty;
+            JsPropertyIdRef handlerProperty;
+            JsPropertyIdRef revokedProperty;
+            
+            IfJsrtErrorSetGo(CreatePropertyIdFromString("target", &targetProperty));
+            IfJsrtErrorSetGo(CreatePropertyIdFromString("handler", &handlerProperty));
+            IfJsrtErrorSetGo(CreatePropertyIdFromString("revoked", &revokedProperty));
+            IfJsrtErrorSetGo(ChakraRTInterface::JsCreateObject(&returnValue));
+
+            JsValueRef revoked = JS_INVALID_REFERENCE;
+
+            if (target == JS_INVALID_REFERENCE)
+            {
+                IfJsrtErrorSetGo(ChakraRTInterface::JsGetTrueValue(&revoked));
+                target = undefined;
+                handler = undefined;
+            }
+            else
+            {
+                IfJsrtErrorSetGo(ChakraRTInterface::JsGetFalseValue(&revoked));
+            }
+
+            IfJsrtErrorSetGo(ChakraRTInterface::JsSetProperty(returnValue, handlerProperty, handler, true));
+            IfJsrtErrorSetGo(ChakraRTInterface::JsSetProperty(returnValue, targetProperty, target, true));
+            IfJsrtErrorSetGo(ChakraRTInterface::JsSetProperty(returnValue, revokedProperty, revoked, true));
+        }
+    }
+Error:
+    return returnValue;
+}
+
 bool WScriptJsrt::PrintException(LPCSTR fileName, JsErrorCode jsErrorCode)
 {
     LPCWSTR errorTypeString = ConvertErrorCodeToMessage(jsErrorCode);
@@ -1726,17 +1844,12 @@ HRESULT WScriptJsrt::ModuleMessage::Call(LPCSTR fileName)
             if (FAILED(hr))
             {
                 // check if have it registered
-                AutoString *data;
-                if (!SourceMap::Find(specifierStr, &data))
+                if (!HostConfigFlags::flags.MuteHostErrorMsgIsEnabled)
                 {
-                    if (!HostConfigFlags::flags.MuteHostErrorMsgIsEnabled)
-                    {
-                        fprintf(stderr, "Couldn't load file '%s'\n", specifierStr.GetString());
-                    }
-                    LoadScript(nullptr, *specifierStr, nullptr, "module", true, WScriptJsrt::FinalizeFree, false);
-                    goto Error;
+                    fprintf(stderr, "Couldn't load file '%s'\n", specifierStr.GetString());
                 }
-                fileContent = data->GetString();
+                LoadScript(nullptr, *specifierStr, nullptr, "module", true, WScriptJsrt::FinalizeFree, false);
+                goto Error;
             }
             LoadScript(nullptr, *specifierStr, fileContent, "module", true, WScriptJsrt::FinalizeFree, true);
         }
@@ -1871,3 +1984,32 @@ void WScriptJsrt::PromiseContinuationCallback(JsValueRef task, void *callbackSta
     WScriptJsrt::CallbackMessage *msg = new WScriptJsrt::CallbackMessage(0, task);
     messageQueue->InsertSorted(msg);
 }
+
+void WScriptJsrt::PromiseRejectionTrackerCallback(JsValueRef promise, JsValueRef reason, bool handled, void *callbackState)
+{
+    Assert(promise != JS_INVALID_REFERENCE);
+    Assert(reason != JS_INVALID_REFERENCE);
+    JsValueRef strValue;
+    JsErrorCode error = ChakraRTInterface::JsConvertValueToString(reason, &strValue);
+
+    if (!handled)
+    {
+        wprintf(_u("Uncaught promise rejection\n"));
+    }
+    else
+    {
+        wprintf(_u("Promise rejection handled\n"));
+    }
+
+    if (error == JsNoError)
+    {
+        AutoString str(strValue);
+        if (str.GetError() == JsNoError)
+        {
+            wprintf(_u("%ls\n"), str.GetWideString());
+        }
+    }
+
+    fflush(stdout);
+}
+

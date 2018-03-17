@@ -166,6 +166,7 @@ private:
     void                BuildArgInRest();
     void                BuildElementP(Js::OpCode newOpcode, uint32 offset, Js::RegSlot regSlot, Js::CacheId inlineCacheIndex);
     void                BuildElementCP(Js::OpCode newOpcode, uint32 offset, Js::RegSlot instance, Js::RegSlot regSlot, Js::CacheId inlineCacheIndex);
+    void                BuildProfiledElementCP(Js::OpCode newOpcode, uint32 offset, Js::RegSlot instance, Js::RegSlot regSlot, Js::CacheId inlineCacheIndex, Js::ProfileId profileId);
     void                BuildElementC2(Js::OpCode newOpcode, uint32 offset, Js::RegSlot instanceSlot, Js::RegSlot instance2Slot,
                             Js::RegSlot regSlot, Js::PropertyIdIndexType propertyIdIndex);
     void                BuildElementScopedC2(Js::OpCode newOpcode, uint32 offset, Js::RegSlot instance2Slot,
@@ -333,6 +334,7 @@ private:
     Func *              m_func;
     IR::Instr *         m_lastInstr;
     IR::Instr **        m_offsetToInstruction;
+    uint32              m_offsetToInstructionCount;
     uint32              m_functionStartOffset;
     Js::ByteCodeReader  m_jnReader;
     Js::StatementReader<Js::FunctionBody::ArenaStatementMapList> m_statementReader;
@@ -363,7 +365,6 @@ private:
     // used to estimate how much stack we should probe for at the
     // beginning of a JITted function.
 #if DBG
-    uint32              m_offsetToInstructionCount;
     uint32              m_callsOnStack;
 #endif
     uint32              m_argsOnStack;

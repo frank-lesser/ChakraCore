@@ -4,8 +4,6 @@
     <default>
       <files>argTest.js</files>
       <compile-flags>-maic:0 -maxInterpretCount:0</compile-flags>
-      <!-- This test is disabled on xplat until GH #4090 is fixed -->
-      <tags>exclude_xplat</tags>
     </default>
   </test>
   <test>
@@ -120,7 +118,6 @@
     <default>
       <files>MathBuiltinsCall.js</files>
       <baseline>MathBuiltinsCall.baseline</baseline>
-      <tags>exclude_mac</tags>
       <compile-flags>-testtrace:asmjs</compile-flags>
     </default>
   </test>
@@ -128,7 +125,6 @@
     <default>
       <files>MathBuiltinsCall.js</files>
       <baseline>MathBuiltinsCall.baseline</baseline>
-      <tags>exclude_mac</tags>
       <compile-flags>-testtrace:asmjs -maic:1 -sse:3</compile-flags>
     </default>
   </test>
@@ -524,8 +520,6 @@
     <default>
       <files>MathBuiltinsCall.js</files>
       <baseline>MathBuiltinsCall.baseline</baseline>
-      <!-- mac gives has some test which gives different precision result, so exclude it -->
-      <tags>exclude_mac</tags>
       <compile-flags>-testtrace:asmjs -nonative</compile-flags>
     </default>
   </test>
@@ -1041,6 +1035,11 @@
   <test>
     <default>
       <files>argassignbug.js</files>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>manyargs.js</files>
     </default>
   </test>
   <test>

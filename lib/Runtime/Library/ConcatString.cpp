@@ -99,24 +99,24 @@ namespace Js
         }
 
         ScriptContext * scriptContext = library->GetScriptContext();
-        size_t cbDestString = (charCount + 1) * sizeof(WCHAR);
-        if ((CharCount)cbDestString < charCount) // overflow
+        if (charCount > MaxCharCount)
         {
             Js::JavascriptError::ThrowOutOfMemoryError(scriptContext);
         }
 
         Recycler * recycler = library->GetRecycler();
-        char16* destString = RecyclerNewArrayLeaf(recycler, WCHAR, cbDestString);
+        char16* destString = RecyclerNewArrayLeaf(recycler, WCHAR, charCount + 1);
         if (destString == nullptr)
         {
             Js::JavascriptError::ThrowOutOfMemoryError(scriptContext);
         }
 
-        HRESULT result = utf8::NarrowStringToWideNoAlloc(cString, charCount, destString, charCount + 1, &cbDestString);
+        charcount_t cchDestString = 0;
+        HRESULT result = utf8::NarrowStringToWideNoAlloc(cString, charCount, destString, charCount + 1, &cchDestString);
 
         if (result == S_OK)
         {
-            return (JavascriptString*) RecyclerNew(library->GetRecycler(), LiteralStringWithPropertyStringPtr, destString, (CharCount)cbDestString, library);
+            return (JavascriptString*) RecyclerNew(library->GetRecycler(), LiteralStringWithPropertyStringPtr, destString, cchDestString, library);
         }
 
         Js::JavascriptError::ThrowOutOfMemoryError(scriptContext);
@@ -138,8 +138,10 @@ namespace Js
 
         if (this->propertyRecord == nullptr)
         {
+            Js::PropertyRecord const * propertyRecord = nullptr;
             scriptContext->GetOrAddPropertyRecord(this->GetSz(), static_cast<int>(this->GetLength()),
-                (Js::PropertyRecord const **)&(this->propertyRecord));
+                &propertyRecord);
+            this->propertyRecord = propertyRecord;
         }
 
         this->propertyString = scriptContext->GetPropertyString(propertyRecord->GetPropertyId());

@@ -691,12 +691,19 @@ namespace Js
         {
             Assert(useCache);
             cachedResult = (cache->resultBV.Test(cacheIndex) != 0);
+
+            // If our cache says this test should produce a match (which we aren't going to compute),
+            // notify the Ctor to invalidate the last match so it must be recomputed before access.
+            if (cachedResult)
+            {
+                InvalidateLastMatchOnCtor(scriptContext, regularExpression, input);
+            }
+
             // for debug builds, let's still do the real test so we can validate values in the cache
 #if !DBG
             return JavascriptBoolean::ToVar(cachedResult, scriptContext);
 #endif
         }
-
 
         CharCount offset;
         if (!GetInitialOffset(isGlobal, isSticky, regularExpression, inputLength, offset))
@@ -766,11 +773,8 @@ namespace Js
             {
                 // We've found a substitution ref, like $32.  In accordance with the standard (sec-getsubstitution),
                 // we recognize at most two decimal digits after the dollar sign.
-
-                // This should be unsigned, but this would cause lots of compiler warnings unless we also make
-                // numGroups unsigned, because of a comparison below.
-                int captureIndex = (int)(currentChar - _u('0'));
-                Assert(0 <= captureIndex && captureIndex <= 9); // numeric value of single decimal digit
+                uint16 captureIndex = (uint16)(currentChar - _u('0'));
+                Assert(captureIndex < 10); // numeric value of single decimal digit
 
                 offset = substitutionOffset + 2;
 
@@ -779,9 +783,8 @@ namespace Js
                     currentChar = replaceStr[substitutionOffset + 2];
                     if (currentChar >= _u('0') && currentChar <= _u('9'))
                     {
-                        // Should also be unsigned; see captureIndex above.
-                        int tempCaptureIndex = (10 * captureIndex) + (int)(currentChar - _u('0'));
-                        Assert(0 <= tempCaptureIndex && tempCaptureIndex < 100); // numeric value of 2-digit positive decimal number
+                        uint16 tempCaptureIndex = (10 * captureIndex) + (uint16)(currentChar - _u('0'));
+                        Assert(tempCaptureIndex < 100); // numeric value of 2-digit positive decimal number
                         if (tempCaptureIndex < numGroups)
                         {
                             captureIndex = tempCaptureIndex;
@@ -790,7 +793,7 @@ namespace Js
                     }
                 }
 
-                Assert(0 <= captureIndex && captureIndex < 100); // as above, value of 2-digit positive decimal number
+                Assert(captureIndex < 100); // as above, value of 2-digit positive decimal number
                 if (captureIndex < numGroups && (captureIndex != 0))
                 {
                     Var group = getGroup(captureIndex, nonMatchValue);
@@ -908,7 +911,7 @@ namespace Js
             ArenaAllocator* tempAlloc,
             JavascriptString* matchStr,
             int numberOfCaptures,
-            Var* captures,
+            Field(Var)* captures,
             CharCount position)
         {
             CharCount* substitutionOffsets = nullptr;
@@ -918,7 +921,7 @@ namespace Js
                 tempAlloc,
                 &substitutionOffsets);
             auto getGroup = [&](int captureIndex, Var nonMatchValue) {
-                return captureIndex <= numberOfCaptures ? captures[captureIndex] : nonMatchValue;
+                return captureIndex <= numberOfCaptures ? PointerValue(captures[captureIndex]) : nonMatchValue;
             };
             UnifiedRegex::GroupInfo match(position, matchStr->GetLength());
             int numGroups = numberOfCaptures + 1; // Take group 0 into account.
@@ -944,7 +947,7 @@ namespace Js
             ArenaAllocator* tempAlloc,
             JavascriptString* matchStr,
             int numberOfCaptures,
-            Var* captures,
+            Field(Var)* captures,
             CharCount position)
         {
             // replaceFn Arguments:
@@ -1081,7 +1084,7 @@ namespace Js
                     CharCount substringLength = position - nextSourcePosition;
                     accumulatedResultBuilder.Append(input, nextSourcePosition, substringLength);
 
-                    appendReplacement(accumulatedResultBuilder, tempAlloc, matchStr, (int) numberOfCapturesToKeep, (Var*)captures, position);
+                    appendReplacement(accumulatedResultBuilder, tempAlloc, matchStr, (int) numberOfCapturesToKeep, captures, position);
 
                     nextSourcePosition = JavascriptRegExp::AddIndex(position, matchStr->GetLength());
                 }
@@ -1254,12 +1257,13 @@ namespace Js
         JavascriptString* newString = nullptr;
         const char16* inputStr = input->GetString();
         CharCount inputLength = input->GetLength();
-        const int rawNumGroups = pattern->NumGroups();
+        const uint16 numGroups = pattern->NumGroups();
         Var nonMatchValue = NonMatchValue(scriptContext, false);
         UnifiedRegex::GroupInfo lastMatch; // initially undefined
 
-        AssertOrFailFast(0 < rawNumGroups && rawNumGroups <= INT16_MAX);
-        const uint16 numGroups = uint16(rawNumGroups);
+        // Regex parser should ensure this condition holds, but let's be doubly sure.
+        // numGroups is always positive because the entire regex counts as a capturing group.
+        AssertOrFailFast(0 < numGroups && numGroups <= INT16_MAX);
 
 #if ENABLE_REGEX_CONFIG_OPTIONS
         RegexHelperTrace(scriptContext, UnifiedRegex::RegexStats::Replace, regularExpression, input, scriptContext->GetLibrary()->CreateStringFromCppLiteral(_u("<replace function>")));
@@ -2085,6 +2089,16 @@ namespace Js
                 : regularExpression->GetPattern();
             scriptContext->GetLibrary()->GetRegExpConstructor()->SetLastMatch(pattern, lastInput, lastSuccessfulMatch);
         }
+    }
+
+    void RegexHelper::InvalidateLastMatchOnCtor(ScriptContext* scriptContext, JavascriptRegExp* regularExpression, JavascriptString* lastInput, bool useSplitPattern)
+    {
+        Assert(lastInput);
+
+        UnifiedRegex::RegexPattern* pattern = useSplitPattern
+            ? regularExpression->GetSplitPattern()
+            : regularExpression->GetPattern();
+        scriptContext->GetLibrary()->GetRegExpConstructor()->InvalidateLastMatch(pattern, lastInput);
     }
 
     bool RegexHelper::GetInitialOffset(bool isGlobal, bool isSticky, JavascriptRegExp* regularExpression, CharCount inputLength, CharCount& offset)

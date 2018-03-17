@@ -251,10 +251,7 @@ public:
     static ParseNodePtr StaticCreateNodeT(ArenaAllocator* alloc, charcount_t ichMin = 0, charcount_t ichLim = 0)
     {
         ParseNodePtr pnode = StaticAllocNode<nop>(alloc);
-        InitNode(nop,pnode);
-        // default - may be changed
-        pnode->ichMin = ichMin;
-        pnode->ichLim = ichLim;
+        pnode->Init(nop, ichMin, ichLim);
 
         return pnode;
     }
@@ -280,9 +277,9 @@ public:
     ParseNodePtr CreateNameNode(IdentPtr pid)
     {
         ParseNodePtr pnode = CreateNode(knopName);
-        pnode->sxPid.pid = pid;
-        pnode->sxPid.sym=NULL;
-        pnode->sxPid.symRef=NULL;
+        pnode->AsParseNodePid()->pid = pid;
+        pnode->AsParseNodePid()->sym=NULL;
+        pnode->AsParseNodePid()->symRef=NULL;
         return pnode;
     }
     ParseNodePtr CreateSpecialNameNode(IdentPtr pid)
@@ -291,28 +288,23 @@ public:
 
         // knopSpecialName is unused in the code
         pnode->nop = knopName;
-        pnode->sxPid.pid = pid;
-        pnode->sxPid.sym = NULL;
-        pnode->sxPid.symRef = NULL;
+        pnode->AsParseNodePid()->pid = pid;
+        pnode->AsParseNodePid()->sym = NULL;
+        pnode->AsParseNodePid()->symRef = NULL;
         pnode->isSpecialName = true;
-        pnode->sxSpecialName.isThis = false;
-        pnode->sxSpecialName.isSuper = false;
+        pnode->AsParseNodeSpecialName()->isThis = false;
+        pnode->AsParseNodeSpecialName()->isSuper = false;
         return pnode;
     }
-    ParseNodePtr CreateBlockNode(PnodeBlockType blockType = PnodeBlockType::Regular)
-    {
-        ParseNodePtr pnode = CreateNode(knopBlock);
-        InitBlockNode(pnode, m_nextBlockId++, blockType);
-        return pnode;
-    }
-    // Creating parse nodes.
 
+    // Creating parse nodes.
     ParseNodePtr CreateNode(OpCode nop, charcount_t ichMin);
     ParseNodePtr CreateTriNode(OpCode nop, ParseNodePtr pnode1, ParseNodePtr pnode2, ParseNodePtr pnode3);
     ParseNodePtr CreateIntNode(int32 lw);
     ParseNodePtr CreateStrNode(IdentPtr pid);
 
     ParseNodePtr CreateUniNode(OpCode nop, ParseNodePtr pnodeOp);
+    ParseNodePtr CreateBlockNode(PnodeBlockType blockType = PnodeBlockType::Regular);
     ParseNodePtr CreateBinNode(OpCode nop, ParseNodePtr pnode1, ParseNodePtr pnode2);
     ParseNodePtr CreateSuperReferenceNode(OpCode nop, ParseNodePtr pnode1, ParseNodePtr pnode2);
     ParseNodePtr CreateCallNode(OpCode nop, ParseNodePtr pnode1, ParseNodePtr pnode2);
@@ -379,9 +371,6 @@ private:
     ParseNodePtr CreateStrNodeWithScanner(IdentPtr pid);
     ParseNodePtr CreateIntNodeWithScanner(int32 lw);
     ParseNodePtr CreateProgNodeWithScanner(bool isModuleSource);
-
-    static void InitNode(OpCode nop,ParseNodePtr pnode);
-    static void InitBlockNode(ParseNodePtr pnode, int blockId, PnodeBlockType blockType);
 
 private:
     ParseNodePtr m_currentNodeNonLambdaFunc; // current function or NULL
@@ -509,8 +498,8 @@ private:
     {
         if (buildAST)
         {
-            pnode->sxStmt.grfnop = 0;
-            pnode->sxStmt.pnodeOuter = (NULL == m_pstmtCur) ? NULL : m_pstmtCur->pnodeStmt;
+            pnode->AsParseNodeStmt()->grfnop = 0;
+            pnode->AsParseNodeStmt()->pnodeOuter = (NULL == m_pstmtCur) ? NULL : m_pstmtCur->pnodeStmt;
 
             pStmt->pnodeStmt = pnode;
         }
@@ -538,12 +527,12 @@ private:
         if (this->GetCurrentFunctionNode())
         {
             ParseNodePtr pnodeFunc = GetCurrentFunctionNode();
-            pnodeFunc->sxFnc.SetCallsEval(true);
+            pnodeFunc->AsParseNodeFnc()->SetCallsEval(true);
         }
         ParseNode *pnodeBlock = GetCurrentBlock();
         if (pnodeBlock != NULL)
         {
-            pnodeBlock->sxBlock.SetCallsEval(true);
+            pnodeBlock->AsParseNodeBlock()->SetCallsEval(true);
             PushDynamicBlock();
         }
     }
@@ -613,10 +602,10 @@ public:
         {
             if ((*current)->nop == knopList)
             {
-                handler(&(*current)->sxBin.pnode1);
+                handler(&(*current)->AsParseNodeBin()->pnode1);
 
                 // Advance to the next node
-                current = &(*current)->sxBin.pnode2;
+                current = &(*current)->AsParseNodeBin()->pnode2;
             }
             else
             {
@@ -642,11 +631,11 @@ public:
         ParseNodePtr bindIdentNode = elementNode;
         if (bindIdentNode->nop == knopAsg)
         {
-            bindIdentNode = bindIdentNode->sxBin.pnode1;
+            bindIdentNode = bindIdentNode->AsParseNodeBin()->pnode1;
         }
         else if (bindIdentNode->nop == knopEllipsis)
         {
-            bindIdentNode = bindIdentNode->sxUni.pnode1;
+            bindIdentNode = bindIdentNode->AsParseNodeUni()->pnode1;
         }
 
         if (bindIdentNode->IsPattern())
@@ -668,21 +657,21 @@ public:
     {
         if (patternNode->nop == knopAsg)
         {
-            patternNode = patternNode->sxBin.pnode1;
+            patternNode = patternNode->AsParseNodeBin()->pnode1;
         }
 
         Assert(patternNode->IsPattern());
         if (patternNode->nop == knopArrayPattern)
         {
-            ForEachItemInList(patternNode->sxArrLit.pnode1, [&](ParseNodePtr item) {
+            ForEachItemInList(patternNode->AsParseNodeArrLit()->pnode1, [&](ParseNodePtr item) {
                 MapBindIdentifierFromElement(item, handler);
             });
         }
         else
         {
-            ForEachItemInList(patternNode->sxUni.pnode1, [&](ParseNodePtr item) {
+            ForEachItemInList(patternNode->AsParseNodeUni()->pnode1, [&](ParseNodePtr item) {
                 Assert(item->nop == knopObjectPatternMember);
-                MapBindIdentifierFromElement(item->sxBin.pnode2, handler);
+                MapBindIdentifierFromElement(item->AsParseNodeBin()->pnode2, handler);
             });
         }
     }
@@ -755,7 +744,7 @@ private:
     void FinishParseFncExprScope(ParseNodePtr pnodeFnc, ParseNodePtr pnodeFncExprScope);
 
     bool IsSpecialName(IdentPtr pid);
-    void CreateSpecialSymbolDeclarations(ParseNodePtr pnodeFnc, bool isGlobal);
+    void CreateSpecialSymbolDeclarations(ParseNodePtr pnodeFnc);
     ParseNodePtr ReferenceSpecialName(IdentPtr pid, charcount_t ichMin = 0, charcount_t ichLim = 0, bool createNode = false);
     ParseNodePtr CreateSpecialVarDeclIfNeeded(ParseNodePtr pnodeFnc, IdentPtr pid, bool forceCreate = false);
 
@@ -795,9 +784,9 @@ private:
     template<bool buildAST> void ParseComputedName(ParseNodePtr* ppnodeName, LPCOLESTR* ppNameHint, LPCOLESTR* ppFullNameHint = nullptr, uint32 *pNameLength = nullptr, uint32 *pShortNameOffset = nullptr);
     template<bool buildAST> ParseNodePtr ParseMemberGetSet(OpCode nop, LPCOLESTR* ppNameHint);
     template<bool buildAST> ParseNodePtr ParseFncDecl(ushort flags, LPCOLESTR pNameHint = NULL, const bool needsPIDOnRCurlyScan = false, bool resetParsingSuperRestrictionState = true, bool fUnaryOrParen = false);
-    template<bool buildAST> bool ParseFncNames(ParseNodePtr pnodeFnc, ParseNodePtr pnodeFncParent, ushort flags, ParseNodePtr **pLastNodeRef);
+    template<bool buildAST> bool ParseFncNames(ParseNodePtr pnodeFnc, ParseNodePtr pnodeFncParent, ushort flags, ParseNodePtr **pLastNodeRef, IdentPtr* pFncNamePid = nullptr);
     template<bool buildAST> void ParseFncFormals(ParseNodePtr pnodeFnc, ParseNodePtr pnodeParentFnc, ushort flags, bool isTopLevelDeferredFunc = false);
-    template<bool buildAST> bool ParseFncDeclHelper(ParseNodePtr pnodeFnc, LPCOLESTR pNameHint, ushort flags, bool *pHasName, bool fUnaryOrParen, bool noStmtContext, bool *pNeedScanRCurly, bool skipFormals = false);
+    template<bool buildAST> bool ParseFncDeclHelper(ParseNodePtr pnodeFnc, LPCOLESTR pNameHint, ushort flags, bool *pHasName, bool fUnaryOrParen, bool noStmtContext, bool *pNeedScanRCurly, bool skipFormals = false, IdentPtr* pFncNamePid = nullptr);
     template<bool buildAST> void ParseExpressionLambdaBody(ParseNodePtr pnodeFnc);
     template<bool buildAST> void UpdateCurrentNodeFunc(ParseNodePtr pnodeFnc, bool fLambda);
     bool FncDeclAllowedWithoutContext(ushort flags);
@@ -906,7 +895,7 @@ private:
     BOOL NodeIsSuperName(ParseNodePtr pnode);
     BOOL IsJSONValid(ParseNodePtr pnodeExpr)
     {
-        OpCode jnop = (knopNeg == pnodeExpr->nop) ? pnodeExpr->sxUni.pnode1->nop : pnodeExpr->nop;
+        OpCode jnop = (knopNeg == pnodeExpr->nop) ? pnodeExpr->AsParseNodeUni()->pnode1->nop : pnodeExpr->nop;
         if (knopNeg == pnodeExpr->nop)
         {
             return (knopInt == jnop ||  knopFlt == jnop);

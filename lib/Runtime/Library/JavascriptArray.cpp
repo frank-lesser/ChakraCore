@@ -507,14 +507,14 @@ namespace Js
 
     JavascriptArray* JavascriptArray::FromVar(Var aValue)
     {
-        AssertOrFailFastMsg(Is(aValue), "Ensure var is actually a 'JavascriptArray'");
+        AssertOrFailFastMsg(IsAnyArray(aValue), "Ensure var is actually a 'JavascriptArray'");
 
         return static_cast<JavascriptArray *>(aValue);
     }
 
     JavascriptArray* JavascriptArray::UnsafeFromVar(Var aValue)
     {
-        AssertMsg(Is(aValue), "Ensure var is actually a 'JavascriptArray'");
+        AssertMsg(IsAnyArray(aValue), "Ensure var is actually a 'JavascriptArray'");
 
         return static_cast<JavascriptArray *>(aValue);
     }
@@ -4137,6 +4137,10 @@ namespace Js
                     return i;
                 }
             }
+            else if (SparseArraySegment<Var>::IsMissingItem(&element))
+            {
+                AssertOrFailFast(false);
+            }
             else if (includesAlgorithm && JavascriptConversion::SameValueZero(element, search))
             {
                 //Array.prototype.includes
@@ -6663,6 +6667,8 @@ Case0:
             ClearSegmentMap(); // Dump the segmentMap again in case user compare function rebuilds it
             if (hasException)
             {
+                // The current array might have affected due to callbacks. As we have got the exception we should be resetting the missing value.
+                SetHasNoMissingValues(false);
                 head = startSeg;
                 this->InvalidateLastUsedSegment();
             }
@@ -6874,38 +6880,8 @@ Case0:
                 Js::Throw::FatalInternalError();
             }
 
-            // Maintain nativity of the array only for the following cases (To favor inplace conversions - keeps the conversion cost less):
-            // -    int cases for X86 and
-            // -    FloatArray for AMD64
-            // We convert the entire array back and forth once here O(n), rather than doing the costly conversion down the call stack which is O(nlogn)
-
-#if defined(TARGET_64)
-            if(compFn && JavascriptNativeFloatArray::Is(arr))
-            {
-                arr = JavascriptNativeFloatArray::ConvertToVarArray((JavascriptNativeFloatArray*)arr);
-                JS_REENTRANT(jsReentLock, arr->Sort(compFn));
-                arr = arr->ConvertToNativeArrayInPlace<JavascriptNativeFloatArray, double>(arr);
-            }
-            else
-            {
-                EnsureNonNativeArray(arr);
-                JS_REENTRANT(jsReentLock, arr->Sort(compFn));
-            }
-#else
-            if(compFn && JavascriptNativeIntArray::Is(arr))
-            {
-                //EnsureNonNativeArray(arr);
-                arr = JavascriptNativeIntArray::ConvertToVarArray((JavascriptNativeIntArray*)arr);
-                JS_REENTRANT(jsReentLock, arr->Sort(compFn));
-                arr = arr->ConvertToNativeArrayInPlace<JavascriptNativeIntArray, int32>(arr);
-            }
-            else
-            {
-                EnsureNonNativeArray(arr);
-                JS_REENTRANT(jsReentLock, arr->Sort(compFn));
-            }
-#endif
-
+            EnsureNonNativeArray(arr);
+            JS_REENTRANT(jsReentLock, arr->Sort(compFn));
         }
         else
         {
@@ -7042,7 +7018,8 @@ Case0:
     }
 
     template<typename T>
-    void JavascriptArray::ArraySegmentSpliceHelper(JavascriptArray *pnewArr, SparseArraySegment<T> *seg, SparseArraySegment<T> **prev,
+    void JavascriptArray::ArraySegmentSpliceHelper(
+        JavascriptArray *pnewArr, SparseArraySegment<T> *seg, Field(SparseArraySegment<T>*) *prev,
                                                     uint32 start, uint32 deleteLen, Var* insertArgs, uint32 insertLen, Recycler *recycler)
     {
         // book keeping variables
@@ -7164,7 +7141,9 @@ Case0:
                 // All splice happens in one segment.
                 SparseArraySegmentBase *nextSeg = startSeg->next;
                 // Splice the segment first, which might OOM throw but the array would be intact.
-                JavascriptArray::ArraySegmentSpliceHelper(pnewArr, (SparseArraySegment<T>*)startSeg, (SparseArraySegment<T>**)prevSeg, start, deleteLen, insertArgs, insertLen, recycler);
+                JavascriptArray::ArraySegmentSpliceHelper(
+                    pnewArr, startSeg, SparseArraySegment<T>::AddressFrom(prevSeg),
+                    start, deleteLen, insertArgs, insertLen, recycler);
                 while (nextSeg)
                 {
                     // adjust next segments left
@@ -7400,6 +7379,13 @@ Case0:
         ::Math::RecordOverflowPolicy newLenOverflow;
         uint32 newLen = UInt32Math::Add(len - deleteLen, insertLen, newLenOverflow); // new length of the array after splice
 
+        // If newLen overflowed, take the slower path to do splicing.
+        if (newLenOverflow.HasOverflowed())
+        {
+            pArr = EnsureNonNativeArray(pArr);
+            JS_REENTRANT_UNLOCK(jsReentLock, return ObjectSpliceHelper<uint64>(pArr, len, start, deleteLen, insertArgs, insertLen, scriptContext, newObj));
+        }
+
         // If we have missing values then convert to not native array for now
         // In future, we could support this scenario.
         if (deleteLen == insertLen)
@@ -7409,44 +7395,6 @@ Case0:
         else if (len)
         {
             JS_REENTRANT(jsReentLock, pArr->FillFromPrototypes(start, len));
-        }
-
-        //
-        // If newLen overflowed, pre-process to prevent pushing sparse array segments or elements out of
-        // max array length, which would result in tons of index overflow and difficult to fix.
-        //
-        if (newLenOverflow.HasOverflowed())
-        {
-            pArr = EnsureNonNativeArray(pArr);
-            BigIndex dstIndex = MaxArrayLength;
-
-            uint32 maxInsertLen = MaxArrayLength - start;
-            if (insertLen > maxInsertLen)
-            {
-                // Copy overflowing insertArgs to properties
-                for (uint32 i = maxInsertLen; i < insertLen; i++)
-                {
-                    pArr->GenericDirectSetItemAt(dstIndex, insertArgs[i]);
-                    ++dstIndex;
-                }
-
-                insertLen = maxInsertLen; // update
-
-                                          // Truncate elements on the right to properties
-                if (start + deleteLen < len)
-                {
-                    pArr->TruncateToProperties(dstIndex, start + deleteLen);
-                }
-            }
-            else
-            {
-                // Truncate would-overflow elements to properties
-                pArr->TruncateToProperties(dstIndex, MaxArrayLength - insertLen + deleteLen);
-            }
-
-            len = pArr->length; // update
-            newLen = len - deleteLen + insertLen;
-            Assert(newLen == MaxArrayLength);
         }
 
         if (insertArgs)
@@ -7502,15 +7450,24 @@ Case0:
                 bool isInlineSegment = JavascriptArray::IsInlineSegment(oldHead, pArr);
                 if (isIntArray)
                 {
-                    ArraySegmentSpliceHelper<int32>(newArr, SparseArraySegment<int32>::From(pArr->head), (SparseArraySegment<int32>**)&pArr->head, start, deleteLen, insertArgs, insertLen, recycler);
+                    ArraySegmentSpliceHelper<int32>(newArr,
+                        SparseArraySegment<int32>::From(pArr->head),
+                        SparseArraySegment<int32>::AddressFrom(&pArr->head),
+                        start, deleteLen, insertArgs, insertLen, recycler);
                 }
                 else if (isFloatArray)
                 {
-                    ArraySegmentSpliceHelper<double>(newArr, SparseArraySegment<double>::From(pArr->head), (SparseArraySegment<double>**)&pArr->head, start, deleteLen, insertArgs, insertLen, recycler);
+                    ArraySegmentSpliceHelper<double>(newArr,
+                        SparseArraySegment<double>::From(pArr->head),
+                        SparseArraySegment<double>::AddressFrom(&pArr->head),
+                        start, deleteLen, insertArgs, insertLen, recycler);
                 }
                 else
                 {
-                    ArraySegmentSpliceHelper<Var>(newArr, SparseArraySegment<Var>::From(pArr->head), (SparseArraySegment<Var>**)&pArr->head, start, deleteLen, insertArgs, insertLen, recycler);
+                    ArraySegmentSpliceHelper<Var>(newArr,
+                        SparseArraySegment<Var>::From(pArr->head),
+                        SparseArraySegment<Var>::AddressFrom(&pArr->head),
+                        start, deleteLen, insertArgs, insertLen, recycler);
                 }
 
                 if (isInlineSegment && oldHead != pArr->head)
@@ -7594,25 +7551,11 @@ Case0:
             newArr->ValidateArray();
             pArr->ValidateArray();
 #endif
-            if (newLenOverflow.HasOverflowed())
-            {
-                // ES5 15.4.4.12 16: If new len overflowed, SetLength throws
-                JavascriptError::ThrowRangeError(scriptContext, JSERR_ArrayLengthAssignIncorrect);
-            }
-
             return newArr;
         }
 
-        if (newLenOverflow.HasOverflowed())
-        {
-            JS_REENTRANT_UNLOCK(jsReentLock, return ObjectSpliceHelper<uint64>(pArr, len, start, deleteLen, insertArgs, insertLen, scriptContext, newObj));
-        }
-        else // Use uint32 version if no overflow
-        {
-            JS_REENTRANT_UNLOCK(jsReentLock, return ObjectSpliceHelper<uint32>(pArr, len, start, deleteLen, insertArgs, insertLen, scriptContext, newObj));
-        }
-
-    }
+        JS_REENTRANT_UNLOCK(jsReentLock, return ObjectSpliceHelper<uint32>(pArr, len, start, deleteLen, insertArgs, insertLen, scriptContext, newObj));
+   }
 
     template<typename T>
     RecyclableObject* JavascriptArray::ObjectSpliceHelper(RecyclableObject* pObj, T len, T start,
@@ -7865,6 +7808,61 @@ Case0:
         pArr->SetHasNoMissingValues(hasNoMissingValues);
     }
 
+    Var JavascriptArray::UnshiftObjectHelper(Js::Arguments& args, ScriptContext * scriptContext)
+    {
+        JS_REENTRANCY_LOCK(jsReentLock, scriptContext->GetThreadContext());
+        Assert(args.Info.Count >= 1);
+
+        RecyclableObject* dynamicObject = nullptr;
+        if (FALSE == JavascriptConversion::ToObject(args[0], scriptContext, &dynamicObject))
+        {
+            JavascriptError::ThrowTypeError(scriptContext, JSERR_This_NullOrUndefined, _u("Array.prototype.unshift"));
+        }
+        uint32 unshiftElements = args.Info.Count - 1;
+
+        JS_REENTRANT(jsReentLock, BigIndex length = OP_GetLength(dynamicObject, scriptContext));
+        if (unshiftElements > 0)
+        {
+            uint32 MaxSpaceUint32 = MaxArrayLength - unshiftElements;
+            // Note: end will always be a smallIndex either it is less than length in which case it is MaxSpaceUint32
+            // or MaxSpaceUint32 is greater than length meaning length is a uint32 number
+            BigIndex end = length > MaxSpaceUint32 ? MaxSpaceUint32 : length;
+            if (end < length)
+            {
+                // Unshift [end, length) to MaxArrayLength
+                // MaxArrayLength + (length - MaxSpaceUint32 - 1) = length + unshiftElements -1
+                if (length.IsSmallIndex())
+                {
+                    JS_REENTRANT(jsReentLock, Unshift<BigIndex>(dynamicObject, MaxArrayLength, end.GetSmallIndex(), length.GetSmallIndex(), scriptContext));
+                }
+                else
+                {
+                    JS_REENTRANT(jsReentLock, Unshift<BigIndex, uint64>(dynamicObject, MaxArrayLength, (uint64)end.GetSmallIndex(), length.GetBigIndex(), scriptContext));
+                }
+            }
+
+            // Unshift [0, end) to unshiftElements
+            // unshiftElements + (MaxSpaceUint32 - 0 - 1) = MaxArrayLength -1 therefore this unshift covers up to MaxArrayLength - 1
+            JS_REENTRANT(jsReentLock, Unshift<uint32>(dynamicObject, unshiftElements, (uint32)0, end.GetSmallIndex(), scriptContext));
+
+            for (uint32 i = 0; i < unshiftElements; i++)
+            {
+                JS_REENTRANT(jsReentLock,
+                    JavascriptOperators::SetItem(dynamicObject, dynamicObject, i, args[i + 1], scriptContext, PropertyOperation_ThrowIfNotExtensible, true));
+            }
+        }
+
+        ThrowTypeErrorOnFailureHelper h(scriptContext, _u("Array.prototype.unshift"));
+
+        //ES6 - update 'length' even if unshiftElements == 0;
+        BigIndex newLen = length + unshiftElements;
+        Var res = JavascriptNumber::ToVar(newLen.IsSmallIndex() ? newLen.GetSmallIndex() : newLen.GetBigIndex(), scriptContext);
+        JS_REENTRANT(jsReentLock,
+            BOOL setLength = JavascriptOperators::SetProperty(dynamicObject, dynamicObject, PropertyIds::length, res, scriptContext, PropertyOperation_ThrowIfNotExtensible));
+        h.ThrowTypeErrorOnFailure(setLength);
+        return res;
+    }
+
     Var JavascriptArray::EntryUnshift(RecyclableObject* function, CallInfo callInfo, ...)
     {
         PROBE_STACK(function->GetScriptContext(), Js::Constants::MinStackDefault);
@@ -7922,8 +7920,12 @@ Case0:
                     newLenOverflowed = true;
                     // Ensure the array is non-native when overflow happens
                     EnsureNonNativeArray(pArr);
-                    pArr->TruncateToProperties(MaxArrayLength, maxLen);
+                    JS_REENTRANT(jsReentLock, pArr->TruncateToProperties(MaxArrayLength, maxLen));
                     Assert(pArr->length + unshiftElements == MaxArrayLength);
+                    if (ES5Array::Is(pArr))
+                    {
+                        JS_REENTRANT_UNLOCK(jsReentLock, return UnshiftObjectHelper(args, scriptContext));
+                    }
                 }
 
                 pArr->ClearSegmentMap(); // Dump segmentMap on unshift (before any possible allocation and throw)
@@ -8008,52 +8010,7 @@ Case0:
         }
         else
         {
-            RecyclableObject* dynamicObject = nullptr;
-            if (FALSE == JavascriptConversion::ToObject(args[0], scriptContext, &dynamicObject))
-            {
-                JavascriptError::ThrowTypeError(scriptContext, JSERR_This_NullOrUndefined, _u("Array.prototype.unshift"));
-            }
-
-            JS_REENTRANT(jsReentLock, BigIndex length = OP_GetLength(dynamicObject, scriptContext));
-            if (unshiftElements > 0)
-            {
-                uint32 MaxSpaceUint32 = MaxArrayLength - unshiftElements;
-                // Note: end will always be a smallIndex either it is less than length in which case it is MaxSpaceUint32
-                // or MaxSpaceUint32 is greater than length meaning length is a uint32 number
-                BigIndex end = length > MaxSpaceUint32 ? MaxSpaceUint32 : length;
-                if (end < length)
-                {
-                    // Unshift [end, length) to MaxArrayLength
-                    // MaxArrayLength + (length - MaxSpaceUint32 - 1) = length + unshiftElements -1
-                    if (length.IsSmallIndex())
-                    {
-                        JS_REENTRANT(jsReentLock, Unshift<BigIndex>(dynamicObject, MaxArrayLength, end.GetSmallIndex(), length.GetSmallIndex(), scriptContext));
-                    }
-                    else
-                    {
-                        JS_REENTRANT(jsReentLock, Unshift<BigIndex, uint64>(dynamicObject, MaxArrayLength, (uint64)end.GetSmallIndex(), length.GetBigIndex(), scriptContext));
-                    }
-                }
-
-                // Unshift [0, end) to unshiftElements
-                // unshiftElements + (MaxSpaceUint32 - 0 - 1) = MaxArrayLength -1 therefore this unshift covers up to MaxArrayLength - 1
-                JS_REENTRANT(jsReentLock, Unshift<uint32>(dynamicObject, unshiftElements, (uint32)0, end.GetSmallIndex(), scriptContext));
-
-                for (uint32 i = 0; i < unshiftElements; i++)
-                {
-                    JS_REENTRANT(jsReentLock,
-                        JavascriptOperators::SetItem(dynamicObject, dynamicObject, i, args[i + 1], scriptContext, PropertyOperation_ThrowIfNotExtensible, true));
-                }
-            }
-
-            ThrowTypeErrorOnFailureHelper h(scriptContext, _u("Array.prototype.unshift"));
-
-            //ES6 - update 'length' even if unshiftElements == 0;
-            BigIndex newLen = length + unshiftElements;
-            res = JavascriptNumber::ToVar(newLen.IsSmallIndex() ? newLen.GetSmallIndex() : newLen.GetBigIndex(), scriptContext);
-            JS_REENTRANT(jsReentLock,
-                BOOL setLength = JavascriptOperators::SetProperty(dynamicObject, dynamicObject, PropertyIds::length, res, scriptContext, PropertyOperation_ThrowIfNotExtensible));
-            h.ThrowTypeErrorOnFailure(setLength);
+            JS_REENTRANT_UNLOCK(jsReentLock, res = UnshiftObjectHelper(args, scriptContext));
         }
         return res;
 
@@ -11687,17 +11644,32 @@ Case0:
     T * JavascriptArray::BoxStackInstance(T * instance, bool deepCopy)
     {
         Assert(ThreadContext::IsOnStack(instance));
-        // On the stack, the we reserved a pointer before the object as to store the boxed value
-        T ** boxedInstanceRef = ((T **)instance) - 1;
-        T * boxedInstance = *boxedInstanceRef;
-        if (boxedInstance)
+        T * boxedInstance;
+        T ** boxedInstanceRef;
+        if (!deepCopy)
         {
-            return boxedInstance;
+            // On the stack, the we reserved a pointer before the object as to store the boxed value
+            boxedInstanceRef = ((T **)instance) - 1;
+            boxedInstance = *boxedInstanceRef;
+            if (boxedInstance)
+            {
+                return boxedInstance;
+            }
+        }
+        else
+        {
+            // When doing a deep copy, do not cache the boxed value to ensure that only shallow copies
+            // are reused
+            boxedInstance = nullptr;
+            boxedInstanceRef = nullptr;
         }
 
         const size_t inlineSlotsSize = instance->GetTypeHandler()->GetInlineSlotsSize();
-        if (ThreadContext::IsOnStack(instance->head))
+        if (ThreadContext::IsOnStack(instance->head) || deepCopy)
         {
+            // Reallocate both the object as well as the head segment when the head is on the stack or
+            // when a deep copy is needed. This is to prevent a scenario where box may leave either one
+            // on the stack when both must be on the heap.
             boxedInstance = RecyclerNewPlusZ(instance->GetRecycler(),
                 inlineSlotsSize + sizeof(Js::SparseArraySegmentBase) + instance->head->size * sizeof(typename T::TElement),
                 T, instance, true, deepCopy);
@@ -11711,7 +11683,10 @@ Case0:
             boxedInstance = RecyclerNew(instance->GetRecycler(), T, instance, false, false);
         }
 
-        *boxedInstanceRef = boxedInstance;
+        if (boxedInstanceRef != nullptr)
+        {
+            *boxedInstanceRef = boxedInstance;
+        }
         return boxedInstance;
     }
 

@@ -1750,7 +1750,28 @@ namespace UnifiedRegex
                 }
                 // Take to be identity escape if ill-formed as per Annex B
                 break;
+            case '^':
+            case '$':
+            case '\\':
+            case '.':
+            case '*':
+            case '+':
+            case '?':
+            case '(':
+            case ')':
+            case '[':
+            case ']':
+            case '{':
+            case '}':
+            case '|':
+            case '/':
+                break; // fall-through for identity escape
             default:
+                if (this->unicodeFlagPresent)
+                {
+                    // As per #sec-forbidden-extensions, if unicode flag is present, we must disallow any other escape.
+                    this->Fail(JSERR_RegExpInvalidEscape); // throw SyntaxError
+                }
                 // As per Annex B, allow anything other than newlines and above. Embedded 0 is ok
                 break;
             }
@@ -2960,8 +2981,8 @@ namespace UnifiedRegex
 #ifdef PROFILE_EXEC
         this->scriptContext->ProfileEnd(Js::RegexCompilePhase);
 #endif
-
-        AssertOrFailFast(0 < pattern->NumGroups() && pattern->NumGroups() <= MAX_NUM_GROUPS);
+        // CaptureSourceAndGroups throws if this condition doesn't hold.
+        Assert(0 < pattern->NumGroups() && pattern->NumGroups() <= MAX_NUM_GROUPS);
 
         return pattern;
     }
@@ -2993,9 +3014,17 @@ namespace UnifiedRegex
         program->source[bodyChars] = 0;
         program->sourceLen = bodyChars;
 
-        program->numGroups = nextGroupId;
-
-        AssertOrFailFast(0 < program->numGroups && program->numGroups <= MAX_NUM_GROUPS);
+        // We expect nextGroupId to be positive, because the full regexp itself always
+        // counts as a capturing group.
+        Assert(nextGroupId > 0);
+        if (nextGroupId > MAX_NUM_GROUPS)
+        {
+            Js::JavascriptError::ThrowRangeError(this->scriptContext, JSERR_RegExpTooManyCapturingGroups);
+        }
+        else
+        {
+            program->numGroups = static_cast<uint16>(nextGroupId);
+        }
 
         // Remaining to set during compilation: litbuf, litbufLen, numLoops, insts, instsLen, entryPointLabel
     }

@@ -268,22 +268,10 @@ namespace Js
     {
         // Update deferred parsed/serialized function to the real function body
         Assert(this->functionInfo->HasBody());
+        Assert(this->functionInfo == newFunctionInfo->GetFunctionInfo());
         Assert(this->functionInfo->GetFunctionBody() == newFunctionInfo);
         Assert(!newFunctionInfo->IsDeferred());
 
-        DynamicType * type = this->GetDynamicType();
-
-        // If the type is shared, it must be the shared one in the old function proxy
-
-        this->functionInfo = newFunctionInfo->GetFunctionInfo();
-
-        if (type->GetIsShared())
-        {
-            // the type is still shared, we can't modify it, just migrate to the shared one in the function body
-            this->ReplaceType(newFunctionInfo->EnsureDeferredPrototypeType());
-        }
-
-        // The type has change from the default, it is not share, just use that one.
         JavascriptMethod directEntryPoint = newFunctionInfo->GetDirectEntryPoint(newFunctionInfo->GetDefaultEntryPointInfo());
 #if defined(ENABLE_SCRIPT_PROFILING) || defined(ENABLE_SCRIPT_DEBUGGING)
         Assert(directEntryPoint != DefaultDeferredParsingThunk
@@ -490,7 +478,7 @@ namespace Js
             BufferStringBuilder builder(cch, scriptContext);
             utf8::DecodeOptions options = pFuncBody->GetUtf8SourceInfo()->IsCesu8() ? utf8::doAllowThreeByteSurrogates : utf8::doDefault;
             size_t decodedCount = utf8::DecodeUnitsInto(builder.DangerousGetWritableBuffer(), pbStart, pbStart + cbLength, options);
-            
+
             if (decodedCount != cch)
             {
                 AssertMsg(false, "Decoded incorrect number of characters for function body");
@@ -574,7 +562,7 @@ namespace Js
             }
             case Js::ScopeType::ScopeType_SlotArray:
             {
-                Js::ScopeSlots slotArray = (Js::Var*)scope;
+                Js::ScopeSlots slotArray = (Field(Js::Var)*)scope;
                 uint slotArrayCount = static_cast<uint>(slotArray.GetCount());
 
                 //get the function body associated with the scope
@@ -716,7 +704,8 @@ namespace Js
     JavascriptArrayBuffer* AsmJsScriptFunction::GetAsmJsArrayBuffer() const
     {
 #ifdef ASMJS_PLAT
-        return *(JavascriptArrayBuffer**)(this->GetModuleEnvironment() + AsmJsModuleMemory::MemoryTableBeginOffset);
+        return (JavascriptArrayBuffer*)PointerValue(
+            *(this->GetModuleEnvironment() + AsmJsModuleMemory::MemoryTableBeginOffset));
 #else
         Assert(UNREACHED);
         return nullptr;
@@ -751,7 +740,8 @@ namespace Js
 
     WebAssemblyMemory* WasmScriptFunction::GetWebAssemblyMemory() const
     {
-        return *(WebAssemblyMemory**)(this->GetModuleEnvironment() + AsmJsModuleMemory::MemoryTableBeginOffset);
+        return (WebAssemblyMemory*)PointerValue(
+            *(this->GetModuleEnvironment() + AsmJsModuleMemory::MemoryTableBeginOffset));
     }
 #endif
 

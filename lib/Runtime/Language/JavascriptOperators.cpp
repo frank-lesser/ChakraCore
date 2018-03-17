@@ -278,39 +278,6 @@ namespace Js
 
     Var JavascriptOperators::Typeof(Var var, ScriptContext* scriptContext)
     {
-#ifdef ENABLE_SIMDJS
-        if (SIMDUtils::IsSimdType(var) && scriptContext->GetConfig()->IsSimdjsEnabled())
-        {
-            switch ((JavascriptOperators::GetTypeId(var)))
-            {
-            case TypeIds_SIMDFloat32x4:
-                return scriptContext->GetLibrary()->GetSIMDFloat32x4DisplayString();
-            //case TypeIds_SIMDFloat64x2:  //Type under review by the spec.
-            //    return scriptContext->GetLibrary()->GetSIMDFloat64x2DisplayString();
-            case TypeIds_SIMDInt32x4:
-                return scriptContext->GetLibrary()->GetSIMDInt32x4DisplayString();
-            case TypeIds_SIMDInt16x8:
-                return scriptContext->GetLibrary()->GetSIMDInt16x8DisplayString();
-            case TypeIds_SIMDInt8x16:
-                return scriptContext->GetLibrary()->GetSIMDInt8x16DisplayString();
-            case TypeIds_SIMDUint32x4:
-                return scriptContext->GetLibrary()->GetSIMDUint32x4DisplayString();
-            case TypeIds_SIMDUint16x8:
-                return scriptContext->GetLibrary()->GetSIMDUint16x8DisplayString();
-            case TypeIds_SIMDUint8x16:
-                return scriptContext->GetLibrary()->GetSIMDUint8x16DisplayString();
-            case TypeIds_SIMDBool32x4:
-                return scriptContext->GetLibrary()->GetSIMDBool32x4DisplayString();
-            case TypeIds_SIMDBool16x8:
-                return scriptContext->GetLibrary()->GetSIMDBool16x8DisplayString();
-            case TypeIds_SIMDBool8x16:
-                return scriptContext->GetLibrary()->GetSIMDBool8x16DisplayString();
-            default:
-                Assert(UNREACHED);
-            }
-        }
-#endif
-        //All remaining types.
         switch (JavascriptOperators::GetTypeId(var))
         {
         case TypeIds_Undefined:
@@ -580,12 +547,6 @@ namespace Js
                 return result;
             }
         }
-#ifdef ENABLE_SIMDJS
-        else if (SIMDUtils::IsSimdType(aLeft) && SIMDUtils::IsSimdType(aRight))
-        {
-            return StrictEqualSIMD(aLeft, aRight, requestContext);
-        }
-#endif
 
         if (RecyclableObject::UnsafeFromVar(aLeft)->Equals(aRight, &result, requestContext))
         {
@@ -632,13 +593,6 @@ namespace Js
         }
 
         double dblLeft, dblRight;
-
-#ifdef ENABLE_SIMDJS
-        if (SIMDUtils::IsSimdType(aLeft) || SIMDUtils::IsSimdType(aRight))
-        {
-            JavascriptError::ThrowTypeError(scriptContext, JSERR_SIMDConversion, _u("SIMD type"));
-        }
-#endif
         TypeId leftType = JavascriptOperators::GetTypeId(aLeft);
         TypeId rightType = JavascriptOperators::GetTypeId(aRight);
 
@@ -791,76 +745,6 @@ namespace Js
 
         return dblLeft < dblRight;
     }
-
-#ifdef ENABLE_SIMDJS
-    BOOL JavascriptOperators::StrictEqualSIMD(Var aLeft, Var aRight, ScriptContext* scriptContext)
-    {
-        TypeId leftTid  = JavascriptOperators::GetTypeId(aLeft);
-        TypeId rightTid = JavascriptOperators::GetTypeId(aRight);
-        bool result = false;
-
-
-        if (leftTid != rightTid)
-        {
-            return result;
-        }
-        SIMDValue leftSimd;
-        SIMDValue rightSimd;
-        switch (leftTid)
-        {
-        case TypeIds_SIMDBool8x16:
-            leftSimd = JavascriptSIMDBool8x16::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDBool8x16::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDBool16x8:
-            leftSimd = JavascriptSIMDBool16x8::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDBool16x8::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDBool32x4:
-            leftSimd = JavascriptSIMDBool32x4::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDBool32x4::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDInt8x16:
-            leftSimd = JavascriptSIMDInt8x16::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDInt8x16::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDInt16x8:
-            leftSimd = JavascriptSIMDInt16x8::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDInt16x8::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDInt32x4:
-            leftSimd = JavascriptSIMDInt32x4::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDInt32x4::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDUint8x16:
-            leftSimd = JavascriptSIMDUint8x16::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDUint8x16::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDUint16x8:
-            leftSimd = JavascriptSIMDUint16x8::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDUint16x8::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDUint32x4:
-            leftSimd = JavascriptSIMDUint32x4::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDUint32x4::FromVar(aRight)->GetValue();
-            return (leftSimd == rightSimd);
-        case TypeIds_SIMDFloat32x4:
-            leftSimd = JavascriptSIMDFloat32x4::FromVar(aLeft)->GetValue();
-            rightSimd = JavascriptSIMDFloat32x4::FromVar(aRight)->GetValue();
-            result = true;
-            for (int i = 0; i < 4; ++i)
-            {
-                Var laneVarLeft  = JavascriptNumber::ToVarWithCheck(leftSimd.f32[i], scriptContext);
-                Var laneVarRight = JavascriptNumber::ToVarWithCheck(rightSimd.f32[i], scriptContext);
-                result = result && JavascriptOperators::Equal(laneVarLeft, laneVarRight, scriptContext);
-            }
-            return result;
-        default:
-            Assert(UNREACHED);
-        }
-        return result;
-    }
-#endif
 
     BOOL JavascriptOperators::StrictEqualString(Var aLeft, Var aRight)
     {
@@ -1027,25 +911,9 @@ CommonNumber:
                 }
             }
             break;
-
-#ifdef ENABLE_SIMDJS
-        case TypeIds_SIMDBool8x16:
-        case TypeIds_SIMDInt8x16:
-        case TypeIds_SIMDUint8x16:
-        case TypeIds_SIMDBool16x8:
-        case TypeIds_SIMDInt16x8:
-        case TypeIds_SIMDUint16x8:
-        case TypeIds_SIMDBool32x4:
-        case TypeIds_SIMDInt32x4:
-        case TypeIds_SIMDUint32x4:
-        case TypeIds_SIMDFloat32x4:
-        case TypeIds_SIMDFloat64x2:
-            return StrictEqualSIMD(aLeft, aRight, requestContext);
-            break;
-#endif
         }
 
-        if (RecyclableObject::FromVar(aLeft)->CanHaveInterceptors())
+        if (RecyclableObject::FromVar(aLeft)->IsExternal())
         {
             BOOL result;
             if (RecyclableObject::FromVar(aLeft)->StrictEquals(aRight, &result, requestContext))
@@ -1057,7 +925,7 @@ CommonNumber:
             }
         }
 
-        if (!TaggedNumber::Is(aRight) && RecyclableObject::FromVar(aRight)->CanHaveInterceptors())
+        if (!TaggedNumber::Is(aRight) && RecyclableObject::FromVar(aRight)->IsExternal())
         {
             BOOL result;
             if (RecyclableObject::FromVar(aRight)->StrictEquals(aLeft, &result, requestContext))
@@ -2356,7 +2224,7 @@ CommonNumber:
             // in 9.1.9, step 5, we should return false if receiver is not object, and that will happen in default RecyclableObject operation anyhow.
             if (receiverObject->SetProperty(propertyKey, newValue, propertyOperationFlags, info))
             {
-                if (!JavascriptProxy::Is(receiver) && info->GetPropertyRecordUsageCache() && info->GetFlags() != InlineCacheSetterFlag && !object->CanHaveInterceptors())
+                if (!JavascriptProxy::Is(receiver) && info->GetPropertyRecordUsageCache() && info->GetFlags() != InlineCacheSetterFlag && !object->IsExternal())
                 {
                     CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), false, typeWithoutProperty, info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId(), info, requestContext);
 
@@ -2486,61 +2354,74 @@ CommonNumber:
         return SetProperty_Internal<false>(instance, instance, true, propertyId, newValue, info, requestContext, propertyOperationFlags);
     }
 
-    template <bool unscopables>
-    BOOL JavascriptOperators::SetProperty_Internal(Var receiver, RecyclableObject* object, const bool isRoot, PropertyId propertyId, Var newValue, PropertyValueInfo * info, ScriptContext* requestContext, PropertyOperationFlags propertyOperationFlags)
+    // Returns true if a result was written.
+    bool JavascriptOperators::SetAccessorOrNonWritableProperty(
+        Var receiver,
+        RecyclableObject* object,
+        PropertyId propertyId,
+        Var newValue,
+        PropertyValueInfo * info,
+        ScriptContext* requestContext,
+        PropertyOperationFlags propertyOperationFlags,
+        bool isRoot,
+        bool allowUndecInConsoleScope,
+        BOOL *result)
     {
-        if (receiver)
+        *result = FALSE;
+        Var setterValueOrProxy = nullptr;
+        DescriptorFlags flags = None;
+        if ((isRoot && JavascriptOperators::CheckPrototypesForAccessorOrNonWritableRootProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext)) ||
+            (!isRoot && JavascriptOperators::CheckPrototypesForAccessorOrNonWritableProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext)))
         {
-            Assert(!TaggedNumber::Is(receiver));
-            Var setterValueOrProxy = nullptr;
-            DescriptorFlags flags = None;
-            if ((isRoot && JavascriptOperators::CheckPrototypesForAccessorOrNonWritableRootProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext)) ||
-                (!isRoot && JavascriptOperators::CheckPrototypesForAccessorOrNonWritableProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext)))
+            if ((flags & Accessor) == Accessor)
             {
-                if ((flags & Accessor) == Accessor)
+                if (JavascriptError::ThrowIfStrictModeUndefinedSetter(propertyOperationFlags, setterValueOrProxy, requestContext) ||
+                    JavascriptError::ThrowIfNotExtensibleUndefinedSetter(propertyOperationFlags, setterValueOrProxy, requestContext))
                 {
-                    if (JavascriptError::ThrowIfStrictModeUndefinedSetter(propertyOperationFlags, setterValueOrProxy, requestContext) ||
-                        JavascriptError::ThrowIfNotExtensibleUndefinedSetter(propertyOperationFlags, setterValueOrProxy, requestContext))
-                    {
-                        return TRUE;
-                    }
-                    if (setterValueOrProxy)
-                    {
-                        RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
-                        Assert(!info || info->GetFlags() == InlineCacheSetterFlag || info->GetPropertyIndex() == Constants::NoSlot);
+                    *result = TRUE;
+                    return true;
+                }
+                if (setterValueOrProxy)
+                {
+                    RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
+                    Assert(!info || info->GetFlags() == InlineCacheSetterFlag || info->GetPropertyIndex() == Constants::NoSlot);
 
-                        if (WithScopeObject::Is(receiver))
-                        {
-                            receiver = (RecyclableObject::FromVar(receiver))->GetThisObjectOrUnWrap();
-                        }
-                        else
-                        {
-                            CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), isRoot, object->GetType(), propertyId, info, requestContext);
-                        }
+                    if (WithScopeObject::Is(receiver))
+                    {
+                        receiver = (RecyclableObject::FromVar(receiver))->GetThisObjectOrUnWrap();
+                    }
+                    else
+                    {
+                        CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), isRoot, object->GetType(), propertyId, info, requestContext);
+                    }
 #ifdef ENABLE_MUTATION_BREAKPOINT
-                        if (MutationBreakpoint::IsFeatureEnabled(requestContext))
-                        {
-                            MutationBreakpoint::HandleSetProperty(requestContext, object, propertyId, newValue);
-                        }
-#endif
-                        JavascriptOperators::CallSetter(func, receiver, newValue, requestContext);
+                    if (MutationBreakpoint::IsFeatureEnabled(requestContext))
+                    {
+                        MutationBreakpoint::HandleSetProperty(requestContext, object, propertyId, newValue);
                     }
-                    return TRUE;
+#endif
+                    JavascriptOperators::CallSetter(func, receiver, newValue, requestContext);
                 }
-                else if ((flags & Proxy) == Proxy)
-                {
-                    Assert(JavascriptProxy::Is(setterValueOrProxy));
-                    JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
-                    // We can't cache the property at this time. both target and handler can be changed outside of the proxy, so the inline cache needs to be
-                    // invalidate when target, handler, or handler prototype has changed. We don't have a way to achieve this yet.
-                    PropertyValueInfo::SetNoCache(info, proxy);
-                    PropertyValueInfo::DisablePrototypeCache(info, proxy); // We can't cache prototype property either
+                *result = TRUE;
+                return true;
+            }
+            else if ((flags & Proxy) == Proxy)
+            {
+                Assert(JavascriptProxy::Is(setterValueOrProxy));
+                JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
+                // We can't cache the property at this time. both target and handler can be changed outside of the proxy, so the inline cache needs to be
+                // invalidate when target, handler, or handler prototype has changed. We don't have a way to achieve this yet.
+                PropertyValueInfo::SetNoCache(info, proxy);
+                PropertyValueInfo::DisablePrototypeCache(info, proxy); // We can't cache prototype property either
 
-                    return proxy->SetPropertyTrap(receiver, JavascriptProxy::SetPropertyTrapKind::SetPropertyKind, propertyId, newValue, requestContext);
-                }
-                else
+                *result = proxy->SetPropertyTrap(receiver, JavascriptProxy::SetPropertyTrapKind::SetPropertyKind, propertyId, newValue, requestContext);
+                return true;
+            }
+            else
+            {
+                Assert((flags & Data) == Data && (flags & Writable) == None);
+                if (!allowUndecInConsoleScope)
                 {
-                    Assert((flags & Data) == Data && (flags & Writable) == None);
                     if (flags & Const)
                     {
                         JavascriptError::ThrowTypeError(requestContext, ERRAssignmentToConst);
@@ -2548,70 +2429,89 @@ CommonNumber:
 
                     JavascriptError::ThrowCantAssign(propertyOperationFlags, requestContext, propertyId);
                     JavascriptError::ThrowCantAssignIfStrictMode(propertyOperationFlags, requestContext);
-                    return FALSE;
+
+                    *result = FALSE;
+                    return true;
                 }
             }
-            else if (!JavascriptOperators::IsObject(receiver))
-            {
-                JavascriptError::ThrowCantAssignIfStrictMode(propertyOperationFlags, requestContext);
-                return FALSE;
-            }
+        }
+        return false;
+    }
+
+     template <bool unscopables>
+    BOOL JavascriptOperators::SetProperty_Internal(Var receiver, RecyclableObject* object, const bool isRoot, PropertyId propertyId, Var newValue, PropertyValueInfo * info, ScriptContext* requestContext, PropertyOperationFlags propertyOperationFlags)
+    {
+        if (receiver == nullptr)
+        {
+            return FALSE;
+        }
+
+        Assert(!TaggedNumber::Is(receiver));
+        BOOL setAccessorResult = FALSE;
+        if (SetAccessorOrNonWritableProperty(receiver, object, propertyId, newValue, info, requestContext, propertyOperationFlags, isRoot, false, &setAccessorResult))
+        {
+            return setAccessorResult;
+        }
+        else if (!JavascriptOperators::IsObject(receiver))
+        {
+            JavascriptError::ThrowCantAssignIfStrictMode(propertyOperationFlags, requestContext);
+            return FALSE;
+        }
 
 #ifdef ENABLE_MUTATION_BREAKPOINT
-            // Break on mutation if needed
-            bool doNotUpdateCacheForMbp = MutationBreakpoint::IsFeatureEnabled(requestContext) ?
-                MutationBreakpoint::HandleSetProperty(requestContext, object, propertyId, newValue) : false;
+        // Break on mutation if needed
+        bool doNotUpdateCacheForMbp = MutationBreakpoint::IsFeatureEnabled(requestContext) ?
+            MutationBreakpoint::HandleSetProperty(requestContext, object, propertyId, newValue) : false;
 #endif
 
-            // Get the original type before setting the property
-            Type *typeWithoutProperty = object->GetType();
-            BOOL didSetProperty = false;
-            if (isRoot)
-            {
-                AssertMsg(JavascriptOperators::GetTypeId(receiver) == TypeIds_GlobalObject
-                    || JavascriptOperators::GetTypeId(receiver) == TypeIds_ModuleRoot,
-                    "Root must be a global object!");
+        // Get the original type before setting the property
+        Type *typeWithoutProperty = object->GetType();
+        BOOL didSetProperty = false;
+        if (isRoot)
+        {
+            AssertMsg(JavascriptOperators::GetTypeId(receiver) == TypeIds_GlobalObject
+                || JavascriptOperators::GetTypeId(receiver) == TypeIds_ModuleRoot,
+                "Root must be a global object!");
 
-                RootObjectBase* rootObject = static_cast<RootObjectBase*>(receiver);
-                didSetProperty = rootObject->SetRootProperty(propertyId, newValue, propertyOperationFlags, info);
-            }
-            else
+            RootObjectBase* rootObject = static_cast<RootObjectBase*>(receiver);
+            didSetProperty = rootObject->SetRootProperty(propertyId, newValue, propertyOperationFlags, info);
+        }
+        else
+        {
+            RecyclableObject* instanceObject = RecyclableObject::FromVar(receiver);
+            while (!JavascriptOperators::IsNull(instanceObject))
             {
-                RecyclableObject* instanceObject = RecyclableObject::FromVar(receiver);
-                while (!JavascriptOperators::IsNull(instanceObject))
+                if (unscopables && JavascriptOperators::IsPropertyUnscopable(instanceObject, propertyId))
                 {
-                    if (unscopables && JavascriptOperators::IsPropertyUnscopable(instanceObject, propertyId))
+                    break;
+                }
+                else
+                {
+                    didSetProperty = instanceObject->SetProperty(propertyId, newValue, propertyOperationFlags, info);
+                    if (didSetProperty || !unscopables)
                     {
                         break;
                     }
-                    else
-                    {
-                        didSetProperty = instanceObject->SetProperty(propertyId, newValue, propertyOperationFlags, info);
-                        if (didSetProperty || !unscopables)
-                        {
-                            break;
-                        }
-                    }
-                    instanceObject = JavascriptOperators::GetPrototypeNoTrap(instanceObject);
                 }
+                instanceObject = JavascriptOperators::GetPrototypeNoTrap(instanceObject);
             }
+        }
 
-            if (didSetProperty)
-            {
-                bool updateCache = true;
+        if (didSetProperty)
+        {
+            bool updateCache = true;
 #ifdef ENABLE_MUTATION_BREAKPOINT
-                updateCache = updateCache && !doNotUpdateCacheForMbp;
+            updateCache = updateCache && !doNotUpdateCacheForMbp;
 #endif
 
-                if (updateCache)
+            if (updateCache)
+            {
+                if (!JavascriptProxy::Is(receiver))
                 {
-                    if (!JavascriptProxy::Is(receiver))
-                    {
-                        CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), isRoot, typeWithoutProperty, propertyId, info, requestContext);
-                    }
+                    CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), isRoot, typeWithoutProperty, propertyId, info, requestContext);
                 }
-                return TRUE;
             }
+            return TRUE;
         }
 
         return FALSE;
@@ -2673,7 +2573,7 @@ CommonNumber:
         {
             thisInstance = instance;
         }
-        TypeId typeId = JavascriptOperators::GetTypeId(thisInstance);
+        TypeId typeId = JavascriptOperators::GetTypeId(instance);
 
         if (JavascriptOperators::IsUndefinedOrNullType(typeId))
         {
@@ -2692,7 +2592,7 @@ CommonNumber:
             return TRUE;
         }
 
-        if (!TaggedNumber::Is(thisInstance))
+        if (!TaggedNumber::Is(instance))
         {
             return JavascriptOperators::SetProperty(RecyclableObject::UnsafeFromVar(thisInstance), RecyclableObject::UnsafeFromVar(instance), propertyId, newValue, info, scriptContext, flags);
         }
@@ -2939,50 +2839,10 @@ CommonNumber:
             // is true, this must be a normal property.
             // TODO: merge OP_HasProperty and GetSetter in one pass if there is perf problem. In fastDOM we have quite
             // a lot of setters so separating the two might be actually faster.
-            Var setterValueOrProxy = nullptr;
-            DescriptorFlags flags = None;
-            if (JavascriptOperators::CheckPrototypesForAccessorOrNonWritableProperty(object, propertyId, &setterValueOrProxy, &flags, &info, scriptContext))
+            BOOL setAccessorResult = FALSE;
+            if (SetAccessorOrNonWritableProperty(object, object, propertyId, newValue, &info, scriptContext, propertyOperationFlags, false, allowUndecInConsoleScope, &setAccessorResult))
             {
-                if ((flags & Accessor) == Accessor)
-                {
-                    if (setterValueOrProxy)
-                    {
-                        JavascriptFunction* func = (JavascriptFunction*)setterValueOrProxy;
-                        Assert(info.GetFlags() == InlineCacheSetterFlag || info.GetPropertyIndex() == Constants::NoSlot);
-                        CacheOperators::CachePropertyWrite(object, false, type, propertyId, &info, scriptContext);
-                        JavascriptOperators::CallSetter(func, object, newValue, scriptContext);
-                    }
-
-                    Assert(!isLexicalThisSlotSymbol);
-                    return;
-                }
-                else if ((flags & Proxy) == Proxy)
-                {
-                    Assert(JavascriptProxy::Is(setterValueOrProxy));
-                    JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
-                    auto fn = [&](RecyclableObject* target) -> BOOL {
-                        return JavascriptOperators::SetProperty(object, target, propertyId, newValue, scriptContext, propertyOperationFlags);
-                    };
-                    // We can't cache the property at this time. both target and handler can be changed outside of the proxy, so the inline cache needs to be
-                    // invalidate when target, handler, or handler prototype has changed. We don't have a way to achieve this yet.
-                    PropertyValueInfo::SetNoCache(&info, proxy);
-                    PropertyValueInfo::DisablePrototypeCache(&info, proxy); // We can't cache prototype property either
-                    proxy->SetPropertyTrap(object, JavascriptProxy::SetPropertyTrapKind::SetPropertyKind, propertyId, newValue, scriptContext);
-                }
-                else
-                {
-                    Assert((flags & Data) == Data && (flags & Writable) == None);
-                    if (!allowUndecInConsoleScope)
-                    {
-                        if (flags & Const)
-                        {
-                            JavascriptError::ThrowTypeError(scriptContext, ERRAssignmentToConst);
-                        }
-
-                        Assert(!isLexicalThisSlotSymbol);
-                        return;
-                    }
-                }
+                return;
             }
             else if (!JavascriptOperators::IsObject(object))
             {
@@ -3821,7 +3681,7 @@ CommonNumber:
         if (FALSE == JavascriptOperators::GetPropertyObject(instance, scriptContext, &object))
         {
             JavascriptError::ThrowTypeError(scriptContext, JSERR_Property_CannotGet_NullOrUndefined,
-                JavascriptString::FromVar(index)->GetSz());
+                GetPropertyDisplayNameForError(index, scriptContext));
         }
 
         PropertyRecord const * propertyRecord = propertyRecordUsageCache->GetPropertyRecord();
@@ -4958,6 +4818,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #endif
         }
 
+        Assert(result || !(propertyOperationFlags & (PropertyOperation_StrictMode | PropertyOperation_ThrowOnDeleteIfNotConfig)));
         return scriptContext->GetLibrary()->CreateBoolean(result);
     }
 
@@ -5123,9 +4984,6 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             case TypeIds_Error:
             case TypeIds_BooleanObject:
             case TypeIds_NumberObject:
-#ifdef ENABLE_SIMDJS
-            case TypeIds_SIMDObject:
-#endif
             case TypeIds_StringObject:
             case TypeIds_Symbol:
             case TypeIds_SymbolObject:
@@ -5513,7 +5371,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         if (firstFuncSlot != Constants::NoProperty)
         {
-            if (firstVarSlot == Constants::NoProperty)
+            if (firstVarSlot == Constants::NoProperty || firstVarSlot < firstFuncSlot)
             {
                 lastFuncSlot = propIds->count - 1;
             }
@@ -5581,8 +5439,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::OP_InvalidateCachedScope(void* varEnv, int32 envIndex)
     {
         FrameDisplay *disp = (FrameDisplay*)varEnv;
-        RecyclableObject *objScope = RecyclableObject::FromVar(disp->GetItem(envIndex));
-        objScope->InvalidateCachedScope();
+        Var item = disp->GetItem(envIndex);
+        if (item != nullptr)
+        {
+            Assert(ActivationObjectEx::Is(item));
+            RecyclableObject *objScope = RecyclableObject::FromVar(item);
+            objScope->InvalidateCachedScope();
+        }
     }
 
     void JavascriptOperators::OP_InitCachedFuncs(Var varScope, FrameDisplay *pDisplay, const FuncInfoArray *info, ScriptContext *scriptContext)
@@ -6877,7 +6740,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     Var JavascriptOperators::FillScopeObject(JavascriptFunction *funcCallee, uint32 actualsCount, uint32 formalsCount, Var frameObj, Var * paramAddr,
         Js::PropertyIdArray *propIds, HeapArgumentsObject * argsObj, ScriptContext * scriptContext, bool nonSimpleParamList, bool useCachedScope)
     {
-        Assert(frameObj);
+        Assert(formalsCount == 0 || frameObj != nullptr);
 
         // Transfer formal arguments (that were actually passed) from their ArgIn slots to the local frame object.
         uint32 i;
@@ -7007,7 +6870,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         Assert(size > ScopeSlots::FirstSlotIndex); // Should never see empty slot array
         Field(Var)* slotArray = RecyclerNewArray(scriptContext->GetRecycler(), Field(Var), size); // last initialized slot contains reference to array of propertyIds, correspondent to objects in previous slots
         uint count = size - ScopeSlots::FirstSlotIndex;
-        ScopeSlots slots((Js::Var*)slotArray);
+        ScopeSlots slots(slotArray);
         slots.SetCount(count);
         AssertMsg(!FunctionBody::Is(scope), "Scope should only be FunctionInfo or DebuggerScope, not FunctionBody");
         slots.SetScopeMetadata(scope);
@@ -7034,7 +6897,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     Field(Var)* JavascriptOperators::OP_CloneScopeSlots(Field(Var) *slotArray, ScriptContext *scriptContext)
     {
-        ScopeSlots slots((Js::Var*)slotArray);
+        ScopeSlots slots(slotArray);
         uint size = ScopeSlots::FirstSlotIndex + static_cast<uint>(slots.GetCount());
 
         Field(Var)* slotArrayClone = RecyclerNewArray(scriptContext->GetRecycler(), Field(Var), size);
@@ -7124,11 +6987,6 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
                     ctorProtoObj->EnsureProperty(Js::PropertyIds::constructor);
                     ctorProtoObj->SetEnumerable(Js::PropertyIds::constructor, FALSE);
-
-                    if (ScriptFunctionBase::Is(constructor))
-                    {
-                        ScriptFunctionBase::FromVar(constructor)->GetFunctionInfo()->SetBaseConstructorKind();
-                    }
 
                     break;
                 }
@@ -8314,7 +8172,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                         // It is valid for some objects to not-support getters and setters, specifically, for projection of an ABI method
                         // (CustomExternalObject => MapWithStringKey) which SetAccessors returns VBSErr_ActionNotSupported.
                         // But for non-external objects SetAccessors should succeed.
-                        Assert(isSetAccessorsSuccess || obj->CanHaveInterceptors());
+                        Assert(isSetAccessorsSuccess || obj->IsExternal());
 
                         // If SetAccessors failed, the property wasn't created, so no need to change the attributes.
                         if (isSetAccessorsSuccess)
@@ -8392,7 +8250,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                         // It is valid for some objects to not-support getters and setters, specifically, for projection of an ABI method
                         // (CustomExternalObject => MapWithStringKey) which SetAccessors returns VBSErr_ActionNotSupported.
                         // But for non-external objects SetAccessors should succeed.
-                        Assert(isSetAccessorsSuccess || obj->CanHaveInterceptors());
+                        Assert(isSetAccessorsSuccess || obj->IsExternal());
 
                         if (isSetAccessorsSuccess)
                         {

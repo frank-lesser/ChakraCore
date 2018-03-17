@@ -303,15 +303,46 @@ void ConfigParser::ParseRegistryKey(HKEY hk, CmdLineArgsParser &parser)
             Js::Configuration::Global.flags.Asmjs = true;
         }
     }
+
+    // Spectre mitigation feature control
+    // This setting allows enabling\disabling spectre mitigations
+    //     0 - Disable Spectre mitigations
+    //     1 - Enable Spectre mitigations - Also default behavior
+    dwValue = 0;
+    dwSize = sizeof(dwValue);
+    if (NOERROR == RegGetValueW(hk, nullptr, _u("MitigateSpectre"), RRF_RT_DWORD, nullptr, (LPBYTE)&dwValue, &dwSize))
+    {
+        Js::ConfigFlagsTable &configFlags = Js::Configuration::Global.flags;
+        configFlags.Enable(Js::MitigateSpectreFlag);
+        if (dwValue == 0)
+        {
+            configFlags.SetAsBoolean(Js::MitigateSpectreFlag, false);
+        }
+        else if (dwValue == 1)
+        {
+            configFlags.SetAsBoolean(Js::MitigateSpectreFlag, true);
+        }
+    }
+
 #endif // _WIN32
 }
 
-
-void ConfigParser::ParseConfig(HANDLE hmod, CmdLineArgsParser &parser)
+void ConfigParser::ParseConfig(HANDLE hmod, CmdLineArgsParser &parser, const char16* strCustomConfigFile)
 {
 #if defined(ENABLE_DEBUG_CONFIG_OPTIONS) && CONFIG_PARSE_CONFIG_FILE
-    Assert(!_hasReadConfig);
+    Assert(!_hasReadConfig || strCustomConfigFile != nullptr);
     _hasReadConfig = true;
+
+    const char16* configFileName = strCustomConfigFile;
+    const char16* configFileExt = _u(""); /* in the custom config case,
+                                             ext is expected to be passed
+                                             in as part of the filename */
+
+    if (configFileName == nullptr)
+    {
+        configFileName = _configFileName;
+        configFileExt = _u(".config");
+    }
 
     int err = 0;
     char16 modulename[_MAX_PATH];
@@ -322,7 +353,7 @@ void ConfigParser::ParseConfig(HANDLE hmod, CmdLineArgsParser &parser)
     char16 dir[_MAX_DIR];
 
     _wsplitpath_s(modulename, drive, _MAX_DRIVE, dir, _MAX_DIR, nullptr, 0, nullptr, 0);
-    _wmakepath_s(filename, drive, dir, _configFileName, _u(".config"));
+    _wmakepath_s(filename, drive, dir, configFileName, configFileExt);
 
     FILE* configFile;
 #ifdef _WIN32
@@ -330,7 +361,7 @@ void ConfigParser::ParseConfig(HANDLE hmod, CmdLineArgsParser &parser)
     {
         WCHAR configFileFullName[MAX_PATH];
 
-        StringCchPrintf(configFileFullName, MAX_PATH, _u("%s.config"), _configFileName);
+        StringCchPrintf(configFileFullName, MAX_PATH, _u("%s%s"), configFileName, configFileExt);
 
         // try the one in the current working directory (Desktop)
         if (_wfullpath(filename, configFileFullName, _MAX_PATH) == nullptr)
@@ -360,7 +391,7 @@ void ConfigParser::ParseConfig(HANDLE hmod, CmdLineArgsParser &parser)
         
         WCHAR configFileFullName[MAX_PATH];
 
-        StringCchPrintf(configFileFullName, MAX_PATH, _u("%s/%s.config"), homeDir, _configFileName);
+        StringCchPrintf(configFileFullName, MAX_PATH, _u("%s/%s%s"), homeDir, configFileName, configFileExt);
         if (_wfopen_s(&configFile, configFileFullName, _u("r")) != 0 || configFile == nullptr)
         {
             return;
@@ -393,15 +424,17 @@ void ConfigParser::ParseConfig(HANDLE hmod, CmdLineArgsParser &parser)
     {
         CharType curChar = ReadChar(configFile);
 
-        if (curChar == EndChar || isspace(curChar))
+        if (curChar == EndChar || isspace(curChar) || curChar == 0)
         {
             configBuffer[index] = 0;
-            if ((err = parser.Parse(configBuffer)) != 0)
+
+            // Parse only if there's something in configBuffer
+            if (index > 0 && (err = parser.Parse(configBuffer)) != 0)
             {
                 break;
             }
 
-            while(curChar != EndChar && isspace(curChar))
+            while(curChar != EndChar && (isspace(curChar) || curChar == 0))
             {
                 curChar = ReadChar(configFile);
             }
@@ -600,8 +633,7 @@ HRESULT ConfigParser::SetOutputFile(const WCHAR* outputFile, const WCHAR* openMo
         _wcsicmp(fileName, _u("ByteCodeGenerator")) == 0 ||
         _wcsicmp(fileName, _u("spartan")) == 0 ||
         _wcsicmp(fileName, _u("spartan_edge")) == 0 ||
-        _wcsicmp(fileName, _u("MicrosoftEdge")) == 0 ||
-        _wcsicmp(fileName, _u("MicrosoftEdgeCP")) == 0)
+        _wcsnicmp(fileName, _u("MicrosoftEdge"), wcslen(_u("MicrosoftEdge"))) == 0)
     {
 
         // we need to output to %temp% directory in wwa. we don't have permission otherwise.

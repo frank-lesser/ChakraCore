@@ -302,14 +302,7 @@ RT_ERROR_MSG(JSERROR_SetPrototypeOf, 5616, "Failed to set prototype", "Failed to
 RT_ERROR_MSG(JSERR_ObjectIsNotInitialized, 5617, "%s: Object internal state is not initialized", "Object internal state is not initialized", kjstTypeError, 0)
 
 RT_ERROR_MSG(JSERR_GeneratorAlreadyExecuting, 5618, "%s: Cannot execute generator function because it is currently executing", "", kjstTypeError, 0)
-
-RT_ERROR_MSG(JSERR_This_NeedSimd, 5620, "%s: 'this' is not a SIMD type", "SIMD type expected", kjstTypeError, 0)
-RT_ERROR_MSG(JSERR_SimdFloat32x4TypeMismatch, 5621, "SIMD.Float32x4.%s: Invalid SIMD types for operation", "Expecting Float32x4 values", kjstTypeError, 0)
-RT_ERROR_MSG(JSERR_SimdFloat64x2TypeMismatch, 5622, "SIMD.Float64x2.%s: Invalid SIMD types for operation", "Expecting Float64x2 values", kjstTypeError, 0)
-RT_ERROR_MSG(JSERR_SimdInt32x4TypeMismatch, 5623, "SIMD.Int32x4.%s: Invalid SIMD types for operation", "Expecting Int32x4 values", kjstTypeError, 0)
-RT_ERROR_MSG(JSERR_SimdInt8x16TypeMismatch, 5624, "SIMD.Int8x16.%s: Invalid SIMD types for operation", "Expecting Int8x16 values", kjstTypeError, 0)
-RT_ERROR_MSG(JSERR_SimdLaneRangeError, 5625, "Lane index is out of range for this SIMD type", "Lane index is out of range", kjstRangeError, 0)
-RT_ERROR_MSG(JSERR_SimdInvalidArgType, 5626, "%s: Invalid argument type for SIMD operation", "Invalid argument type for SIMD operation", kjstTypeError, 0)
+// 5619-5626 Unused
 RT_ERROR_MSG(JSERR_NeedConstructor, 5627, "'%s' is not a constructor", "Constructor expected", kjstTypeError, 0)
 
 RT_ERROR_MSG(VBSERR_CantDisplayDate, 32812, "", "The specified date is not available in the current locale's calendar", kjstRangeError, 0)
@@ -370,6 +363,8 @@ RT_ERROR_MSG(JSERR_OutOfBoundString, 5670, "", "String length is out of bound", 
 RT_ERROR_MSG(JSERR_InvalidIterableObject, 5671, "%s : Invalid iterable object", "Invalid iterable object", kjstTypeError, 0)
 RT_ERROR_MSG(JSERR_InvalidIteratorObject, 5672, "%s : Invalid iterator object", "Invalid iterator object", kjstTypeError, 0)
 RT_ERROR_MSG(JSERR_NoAccessors, 5673, "Invalid property descriptor: accessors not supported on this object", "", kjstTypeError, 0)
+RT_ERROR_MSG(JSERR_RegExpInvalidEscape, 5674, "", "Invalid regular expression: invalid escape in unicode pattern", kjstSyntaxError, 0)
+RT_ERROR_MSG(JSERR_RegExpTooManyCapturingGroups, 5675, "", "Regular expression cannot have more than 32,767 capturing groups", kjstRangeError, 0)
 
 //Host errors
 RT_ERROR_MSG(JSERR_HostMaybeMissingPromiseContinuationCallback, 5700, "", "Host may not have set any promise continuation callback. Promises may not be executed.", kjstTypeError, 0)
@@ -409,6 +404,7 @@ RT_ERROR_MSG(WASMERR_InvalidImportModule, 7026, "Import module '%s' is invalid",
 RT_ERROR_MSG(WASMERR_InvalidImport, 7027, "Import '%s.%s' is invalid. Expected type %s", "Import is invalid", kjstTypeError, 0)
 RT_ERROR_MSG(WASMERR_InvalidInitialSize, 7028, "Imported %s initial size (%u) is smaller than declared (%u)", "Invalid initial size", kjstWebAssemblyLinkError, 0)
 RT_ERROR_MSG(WASMERR_InvalidMaximumSize, 7029, "Imported %s maximum size (%u) is larger than declared (%u)", "Invalid initial size", kjstWebAssemblyLinkError, 0)
+RT_ERROR_MSG(WASMERR_UnalignedAtomicAccess, 7030, "", "Atomic memory access is unaligned", kjstWebAssemblyRuntimeError, 0)
 
 // Wabt Errors
 RT_ERROR_MSG(WABTERR_WabtError, 7200, "%s", "Wabt Error.", kjstTypeError, 0)

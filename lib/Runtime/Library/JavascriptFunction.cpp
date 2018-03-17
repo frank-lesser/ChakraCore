@@ -299,7 +299,7 @@ namespace Js
                     globalBody->GetUtf8SourceInfo()->SetSourceInfoForDebugReplay_TTD(bodyIdCtr);
                 }
 
-                if(scriptContext->ShouldPerformDebuggerAction())
+                if(scriptContext->ShouldPerformReplayDebuggerAction())
                 {
                     scriptContext->GetThreadContext()->TTDExecutionInfo->ProcessScriptLoad(scriptContext, bodyIdCtr, globalBody, globalBody->GetUtf8SourceInfo(), nullptr);
                 }
@@ -878,7 +878,7 @@ namespace Js
         if (overridingNewTarget != nullptr)
         {
             ScriptFunction * scriptFunctionObj = JavascriptOperators::TryFromVar<ScriptFunction>(functionObj);
-            ushort newCount = args.Info.Count;
+            uint newCount = args.Info.Count;
             if (scriptFunctionObj && scriptFunctionObj->GetFunctionInfo()->IsClassConstructor())
             {
                 thisAlreadySpecified = true;
@@ -1097,7 +1097,7 @@ namespace Js
         uint32 actualLength = CallInfo::GetLargeArgCountWithExtraArgs(args.Info.Flags, spreadSize);
 
         // Allocate (if needed) space for the expanded arguments.
-        Arguments outArgs(CallInfo(args.Info.Flags, spreadSize, /* unUsedBool */ false), nullptr);
+        Arguments outArgs(CallInfo(args.Info.Flags, spreadSize), nullptr);
         Var stackArgs[STACK_ARGS_ALLOCA_THRESHOLD];
         size_t outArgsSize = 0;
         if (actualLength > STACK_ARGS_ALLOCA_THRESHOLD)
@@ -1163,13 +1163,14 @@ namespace Js
         __asm
         {
             mov savedEsp, esp;
-            mov eax, argsSize;
-            cmp eax, 0x1000;
+            mov ecx, argsSize;
+            cmp ecx, 0x1000;
             jl allocate_stack;
             // Use _chkstk to probe each page when using more then a page size
-            call _chkstk;
-allocate_stack:
-            sub esp, eax;
+            mov eax, ecx;
+            call _chkstk; // _chkstk saves/restores ecx
+        allocate_stack:
+            sub esp, ecx;
 
             mov edi, esp;
             mov esi, argv;
@@ -2323,6 +2324,14 @@ LABEL1:
             {
                 return false;
             }
+
+            if (isWasmOnly)
+            {
+                // It is possible to have an A/V on other instructions then load/store (ie: xchg for atomics)
+                // Which we don't decode at this time
+                // We've confirmed the A/V occurred in the Virtual Memory, so just throw now
+                JavascriptError::ThrowWebAssemblyRuntimeError(func->GetScriptContext(), WASMERR_ArrayIndexOutOfRange);
+            }
         }
         else
         {
@@ -2360,11 +2369,6 @@ LABEL1:
         if (!instrData.bufferValue)
         {
             return false;
-        }
-
-        if (isWasmOnly)
-        {
-            JavascriptError::ThrowWebAssemblyRuntimeError(func->GetScriptContext(), WASMERR_ArrayIndexOutOfRange);
         }
 
         // SIMD loads/stores do bounds checks.
@@ -2463,11 +2467,14 @@ LABEL1:
         return !(
             this->functionInfo->IsClassMethod() ||
             this->functionInfo->IsClassConstructor() ||
+            this->functionInfo->IsMethod() ||
             this->functionInfo->IsLambda() ||
             this->functionInfo->IsAsync() ||
             this->IsGeneratorFunction() ||
-            this->IsBoundFunction() ||
-            this->IsStrictMode()
+            this->IsStrictMode() ||
+            !this->IsScriptFunction() || // -> (BoundFunction || RuntimeFunction) // (RuntimeFunction = Native-defined built-in library functions)
+            this->IsLibraryCode() || // JS-defined built-in library functions
+            this == this->GetLibrary()->GetFunctionPrototype() // the intrinsic %FunctionPrototype% (original value of Function.prototype)
             );
     }
 
@@ -2741,8 +2748,8 @@ LABEL1:
                     uint length = (uint)pFrameDisplay->GetLength();
                     for (uint i = 0; i < length; i++)
                     {
-                        void * scope = pFrameDisplay->GetItem(i);
-                        if (!Js::ScopeSlots::Is(scope) && Js::ActivationObjectEx::Is(scope))
+                        Var scope = pFrameDisplay->GetItem(i);
+                        if (scope && !Js::ScopeSlots::Is(scope) && Js::ActivationObjectEx::Is(scope))
                         {
                             Js::ActivationObjectEx::FromVar(scope)->InvalidateCachedScope();
                         }
@@ -2868,7 +2875,6 @@ LABEL1:
         // and foo.arguments[n] will be maintained after this object is returned.
 
         JavascriptStackWalker walker(scriptContext);
-        walker.SetDeepCopyForArguments();
 
         if (walker.WalkToTarget(this))
         {
@@ -2879,12 +2885,13 @@ LABEL1:
             else
             {
                 Var args = nullptr;
-                //Create a copy of the arguments and return it.
+                // Since the arguments will be returned back to script, box the arguments to ensure a copy of
+                // them with their own lifetime (as well as move any from the stack to the heap).
 
                 const CallInfo callInfo = walker.GetCallInfo();
                 args = JavascriptOperators::LoadHeapArguments(
                     this, callInfo.Count - 1,
-                    walker.GetJavascriptArgs(),
+                    walker.GetJavascriptArgs(true /* boxArgsAndDeepCopy */),
                     scriptContext->GetLibrary()->GetNull(),
                     scriptContext->GetLibrary()->GetNull(),
                     scriptContext,
@@ -3074,6 +3081,10 @@ LABEL1:
         {
             InvalidateConstructorCacheOnPrototypeChange();
             this->GetScriptContext()->GetThreadContext()->InvalidateIsInstInlineCachesForFunction(this);
+            if (propertyId == PropertyIds::prototype)
+            {
+                this->GetTypeHandler()->ClearHasKnownSlot0();
+            }
         }
 
         return result;
@@ -3104,6 +3115,10 @@ LABEL1:
         {
             InvalidateConstructorCacheOnPrototypeChange();
             this->GetScriptContext()->GetThreadContext()->InvalidateIsInstInlineCachesForFunction(this);
+            if (BuiltInPropertyRecords::prototype.Equals(propertyNameString))
+            {
+                this->GetTypeHandler()->ClearHasKnownSlot0();
+            }
         }
 
         return result;

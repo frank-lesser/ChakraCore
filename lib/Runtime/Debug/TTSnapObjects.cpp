@@ -15,7 +15,7 @@ namespace TTD
     {
         void ExtractCompoundObject(NSSnapObjects::SnapObject* sobj, Js::RecyclableObject* obj, bool isWellKnown, const TTDIdentifierDictionary<TTD_PTR_ID, NSSnapType::SnapType*>& idToTypeMap, SlabAllocator& alloc)
         {
-            TTDAssert(!obj->CanHaveInterceptors(), "We are not prepared for custom external objects yet");
+            TTDAssert(!obj->IsExternal(), "We are not prepared for custom external objects yet");
 
             sobj->ObjectPtrId = TTD_CONVERT_VAR_TO_PTR_ID(obj);
             sobj->SnapObjectTag = obj->GetSnapTag_TTD();
@@ -704,7 +704,7 @@ namespace TTD
             {
                 Js::ScriptContext* ctx = inflator->LookupScriptContext(snpObject->SnapType->ScriptContextLogId);
                 Js::Var res = nullptr;
-                ctx->GetThreadContext()->TTDContext->TTDExternalObjectFunctions.pfCreateExternalObject(ctx, &res);
+                ctx->GetThreadContext()->TTDContext->TTDExternalObjectFunctions.pfCreateExternalObject(ctx, nullptr, &res);
 
                 return Js::RecyclableObject::FromVar(res);
             }
@@ -934,7 +934,7 @@ namespace TTD
                 }
             }
 
-            return ctx->GetLibrary()->CreateBoundFunction_TTD(bFunction, bThis, snapBoundInfo->ArgCount, (Js::Var*)bArgs);
+            return ctx->GetLibrary()->CreateBoundFunction_TTD(bFunction, bThis, snapBoundInfo->ArgCount, bArgs);
         }
 
         void EmitAddtlInfo_SnapBoundFunctionInfo(const SnapObject* snpObject, FileWriter* writer)
@@ -2161,9 +2161,9 @@ namespace TTD
                 }
             }
 
-            Js::CallInfo callInfo(static_cast<Js::CallFlags>(generatorInfo->arguments_callInfo_flags), generatorInfo->arguments_callInfo_count, false /*unusedBool*/);
+            Js::CallInfo callInfo(static_cast<Js::CallFlags>(generatorInfo->arguments_callInfo_flags), generatorInfo->arguments_callInfo_count);
 
-            Js::Arguments arguments(callInfo, (Js::Var*)argVals);
+            Js::Arguments arguments(callInfo, unsafe_write_barrier_cast<Js::Var*>(argVals));
 
             // TODO: BUGBUG - figure out how to determine what the prototype was.  Just use GetNull() for now
             Js::RecyclableObject* prototype = ctx->GetLibrary()->GetNull();

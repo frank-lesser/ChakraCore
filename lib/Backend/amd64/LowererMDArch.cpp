@@ -1011,19 +1011,6 @@ LowererMDArch::GetArgSlotOpnd(uint16 index, StackSym * argSym, bool isHelper /*=
     Assert(index != 0);
 
     uint16 argPosition = index;
-
-#ifdef ENABLE_SIMDJS
-    // Without SIMD the index is the Var offset and is also the argument index. Since each arg = 1 Var.
-    // With SIMD, args are of variable length and we need to the argument position in the args list.
-    if (m_func->IsSIMDEnabled() &&
-        m_func->GetJITFunctionBody()->IsAsmJsMode() &&
-        argSym != nullptr &&
-        argSym->m_argPosition != 0)
-    {
-        argPosition = (uint16)argSym->m_argPosition;
-    }
-#endif
-
     IR::Opnd *argSlotOpnd = nullptr;
 
     if (argSym != nullptr)
@@ -1093,7 +1080,7 @@ LowererMDArch::LowerAsmJsCallI(IR::Instr * callInstr)
 }
 
 IR::Instr *
-LowererMDArch::LowerWasmMemOp(IR::Instr * instr, IR::Opnd *addrOpnd)
+LowererMDArch::LowerWasmArrayBoundsCheck(IR::Instr * instr, IR::Opnd *addrOpnd)
 {
     IR::IndirOpnd * indirOpnd = addrOpnd->AsIndirOpnd();
     IR::RegOpnd * indexOpnd = indirOpnd->GetIndexOpnd();
@@ -1137,6 +1124,45 @@ LowererMDArch::LowerWasmMemOp(IR::Instr * instr, IR::Opnd *addrOpnd)
     lowererMD->m_lowerer->GenerateThrow(IR::IntConstOpnd::New(WASMERR_ArrayIndexOutOfRange, TyInt32, m_func), loadLabel);
     Lowerer::InsertBranch(Js::OpCode::Br, loadLabel, helperLabel);
     return doneLabel;
+}
+
+void
+LowererMDArch::LowerAtomicStore(IR::Opnd * dst, IR::Opnd * src1, IR::Instr * insertBeforeInstr)
+{
+    Assert(IRType_IsNativeInt(dst->GetType()));
+    Assert(IRType_IsNativeInt(src1->GetType()));
+    IR::RegOpnd* tmpSrc = IR::RegOpnd::New(dst->GetType(), m_func);
+    Lowerer::InsertMove(tmpSrc, src1, insertBeforeInstr);
+
+    // Put src1 as dst to make sure we know that register is modified
+    IR::Instr* xchgInstr = IR::Instr::New(Js::OpCode::XCHG, tmpSrc, tmpSrc, dst, insertBeforeInstr->m_func);
+    insertBeforeInstr->InsertBefore(xchgInstr);
+}
+
+void
+LowererMDArch::LowerAtomicLoad(IR::Opnd * dst, IR::Opnd * src1, IR::Instr * insertBeforeInstr)
+{
+    Assert(IRType_IsNativeInt(dst->GetType()));
+    Assert(IRType_IsNativeInt(src1->GetType()));
+    IR::Instr* newMove = Lowerer::InsertMove(dst, src1, insertBeforeInstr);
+
+#if ENABLE_FAST_ARRAYBUFFER
+    // We need to have an AV when accessing out of bounds memory even if the dst is not used
+    // Make sure LinearScan doesn't dead store this instruction
+    newMove->hasSideEffects = true;
+#endif
+
+    // Need to add Memory Barrier before the load
+    // MemoryBarrier is implemented with `lock or [rsp], 0` on x64
+    IR::IndirOpnd* stackTop = IR::IndirOpnd::New(
+        IR::RegOpnd::New(nullptr, RegRSP, TyMachReg, m_func),
+        0,
+        TyMachReg,
+        m_func
+    );
+    IR::IntConstOpnd* zero = IR::IntConstOpnd::New(0, TyMachReg, m_func);
+    IR::Instr* memoryBarrier = IR::Instr::New(Js::OpCode::LOCKOR, stackTop, stackTop, zero, m_func);
+    newMove->InsertBefore(memoryBarrier);
 }
 
 IR::Instr*
@@ -2088,6 +2114,7 @@ LowererMDArch::LowerExitInstr(IR::ExitInstr * exitInstr)
         case Js::AsmJsRetType::Float:
             retReg = IR::RegOpnd::New(nullptr, this->GetRegReturnAsmJs(TyMachDouble), TyMachDouble, this->m_func);
             break;
+#ifdef ENABLE_WASM_SIMD
         case Js::AsmJsRetType::Int32x4:
             retReg = IR::RegOpnd::New(nullptr, this->GetRegReturnAsmJs(TySimd128I4), TySimd128I4, this->m_func);
             break;
@@ -2124,6 +2151,7 @@ LowererMDArch::LowerExitInstr(IR::ExitInstr * exitInstr)
         case Js::AsmJsRetType::Int64x2:
             retReg = IR::RegOpnd::New(nullptr, this->GetRegReturnAsmJs(TySimd128I2), TySimd128I2, this->m_func);
             break;
+#endif
         case Js::AsmJsRetType::Int64:
         case Js::AsmJsRetType::Signed:
             retReg = IR::RegOpnd::New(nullptr, this->GetRegReturn(TyMachReg), TyMachReg, this->m_func);
@@ -3344,6 +3372,12 @@ LowererMDArch::FinalLower()
                 instr->SwapOpnds();
                 instr->FreeSrc2();
             }
+            break;
+        case Js::OpCode::LOCKCMPXCHG8B:
+        case Js::OpCode::CMPXCHG8B:
+            // Get rid of the deps and srcs
+            instr->FreeDst();
+            instr->FreeSrc2();
             break;
         }
     } NEXT_INSTR_BACKWARD_EDITING_IN_RANGE;

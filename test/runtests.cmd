@@ -340,6 +340,8 @@ goto :main
     set _DIRS=-all
   )
 
+  set _NOTTAGS=%_NOTTAGS% -nottags:exclude_windows
+
   set _BuildArchMapped=%_BuildArch%
   set _BuildTypeMapped=%_BuildType%
 
@@ -349,6 +351,9 @@ goto :main
   if "%_BuildTypeMapped%" == "debug" set _BuildTypeMapped=chk
   if "%_BuildTypeMapped%" == "test" set _BuildTypeMapped=fre
   if "%_BuildTypeMapped%" == "codecoverage" set _BuildTypeMapped=fre
+
+  if "%_BuildArch%" == "arm"    set _NOTTAGS=%_NOTTAGS% -nottags:require_asmjs -nottags:require_wasm
+  if "%_BuildArch%" == "arm64"  set _NOTTAGS=%_NOTTAGS% -nottags:require_asmjs -nottags:require_wasm
 
   if "%Disable_JIT%" == "1" (
       set _dynamicprofilecache=
@@ -487,7 +492,6 @@ goto :main
   set _rlArgs=%_rlArgs% %_exclude_forcedeferparse%
   set _rlArgs=%_rlArgs% %_exclude_nodeferparse%
   set _rlArgs=%_rlArgs% %_exclude_forceundodefer%
-  set _rlArgs=%_rlArgs% %_ExcludeApolloTests%
   set _rlArgs=%_rlArgs% %_NoProgramOutput%
   set _rlArgs=%_rlArgs% %_OnlyAssertOutput%
   set _rlArgs=%_rlArgs% %_quiet%

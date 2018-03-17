@@ -45,11 +45,14 @@ JsTTDPreExecuteSnapShotInterval
 JsTTDMoveToTopLevelEvent
 JsTTDReplayExecution
 
+JsTTDDiagWriteLog
+
 JsInitializeModuleRecord
 JsParseModuleSource
 JsModuleEvaluation
 JsSetModuleHostInfo
 JsGetModuleHostInfo
+JsGetModuleNamespace
 JsInitializeJITServer
 
 JsCreateSharedArrayBufferWithSharedContent
@@ -60,3 +63,7 @@ JsLessThan
 JsLessThanOrEqual
 
 JsCreateEnhancedFunction
+
+JsSetHostPromiseRejectionTracker
+
+JsGetProxyProperties

@@ -9,34 +9,65 @@ class GlobOpt;
 
 #if ENABLE_DEBUG_CONFIG_OPTIONS && DBG_DUMP
 
-#define GOPT_TRACE_OPND(opnd, ...) \
-    if (PHASE_TRACE(Js::GlobOptPhase, this->func) && !this->IsLoopPrePass()) \
+#define PRINT_GOPT_TRACE_HEADER \
+        Output::Print(_u("TRACE ")); \
+        if (this->IsLoopPrePass()) \
+        { \
+            Output::Print(_u("[%d, %d]"), this->rootLoopPrePass->loopNumber - 1, this->prePassLoop->loopNumber - 1); \
+        } \
+        Output::Print(_u(": ")); \
+
+#define PRINT_VALUENUMBER_TRACE_HEADER \
+        Output::Print(_u("VALUE NUMBERING TRACE ")); \
+        if (this->IsLoopPrePass()) \
+        { \
+            Output::Print(_u("[%d, %d]"), this->rootLoopPrePass->loopNumber - 1, this->prePassLoop->loopNumber - 1); \
+        } \
+        Output::Print(_u(": ")); \
+
+#define GOPT_TRACE_VALUENUMBER(opndHeader, opnd, ...) \
+    if (PHASE_TRACE(Js::ValueNumberingPhase, this->func)) \
     { \
-        Output::Print(_u("TRACE: ")); \
+        PRINT_VALUENUMBER_TRACE_HEADER; \
+        Output::Print(opndHeader); \
+        opnd->Dump(IRDumpFlags_None, this->func); \
+        Output::Print(_u(" : ")); \
+        Output::Print(__VA_ARGS__); \
+        Output::Print(_u("\n")); \
+        Output::Flush(); \
+    } 
+#define GOPT_TRACE_OPND(opnd, ...) \
+    if (PHASE_TRACE(Js::GlobOptPhase, this->func)) \
+    { \
+        PRINT_GOPT_TRACE_HEADER; \
         opnd->Dump(); \
         Output::Print(_u(" : ")); \
         Output::Print(__VA_ARGS__); \
         Output::Flush(); \
     }
 #define GOPT_TRACE(...) \
-    if (PHASE_TRACE(Js::GlobOptPhase, this->func) && !this->IsLoopPrePass()) \
+    if (PHASE_TRACE(Js::GlobOptPhase, this->func)) \
     { \
-        Output::Print(_u("TRACE: ")); \
+        PRINT_GOPT_TRACE_HEADER; \
         Output::Print(__VA_ARGS__); \
         Output::Flush(); \
     }
 
 #define GOPT_TRACE_INSTRTRACE(instr) \
-    if (PHASE_TRACE(Js::GlobOptPhase, this->func) && !this->IsLoopPrePass()) \
+    if (PHASE_TRACE(Js::GlobOptPhase, this->func) || PHASE_TRACE(Js::ValueNumberingPhase, this->func)) \
     { \
+        if (this->IsLoopPrePass()) \
+        { \
+            Output::Print(_u("[%d, %d]: "), this->rootLoopPrePass->loopNumber - 1, this->prePassLoop->loopNumber - 1); \
+        } \
         instr->Dump(); \
         Output::Flush(); \
     }
 
 #define GOPT_TRACE_INSTR(instr, ...) \
-    if (PHASE_TRACE(Js::GlobOptPhase, this->func) && !this->IsLoopPrePass()) \
+    if (PHASE_TRACE(Js::GlobOptPhase, this->func)) \
     { \
-        Output::Print(_u("TRACE: ")); \
+        PRINT_GOPT_TRACE_HEADER; \
         Output::Print(__VA_ARGS__); \
         instr->Dump(); \
         Output::Flush(); \
@@ -79,20 +110,16 @@ class GlobOpt;
         TRACE_PHASE_INSTR(phase, instr, __VA_ARGS__); \
     }
 
-#define TRACE_TESTTRACE_PHASE_INSTR(phase, instr, ...) \
-    TRACE_PHASE_INSTR(phase, instr, __VA_ARGS__); \
-    TESTTRACE_PHASE_INSTR(phase, instr, __VA_ARGS__);
-
 #else   // ENABLE_DEBUG_CONFIG_OPTIONS && DBG_DUMP
 
 #define GOPT_TRACE(...)
+#define GOPT_TRACE_VALUENUMBER(opnd, ...)
 #define GOPT_TRACE_OPND(opnd, ...)
 #define GOPT_TRACE_INSTRTRACE(instr)
 #define GOPT_TRACE_INSTR(instr, ...)
 #define GOPT_TRACE_BLOCK(block, before)
 #define TRACE_PHASE_INSTR(phase, instr, ...)
 #define TRACE_PHASE_INSTR_VERBOSE(phase, instr, ...)
-#define TRACE_TESTTRACE_PHASE_INSTR(phase, instr, ...) TESTTRACE_PHASE_INSTR(phase, instr, __VA_ARGS__);
 
 #endif  // ENABLE_DEBUG_CONFIG_OPTIONS && DBG_DUMP
 
@@ -332,12 +359,16 @@ public:
 public:
     bool KillsValueType(const ValueType valueType) const
     {
-        Assert(valueType.IsArrayOrObjectWithArray());
+        Assert(valueType.IsArrayOrObjectWithArray() || valueType.IsOptimizedVirtualTypedArray());
 
         return
             killsAllArrays ||
-            (killsArraysWithNoMissingValues && valueType.HasNoMissingValues()) ||
-            (killsNativeArrays && !valueType.HasVarElements());
+            (valueType.IsArrayOrObjectWithArray() && 
+             (
+              (killsArraysWithNoMissingValues && valueType.HasNoMissingValues()) ||
+              (killsNativeArrays && !valueType.HasVarElements())
+             )
+            );
     }
 
     bool AreSubsetOf(const JsArrayKills &other) const
@@ -385,6 +416,7 @@ private:
     class AddSubConstantInfo;
     class ArrayLowerBoundCheckHoistInfo;
     class ArrayUpperBoundCheckHoistInfo;
+    class ArraySrcOpt;
 
     friend BackwardPass;
 #if DBG
@@ -568,22 +600,7 @@ private:
     void                    SetSymStoreDirect(ValueInfo *valueInfo, Sym *sym);
     IR::Instr *             TypeSpecialization(IR::Instr *instr, Value **pSrc1Val, Value **pSrc2Val, Value **pDstVal, bool *redoTypeSpecRef, bool *const forceInvariantHoistingRef);
 
-#ifdef ENABLE_SIMDJS
-    // SIMD_JS
-    bool                    TypeSpecializeSimd128(IR::Instr *instr, Value **pSrc1Val, Value **pSrc2Val, Value **pDstVal);
-    bool                    Simd128DoTypeSpec(IR::Instr *instr, const Value *src1Val, const Value *src2Val, const Value *dstVal);
-    bool                    Simd128DoTypeSpecLoadStore(IR::Instr *instr, const Value *src1Val, const Value *src2Val, const Value *dstVal, const ThreadContext::SimdFuncSignature *simdFuncSignature);
-    bool                    Simd128CanTypeSpecOpnd(const ValueType opndType, const ValueType expectedType);
-    bool                    Simd128ValidateIfLaneIndex(const IR::Instr * instr, IR::Opnd * opnd, uint argPos);
-    void                    UpdateBoundCheckHoistInfoForSimd(ArrayUpperBoundCheckHoistInfo &upperHoistInfo, ValueType arrValueType, const IR::Instr *instr);    
-    void                    Simd128SetIndirOpndType(IR::IndirOpnd *indirOpnd, Js::OpCode opcode);
-#endif
-
-    IRType                  GetIRTypeFromValueType(const ValueType &valueType);
-    ValueType               GetValueTypeFromIRType(const IRType &type);
-    IR::BailOutKind         GetBailOutKindFromValueType(const ValueType &valueType);
     IR::Instr *             GetExtendedArg(IR::Instr *instr);
-    int                     GetBoundCheckOffsetForSimd(ValueType arrValueType, const IR::Instr *instr, const int oldOffset = -1);
 
     void                    OptNewScObject(IR::Instr** instrPtr, Value* srcVal);
     template <typename T>
@@ -730,12 +747,6 @@ private:
     void                    ToInt32Dst(IR::Instr *instr, IR::RegOpnd *dst, BasicBlock *block);
     void                    ToUInt32Dst(IR::Instr *instr, IR::RegOpnd *dst, BasicBlock *block);
     void                    ToFloat64Dst(IR::Instr *instr, IR::RegOpnd *dst, BasicBlock *block);
-
-#ifdef ENABLE_SIMDJS
-    // SIMD_JS
-    void                    TypeSpecializeSimd128Dst(IRType type, IR::Instr *instr, Value *valToTransfer, Value *const src1Value, Value **pDstVal);
-    void                    ToSimd128Dst(IRType toType, IR::Instr *instr, IR::RegOpnd *dst, BasicBlock *block);
-#endif
 
     void                    OptConstFoldBr(bool test, IR::Instr *instr, Value * intTypeSpecSrc1Val = nullptr, Value * intTypeSpecSrc2Val = nullptr);
     void                    PropagateIntRangeForNot(int32 minimum, int32 maximum, int32 *pNewMin, int32 * pNewMax);

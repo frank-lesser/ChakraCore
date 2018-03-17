@@ -314,11 +314,13 @@ namespace TTD
         void AllocateExternalObject_Execute(const EventLogEntry* evt, ThreadContextTTD* executeContext)
         {
             TTD_REPLAY_ACTIVE_CONTEXT(executeContext);
+            const JsRTSingleVarArgumentAction* action = GetInlineEventDataAs<JsRTSingleVarArgumentAction, EventKind::AllocateExternalObjectActionTag>(evt);
+            Js::Var prototype = InflateVarInReplay(executeContext, GetVarItem_0(action));
 
             Js::Var res = nullptr;
-            executeContext->TTDExternalObjectFunctions.pfCreateExternalObject(ctx, &res);
+            executeContext->TTDExternalObjectFunctions.pfCreateExternalObject(ctx, prototype, &res);
 
-            JsRTActionHandleResultForReplay<JsRTResultOnlyAction, EventKind::AllocateExternalObjectActionTag>(executeContext, evt, res);
+            JsRTActionHandleResultForReplay<JsRTSingleVarArgumentAction, EventKind::AllocateExternalObjectActionTag>(executeContext, evt, res);
         }
 
         void AllocateArrayAction_Execute(const EventLogEntry* evt, ThreadContextTTD* executeContext)
@@ -982,7 +984,7 @@ namespace TTD
             }
             END_JS_RUNTIME_CALL(ctx);
 
-            if(ctx->ShouldPerformDebuggerAction())
+            if(ctx->ShouldPerformReplayDebuggerAction())
             {
                 ctx->GetThreadContext()->TTDExecutionInfo->ProcessScriptLoad(ctx, cpAction->BodyCtrId, fb, utf8SourceInfo, &se);
             }
@@ -1160,7 +1162,7 @@ namespace TTD
                 {
                     TTDAssert(NSLogEvents::EventCompletesWithException(evt), "Why did we get a different exception");
 
-                    if(executeContext->GetActiveScriptContext()->ShouldPerformDebuggerAction())
+                    if(executeContext->GetActiveScriptContext()->ShouldPerformReplayDebuggerAction())
                     {
                         //convert to uncaught debugger exception for host
                         TTDebuggerSourceLocation lastLocation;
@@ -1184,7 +1186,7 @@ namespace TTD
                 {
                     TTDAssert(NSLogEvents::EventCompletesWithException(evt), "Why did we get a different exception");
 
-                    if(executeContext->GetActiveScriptContext()->ShouldPerformDebuggerAction())
+                    if(executeContext->GetActiveScriptContext()->ShouldPerformReplayDebuggerAction())
                     {
                         //convert to uncaught debugger exception for host
                         TTDebuggerSourceLocation lastLocation;
@@ -1200,7 +1202,7 @@ namespace TTD
                 }
                 catch(...)
                 {
-                    if(executeContext->GetActiveScriptContext()->ShouldPerformDebuggerAction())
+                    if(executeContext->GetActiveScriptContext()->ShouldPerformReplayDebuggerAction())
                     {
                         TTDebuggerSourceLocation lastLocation;
                         threadContext->TTDExecutionInfo->GetLastExecutedTimeAndPositionForDebugger(lastLocation);

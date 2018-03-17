@@ -674,7 +674,7 @@ namespace Js
                     globalBody->GetUtf8SourceInfo()->SetSourceInfoForDebugReplay_TTD(bodyIdCtr);
                 }
 
-                if(scriptContext->ShouldPerformDebuggerAction())
+                if(scriptContext->ShouldPerformReplayDebuggerAction())
                 {
                     scriptContext->GetThreadContext()->TTDExecutionInfo->ProcessScriptLoad(scriptContext, bodyIdCtr, globalBody, globalBody->GetUtf8SourceInfo(), nullptr);
                 }
@@ -926,7 +926,7 @@ namespace Js
                 // TODO: Handle strict mode.
                 if (isIndirect &&
                     !strictMode &&
-                    !parseTree->sxFnc.GetStrictMode())
+                    !parseTree->AsParseNodeFnc()->GetStrictMode())
                 {
                     grfscr &= ~fscrEval;
                 }

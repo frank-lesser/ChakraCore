@@ -343,13 +343,6 @@ HELPERCALL(Op_UInt32ToAtomInPlace, Js::JavascriptOperators::UInt32ToVarInPlace, 
 HELPERCALL(AllocUninitializedNumber, Js::JavascriptOperators::AllocUninitializedNumber, 0)
 #endif
 
-#ifdef ENABLE_SIMDJS
-// SIMD_JS
-HELPERCALL(AllocUninitializedSimdF4, Js::JavascriptSIMDFloat32x4::AllocUninitialized, 0)
-HELPERCALL(AllocUninitializedSimdI4, Js::JavascriptSIMDInt32x4::AllocUninitialized, 0)
-
-#endif
-
 #ifdef ENABLE_WASM_SIMD
 HELPERCALL(Simd128ShRtByScalarU2, Js::SIMDInt64x2Operation::OpShiftRightByScalarU, 0)
 HELPERCALL(Simd128ShRtByScalarI2, Js::SIMDInt64x2Operation::OpShiftRightByScalar, 0)
@@ -395,6 +388,7 @@ HELPERCALL(ProfiledNewScArray, Js::ProfilingHelpers::ProfiledNewScArray, 0)
 HELPERCALL(ProfiledNewScObjArray, Js::ProfilingHelpers::ProfiledNewScObjArray_Jit, 0)
 HELPERCALL(ProfiledNewScObjArraySpread, Js::ProfilingHelpers::ProfiledNewScObjArraySpread_Jit, 0)
 HELPERCALL(ProfileLdSlot, Js::ProfilingHelpers::ProfileLdSlot, 0)
+HELPERCALL(ProfiledLdLen, Js::ProfilingHelpers::ProfiledLdLen_Jit, 0)
 HELPERCALL(ProfiledLdFld, Js::ProfilingHelpers::ProfiledLdFld_Jit, 0)
 HELPERCALL(ProfiledLdSuperFld, Js::ProfilingHelpers::ProfiledLdSuperFld_Jit, 0)
 HELPERCALL(ProfiledLdFldForTypeOf, Js::ProfilingHelpers::ProfiledLdFldForTypeOf_Jit, 0)
@@ -414,7 +408,6 @@ HELPERCALL(TransitionFromSimpleJit, NativeCodeGenerator::Jit_TransitionFromSimpl
 HELPERCALL(SimpleProfileCall_DefaultInlineCacheIndex, Js::SimpleJitHelpers::ProfileCall_DefaultInlineCacheIndex, 0)
 HELPERCALL(SimpleProfileCall, Js::SimpleJitHelpers::ProfileCall, 0)
 HELPERCALL(SimpleProfileReturnTypeCall, Js::SimpleJitHelpers::ProfileReturnTypeCall, 0)
-HELPERCALL(SimpleProfiledLdLen, Js::SimpleJitHelpers::ProfiledLdLen_A, AttrCanThrow) //Can throw because it mirrors OP_GetProperty
 HELPERCALL(SimpleProfiledStrictLdThis, Js::SimpleJitHelpers::ProfiledStrictLdThis, 0)
 HELPERCALL(SimpleProfiledLdThis, Js::SimpleJitHelpers::ProfiledLdThis, 0)
 HELPERCALL(SimpleProfiledSwitch, Js::SimpleJitHelpers::ProfiledSwitch, 0)
@@ -589,6 +582,8 @@ HELPERCALL(DirectMath_Int64Rol , (int64(*)(int64,int64)) Wasm::WasmMath::Rol<int
 HELPERCALL(DirectMath_Int64Ror , (int64(*)(int64,int64)) Wasm::WasmMath::Ror<int64>, 0)
 HELPERCALL(DirectMath_Int64Clz , (int64(*)(int64)) Wasm::WasmMath::Clz<int64>, 0)
 HELPERCALL(DirectMath_Int64Ctz , (int64(*)(int64)) Wasm::WasmMath::Ctz<int64>, 0)
+HELPERCALL(AtomicStore64, nullptr, 0)
+HELPERCALL(MemoryBarrier, nullptr, 0)
 #elif defined(_M_X64)
 // AMD64 regular CRT calls -- on AMD64 calling convention is already what we want -- args in XMM0, XMM1 rather than on stack which is slower.
 HELPERCALL(DirectMath_Acos, nullptr, 0)

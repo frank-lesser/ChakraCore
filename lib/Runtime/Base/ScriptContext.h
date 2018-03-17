@@ -273,6 +273,7 @@ namespace Js
             WinRTConstructorAllowed(Configuration::Global.flags.WinRTConstructorAllowed),
 #endif
             NoNative(Configuration::Global.flags.NoNative),
+            NoDynamicThunks(false),
             isOptimizedForManyInstances(isOptimizedForManyInstances),
             threadConfig(threadConfig)
         {
@@ -297,6 +298,9 @@ namespace Js
 #undef FORWARD_THREAD_CONFIG
 
         bool SupportsCollectGarbage() const { return true; }
+
+        void ForceNoDynamicThunks() { this->NoDynamicThunks = true; }
+        bool IsNoDynamicThunks() const { return this->NoDynamicThunks; }
 
         void ForceNoNative() { this->NoNative = true; }
         void ForceNative() { this->NoNative = false; }
@@ -341,6 +345,7 @@ namespace Js
 
         // Per script configurations
         bool NoNative;
+        bool NoDynamicThunks;
         BOOL fCanOptimizeGlobalLookup;
         const bool isOptimizedForManyInstances;
         const ThreadConfiguration * const threadConfig;
@@ -370,6 +375,7 @@ namespace Js
 #endif
         Js::ImplicitCallFlags savedImplicitCallFlags;
 
+        void * returnAddrOfScriptEntryFunction;
         void * addrOfReturnAddrOfScriptEntryFunction;
         void * frameIdOfScriptExitFunction; // the frameAddres in x86, the return address in amd64/arm_soc
         ScriptContext * scriptContext;
@@ -1055,6 +1061,7 @@ private:
         inline bool IsHeapEnumInProgress() { return GetRecycler()->IsHeapEnumInProgress(); }
 
         bool IsInterpreted() { return config.IsNoNative(); }
+        void ForceNoDynamicThunks() { config.ForceNoDynamicThunks(); }
         void ForceNoNative() { config.ForceNoNative(); }
         void ForceNative() { config.ForceNative(); }
         ScriptConfiguration const * GetConfig(void) const { return &config; }
@@ -1150,7 +1157,10 @@ private:
         bool TTDShouldPerformRecordAction;
         bool TTDShouldPerformReplayAction;
 
-        bool TTDShouldPerformDebuggerAction;
+        bool TTDShouldPerformRecordOrReplayDebuggerAction;
+        bool TTDShouldPerformRecordDebuggerAction;
+        bool TTDShouldPerformReplayDebuggerAction;
+
         bool TTDShouldSuppressGetterInvocationForDebuggerEvaluation;
 
         //Check if the TTD system has been activated (and record/replay may or may not be enabled)
@@ -1172,7 +1182,13 @@ private:
         bool ShouldPerformReplayAction() const { return this->TTDShouldPerformReplayAction; }
 
         //Use this to check specifically if we are in debugging mode AND this code is being run on behalf of the user application
-        bool ShouldPerformDebuggerAction() const { return this->TTDShouldPerformDebuggerAction; }
+        bool ShouldPerformRecordOrReplayDebuggerAction() const { return this->TTDShouldPerformRecordOrReplayDebuggerAction; }
+
+        //Use this to check specifically if we are in debugging record mode AND this code is being run on behalf of the user application
+        bool ShouldPerformRecordDebuggerAction() const { return this->TTDShouldPerformRecordDebuggerAction; }
+
+        //Use this to check specifically if we are in debugging replay mode AND this code is being run on behalf of the user application
+        bool ShouldPerformReplayDebuggerAction() const { return this->TTDShouldPerformReplayDebuggerAction; }
 
         //A special check to see if we are debugging and want to suppress the execution of getters (which may be triggered by displaying values in the debugger)
         bool ShouldSuppressGetterInvocationForDebuggerEvaluation() const { return this->TTDShouldSuppressGetterInvocationForDebuggerEvaluation; }
@@ -1750,9 +1766,6 @@ private:
         virtual intptr_t GetNumberAllocatorAddr() const override;
         virtual intptr_t GetRecyclerAddr() const override;
         virtual bool GetRecyclerAllowNativeCodeBumpAllocation() const override;
-#ifdef ENABLE_SIMDJS
-        virtual bool IsSIMDEnabled() const override;
-#endif
         virtual bool IsPRNGSeeded() const override;
         virtual intptr_t GetBuiltinFunctionsBaseAddr() const override;
 

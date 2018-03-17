@@ -240,6 +240,13 @@ typedef struct ArrayCallSiteIDL
 #endif
 } ArrayCallSiteIDL;
 
+typedef struct LdLenIDL
+{
+    unsigned short arrayType;
+    byte bits;
+    IDL_PAD1(0)
+} LdLenIDL;
+
 typedef struct LdElemIDL
 {
     unsigned short arrayType;
@@ -262,6 +269,7 @@ typedef struct ProfileDataIDL
 
     ThisIDL thisData;
 
+    unsigned short profiledLdLenCount;
     unsigned short profiledLdElemCount;
     unsigned short profiledStElemCount;
     unsigned short profiledArrayCallSiteCount;
@@ -278,6 +286,8 @@ typedef struct ProfileDataIDL
     unsigned int loopCount;
 
     BVFixedIDL * loopFlags;
+
+    IDL_DEF([size_is(profiledLdLenCount)]) LdLenIDL * ldLenData;
 
     IDL_DEF([size_is(profiledLdElemCount)]) LdElemIDL * ldElemData;
 
@@ -328,12 +338,7 @@ typedef struct ScriptContextDataIDL
 {
     boolean isRecyclerVerifyEnabled;
     boolean recyclerAllowNativeCodeBumpAllocation;
-#ifdef ENABLE_SIMDJS
-    boolean isSIMDEnabled;
-#else
-    IDL_PAD1(0)
-#endif
-    IDL_PAD1(1)
+    IDL_PAD2(1)
     unsigned int recyclerVerifyPad;
     CHAKRA_PTR vtableAddresses[VTABLE_COUNT];
 
@@ -408,13 +413,14 @@ typedef struct StatementMapIDL
 
 typedef struct WasmSignatureIDL
 {
-    int resultType;
     unsigned int id;
+    unsigned int resultsCount;
     unsigned short paramSize;
     unsigned short paramsCount;
     X64_PAD4(0)
     CHAKRA_PTR shortSig;
     IDL_DEF([size_is(paramsCount)]) int * params;
+    IDL_DEF([size_is(resultsCount)]) int * results;
 } WasmSignatureIDL;
 
 typedef struct TypedSlotInfo

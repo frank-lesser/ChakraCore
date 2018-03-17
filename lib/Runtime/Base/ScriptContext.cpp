@@ -163,7 +163,9 @@ namespace Js
         , TTDShouldPerformRecordOrReplayAction(false)
         , TTDShouldPerformRecordAction(false)
         , TTDShouldPerformReplayAction(false)
-        , TTDShouldPerformDebuggerAction(false)
+        , TTDShouldPerformRecordOrReplayDebuggerAction(false)
+        , TTDShouldPerformRecordDebuggerAction(false)
+        , TTDShouldPerformReplayDebuggerAction(false)
         , TTDShouldSuppressGetterInvocationForDebuggerEvaluation(false)
 #endif
 #ifdef REJIT_STATS
@@ -655,6 +657,7 @@ namespace Js
                 if (hasFunctions)
                 {
 #if ENABLE_NATIVE_CODEGEN
+#if PDATA_ENABLED && defined(_WIN32)
                     struct AutoReset
                     {
                         AutoReset(ThreadContext* threadContext)
@@ -670,6 +673,7 @@ namespace Js
 
                         ThreadContext* threadContext;
                     } autoReset(this->GetThreadContext());
+#endif
 #endif
 
                     // We still need to walk through all the function bodies and call cleanup
@@ -3080,7 +3084,7 @@ namespace Js
 
         HRESULT hr = S_OK;
         BEGIN_TRANSLATE_OOM_TO_HRESULT_NESTED
-            this->nativeCodeGen = NewNativeCodeGenerator(this);
+        this->nativeCodeGen = NewNativeCodeGenerator(this);
         SetProfileModeNativeCodeGen(this->GetNativeCodeGenerator(), this->IsProfiling());
         END_TRANSLATE_OOM_TO_HRESULT(hr);
 
@@ -3130,6 +3134,30 @@ namespace Js
     {
         OUTPUT_TRACE(Js::DebuggerPhase, _u("ScriptContext::OnDebuggerAttached: start 0x%p\n"), this);
 
+#if ENABLE_NATIVE_CODEGEN
+#if PDATA_ENABLED && defined(_WIN32)
+        // in case of debugger attaching, we have a new code generator and when deleting old code generator,
+        // the xData is not put in the delay list yet. clear the list now so the code addresses are ready to reuse
+        struct AutoReset
+        {
+            AutoReset(ThreadContext* threadContext)
+                :threadContext(threadContext)
+            {
+                // indicate background thread that we need help to delete the xData
+                threadContext->GetJobProcessor()->StartExtraWork();
+            }
+            ~AutoReset()
+            {
+                threadContext->GetJobProcessor()->EndExtraWork();
+                // in case the background thread didn't clear all the function tables
+                DelayDeletingFunctionTable::Clear();
+            }
+
+            ThreadContext* threadContext;
+        } autoReset(this->GetThreadContext());
+#endif
+#endif
+
         Js::StepController* stepController = &this->GetThreadContext()->GetDebugManager()->stepController;
         if (stepController->IsActive())
         {
@@ -3163,6 +3191,13 @@ namespace Js
 
         // Disable QC while functions are re-parsed as this can be time consuming
         AutoDisableInterrupt autoDisableInterrupt(this->threadContext, false /* explicitCompletion */);
+
+#if ENABLE_NATIVE_CODEGEN
+#if PDATA_ENABLED && defined(_WIN32)
+        // RundownSourcesAndReparse can cause code generation immediately, clear the leftovers if background thread didn't finish the work
+        DelayDeletingFunctionTable::Clear();
+#endif
+#endif
 
         hr = this->GetDebugContext()->RundownSourcesAndReparse(shouldPerformSourceRundown, /*shouldReparseFunctions*/ true);
 
@@ -3237,6 +3272,30 @@ namespace Js
     {
         OUTPUT_TRACE(Js::DebuggerPhase, _u("ScriptContext::OnDebuggerDetached: start 0x%p\n"), this);
 
+#if ENABLE_NATIVE_CODEGEN
+#if PDATA_ENABLED && defined(_WIN32)
+        // in case of debugger detaching, we have a new code generator and when deleting old code generator,
+        // the xData is not put in the delay list yet. clear the list now so the code addresses are ready to reuse
+        struct AutoReset
+        {
+            AutoReset(ThreadContext* threadContext)
+                :threadContext(threadContext)
+            {
+                // indicate background thread that we need help to delete the xData
+                threadContext->GetJobProcessor()->StartExtraWork();
+            }
+            ~AutoReset()
+            {
+                threadContext->GetJobProcessor()->EndExtraWork();
+                // in case the background thread didn't clear all the function tables
+                DelayDeletingFunctionTable::Clear();
+            }
+
+            ThreadContext* threadContext;
+        } autoReset(this->GetThreadContext());
+#endif
+#endif
+
         Js::StepController* stepController = &this->GetThreadContext()->GetDebugManager()->stepController;
         if (stepController->IsActive())
         {
@@ -3265,6 +3324,13 @@ namespace Js
 
         // Disable QC while functions are re-parsed as this can be time consuming
         AutoDisableInterrupt autoDisableInterrupt(this->threadContext, false /* explicitCompletion */);
+
+#if ENABLE_NATIVE_CODEGEN
+#if PDATA_ENABLED && defined(_WIN32)
+        // RundownSourcesAndReparse can cause code generation immediately, clear the leftovers if background thread didn't finish the work
+        DelayDeletingFunctionTable::Clear();
+#endif
+#endif
 
         // Force a reparse so that indirect function caches are updated.
         hr = this->GetDebugContext()->RundownSourcesAndReparse(/*shouldPerformSourceRundown*/ false, /*shouldReparseFunctions*/ true);
@@ -4891,9 +4957,6 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
         contextData.chakraLibAddr = (intptr_t)GetLibrary()->GetChakraLib();
 #endif
         contextData.numberAllocatorAddr = (intptr_t)GetNumberAllocator();
-#ifdef ENABLE_SIMDJS
-        contextData.isSIMDEnabled = GetConfig()->IsSimdjsEnabled();
-#endif
         CompileAssert(VTableValue::Count == VTABLE_COUNT); // need to update idl when this changes
 
         auto vtblAddresses = GetLibrary()->GetVTableAddresses();
@@ -5092,13 +5155,6 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
     {
         return GetRecycler()->AllowNativeCodeBumpAllocation();
     }
-
-#ifdef ENABLE_SIMDJS
-    bool ScriptContext::IsSIMDEnabled() const
-    {
-        return GetConfig()->IsSimdjsEnabled();
-    }
-#endif
 
     bool ScriptContext::IsPRNGSeeded() const
     {

@@ -1734,30 +1734,70 @@ Recycler::ScanStack()
     bool doSpecialMark = collectionWrapper->DoSpecialMarkOnScanStack();
 
     BEGIN_DUMP_OBJECT(this, _u("Registers"));
-    if (doSpecialMark)
+    // We will not scan interior pointers on stack if we are not in script or we are in mem-protect mode.
+    if (!this->isInScript || this->IsMemProtectMode())
     {
-        ScanMemoryInline<true>(
-            this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
-            ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        if (doSpecialMark)
+        {
+            ScanMemoryInline<true>(
+                this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
+        else
+        {
+            ScanMemoryInline<false>(
+                this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
     }
     else
     {
-        ScanMemoryInline<false>(
-            this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
-            ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        // We may have interior pointers on the stack such as pointers in the middle of the character buffers backing a JavascriptString or SubString object.
+        // To prevent UAFs of these buffers after the GC we will always do MarkInterior for the pointers on stack. This is necessary only when we are doing a
+        // GC while running a script as that is when the possiblity of a UAF after GC exists.
+        if (doSpecialMark)
+        {
+            ScanMemoryInline<true, true /* forceInterior */>(this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
+        else
+        {
+            ScanMemoryInline<false, true /* forceInterior */>(this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
     }
     END_DUMP_OBJECT(this);
 
     BEGIN_DUMP_OBJECT(this, _u("Stack"));
-    if (doSpecialMark)
+    // We will not scan interior pointers on stack if we are not in script or we are in mem-protect mode.
+    if (!this->isInScript || this->IsMemProtectMode())
     {
-        ScanMemoryInline<true>((void**) stackTop, stackScanned
-            ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        if (doSpecialMark)
+        {
+            ScanMemoryInline<true>((void**) stackTop, stackScanned
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
+        else
+        {
+            ScanMemoryInline<false>((void**) stackTop, stackScanned
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
     }
     else
     {
-        ScanMemoryInline<false>((void**) stackTop, stackScanned
-            ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        // We may have interior pointers on the stack such as pointers in the middle of the character buffers backing a JavascriptString or SubString object.
+        // To prevent UAFs of these buffers after the GC we will always do MarkInterior for the pointers on stack. This is necessary only when we are doing a
+        // GC while running a script as that is when the possiblity of a UAF after GC exists.
+        if (doSpecialMark)
+        {
+            ScanMemoryInline<true, true /* forceInterior */>((void**)stackTop, stackScanned
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
+        else
+        {
+            ScanMemoryInline<false, true /* forceInterior */>((void**)stackTop, stackScanned
+                ADDRESS_SANITIZER_APPEND(RecyclerScanMemoryType::Stack));
+        }
     }
     END_DUMP_OBJECT(this);
 
@@ -5019,20 +5059,25 @@ Recycler::EnableConcurrent(JsUtil::ThreadService *threadService, bool startAllTh
 
         if (startConcurrentThread)
         {
-            HANDLE concurrentThread = (HANDLE)PlatformAgnostic::Thread::Create(Recycler::ConcurrentThreadStackSize, &Recycler::StaticThreadProc, this, PlatformAgnostic::Thread::ThreadInitStackSizeParamIsAReservation);
-            if (concurrentThread != nullptr)
+            auto concurrentThread = PlatformAgnostic::Thread::Create(Recycler::ConcurrentThreadStackSize, 
+                &Recycler::StaticThreadProc, this, 
+                PlatformAgnostic::Thread::ThreadInitStackSizeParamIsAReservation,
+                _u("Chakra Background Recycler"));
+
+            if (concurrentThread != PlatformAgnostic::Thread::InvalidHandle)
             {
+                HANDLE concurrentThreadWin32Handle = reinterpret_cast<HANDLE>(concurrentThread);
                 // Wait for recycler thread to initialize
-                HANDLE handle[2] = { this->concurrentWorkDoneEvent, concurrentThread };
+                HANDLE handle[2] = { this->concurrentWorkDoneEvent, concurrentThreadWin32Handle };
                 DWORD ret = WaitForMultipleObjectsEx(2, handle, FALSE, INFINITE, FALSE);
                 if (ret == WAIT_OBJECT_0)
                 {
                     this->threadService = threadService;
-                    this->concurrentThread = concurrentThread;
+                    this->concurrentThread = concurrentThreadWin32Handle;
                     return true;
                 }
 
-                CloseHandle(concurrentThread);
+                CloseHandle(concurrentThreadWin32Handle);
             }
         }
 
@@ -6662,7 +6707,14 @@ RecyclerParallelThread::EnableConcurrent(bool waitForThread)
         return false;
     }
 
-    this->concurrentThread = (HANDLE)PlatformAgnostic::Thread::Create(Recycler::ConcurrentThreadStackSize, &RecyclerParallelThread::StaticThreadProc, this, PlatformAgnostic::Thread::ThreadInitStackSizeParamIsAReservation);
+    auto threadHandle = PlatformAgnostic::Thread::Create(Recycler::ConcurrentThreadStackSize, 
+      &RecyclerParallelThread::StaticThreadProc, this,
+      PlatformAgnostic::Thread::ThreadInitStackSizeParamIsAReservation, _u("Chakra Recycler Parallel Thread"));
+
+    if (threadHandle != PlatformAgnostic::Thread::InvalidHandle)
+    {
+        this->concurrentThread = reinterpret_cast<HANDLE>(threadHandle);
+    }
 
     if (this->concurrentThread != nullptr && waitForThread)
     {

@@ -71,7 +71,6 @@ public:
 
     UINT FloatPrefThreshold;
 
-public:
             void            Init(Lowerer *lowerer);
             IR::Opnd *      GenerateMemRef(intptr_t addr, IRType type, IR::Instr *instr, bool dontEncode = false);
             void            GenerateMemInit(IR::RegOpnd * opnd, int32 offset, size_t value, IR::Instr * insertBeforeInstr, bool isZeroed = false);
@@ -102,7 +101,9 @@ public:
             IR::Instr *     LowerCondBranch(IR::Instr * instr);
             IR::Instr *     LoadFunctionObjectOpnd(IR::Instr *instr, IR::Opnd *&functionObjOpnd);
             IR::Instr *     LowerNewScObject(IR::Instr *newObjInstr);
-            IR::Instr *     LowerWasmMemOp(IR::Instr *instr, IR::Opnd *addrOpnd);
+            IR::Instr *     LowerWasmArrayBoundsCheck(IR::Instr *instr, IR::Opnd *addrOpnd);
+            void            LowerAtomicStore(IR::Opnd * dst, IR::Opnd * src1, IR::Instr * insertBeforeInstr);
+            void            LowerAtomicLoad(IR::Opnd* dst, IR::Opnd* src1, IR::Instr* insertBeforeInstr);
             void            ForceDstToReg(IR::Instr *instr);
 
 public:
@@ -156,13 +157,10 @@ public:
             void            GenerateCheckForArgumentsLength(IR::Instr* ldElem, IR::LabelInstr* labelCreateHeapArgs, IR::Opnd* actualParamOpnd, IR::Opnd* valueOpnd, Js::OpCode);
             IR::RegOpnd *   LoadNonnegativeIndex(IR::RegOpnd *indexOpnd, const bool skipNegativeCheck, IR::LabelInstr *const notTaggedIntLabel, IR::LabelInstr *const negativeLabel, IR::Instr *const insertBeforeInstr);
             IR::RegOpnd *   GenerateUntagVar(IR::RegOpnd * opnd, IR::LabelInstr * labelFail, IR::Instr * insertBeforeInstr, bool generateTagCheck = true);
-            bool            GenerateFastLdMethodFromFlags(IR::Instr * instrLdFld);
             IR::Instr *     GenerateFastScopedLdFld(IR::Instr * instrLdFld);
             IR::Instr *     GenerateFastScopedStFld(IR::Instr * instrStFld);
             void            GenerateFastAbs(IR::Opnd *dst, IR::Opnd *src, IR::Instr *callInstr, IR::Instr *insertInstr, IR::LabelInstr *labelHelper, IR::LabelInstr *doneLabel);
             IR::Instr *     GenerateFloatAbs(IR::RegOpnd * regOpnd, IR::Instr * insertInstr);
-            bool            GenerateFastCharAt(Js::BuiltinFunction index, IR::Opnd *dst, IR::Opnd *srcStr, IR::Opnd *srcIndex, IR::Instr *callInstr, IR::Instr *insertInstr,
-                IR::LabelInstr *labelHelper, IR::LabelInstr *doneLabel);
             void            GenerateClz(IR::Instr * instr);
             void            GenerateCtz(IR::Instr * instr);
             void            GeneratePopCnt(IR::Instr * instr);
@@ -239,6 +237,7 @@ public:
             void            GenerateIsJsObjectTest(IR::RegOpnd* instanceReg, IR::Instr* insertInstr, IR::LabelInstr* labelHelper);
             void            LowerTypeof(IR::Instr * typeOfInstr);
 
+     static void            InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr);
 public:
             //
             // These methods are simply forwarded to lowererMDArch
@@ -299,21 +298,8 @@ public:
             }
 
     static IR::Instr * InsertCmovCC(const Js::OpCode opCode, IR::Opnd * dst, IR::Opnd* src1, IR::Instr* insertBeforeInstr, bool postRegAlloc = false);
-
-#ifdef ENABLE_SIMDJS
-    IR::Instr*          Simd128LowerConstructor_2(IR::Instr *instr);
-    IR::Instr*          Simd128LowerConstructor_4(IR::Instr *instr);
-    IR::Instr*          Simd128LowerConstructor_8(IR::Instr *instr);
-    IR::Instr*          Simd128LowerConstructor_16(IR::Instr *instr);
-    IR::Instr*          Simd128LowerRcp(IR::Instr *instr, bool removeInstr = true);
-    IR::Instr*          Simd128LowerRcpSqrt(IR::Instr *instr);
-    IR::Instr*          Simd128LowerRcpSqrt(IR::Instr *instr);
-    void                GenerateCheckedSimdLoad(IR::Instr * instr);
-    void                GenerateSimdStore(IR::Instr * instr);
-    IR::Instr*          Simd128LowerSelect(IR::Instr *instr);
-#endif
-
-#if defined(ENABLE_SIMDJS) || defined(ENABLE_WASM_SIMD)
+    
+#ifdef ENABLE_WASM_SIMD
     void                Simd128InitOpcodeMap();
     IR::Instr*          Simd128Instruction(IR::Instr* instr);
     IR::Instr*          Simd128LoadConst(IR::Instr* instr);
@@ -356,9 +342,7 @@ public:
     IR::Instr*          Simd128LowerMinMax_F4(IR::Instr* instr);
     IR::Instr*          Simd128LowerAnyTrue(IR::Instr* instr);
     IR::Instr*          Simd128LowerAllTrue(IR::Instr* instr);
-#ifdef ENABLE_WASM_SIMD
     IR::Opnd*           Simd128CanonicalizeToBoolsBeforeReduction(IR::Instr* instr);
-#endif
     BYTE                Simd128GetTypedArrBytesPerElem(ValueType arrType);
     IR::Instr*          Simd128CanonicalizeToBools(IR::Instr* instr, const Js::OpCode& cmpOpcode, IR::Opnd& dstOpnd);
     IR::Opnd*           EnregisterIntConst(IR::Instr* instr, IR::Opnd *constOpnd, IRType type = TyInt32);

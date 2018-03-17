@@ -301,6 +301,7 @@ namespace Js
         }
 
         static bool CanBeSingletonInstance(DynamicObject * instance);
+        static Var CanonicalizeAccessor(Var accessor, /*const*/ JavascriptLibrary* library);
     public:
         BYTE GetFlags() const { return this->flags; }
         static int GetOffsetOfFlags() { return offsetof(DynamicTypeHandler, flags); }
@@ -378,6 +379,11 @@ namespace Js
             SetFlags(HasKnownSlot0Flag);
         }
 
+        void ClearHasKnownSlot0()
+        {
+            ClearFlags(HasKnownSlot0Flag);
+        }
+
         void SetIsInlineSlotCapacityLocked()
         {
             Assert(!GetIsInlineSlotCapacityLocked());
@@ -420,6 +426,7 @@ namespace Js
         virtual BOOL IsSharable() const = 0;
 
         virtual int GetPropertyCount() = 0;
+        virtual int GetPropertyCountForEnum() { return GetPropertyCount(); }
         virtual PropertyId GetPropertyId(ScriptContext* scriptContext, PropertyIndex index) = 0;
         virtual PropertyId GetPropertyId(ScriptContext* scriptContext, BigPropertyIndex index) = 0;
         virtual BOOL FindNextProperty(ScriptContext* scriptContext, PropertyIndex& index, JavascriptString** propertyString,
@@ -608,6 +615,8 @@ namespace Js
 
         BigPropertyIndex GetPropertyIndexFromInlineSlotIndex(uint inlineSlotIndexSlot);
         BigPropertyIndex GetPropertyIndexFromAuxSlotIndex(uint auxIndex);
+
+        virtual BigPropertyIndex PropertyIndexToPropertyEnumeration(BigPropertyIndex index) const { return index; }
 
     protected:
         void SetPropertyUpdateSideEffect(DynamicObject* instance, PropertyId propertyId, Var value, SideEffects possibleSideEffects);

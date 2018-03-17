@@ -414,7 +414,7 @@ IRBuilder::Build()
     m_func->m_tailInstr = m_func->m_exitInstr;
     m_func->m_headInstr->InsertAfter(m_func->m_tailInstr);
 
-    if (m_func->GetJITFunctionBody()->IsParamAndBodyScopeMerged())
+    if (m_func->GetJITFunctionBody()->IsParamAndBodyScopeMerged() || this->IsLoopBody())
     {
         this->SetParamScopeDone();
     }
@@ -460,9 +460,7 @@ IRBuilder::Build()
         this->m_loopBodyLocalsStartSlot = (Js::PropertyId)(localsOffset / sizeof(Js::Var));
     }
 
-#if DBG
     m_offsetToInstructionCount = offsetToInstructionCount;
-#endif
     m_offsetToInstruction = JitAnewArrayZ(m_tempAlloc, IR::Instr *, offsetToInstructionCount);
 
 #ifdef BYTECODE_BRANCH_ISLAND
@@ -820,7 +818,8 @@ IRBuilder::Build()
                     m_lastInstr->m_opcode == Js::OpCode::RuntimeTypeError)
                 {
                     uint32 lastInstrOffset = m_lastInstr->GetByteCodeOffset();
-                    Assert(lastInstrOffset < m_offsetToInstructionCount);
+
+                    AssertOrFailFast(lastInstrOffset < m_offsetToInstructionCount);
 #if DBG
                     __analysis_assume(lastInstrOffset < this->m_offsetToInstructionCount);
 #endif
@@ -1069,7 +1068,7 @@ IRBuilder::CreateLabel(IR::BranchInstr * branchInstr, uint& offset)
 
     for (;;)
     {
-        Assert(offset < m_offsetToInstructionCount);
+        AssertOrFailFast(offset < m_offsetToInstructionCount);
         targetInstr = this->m_offsetToInstruction[offset];
         if (targetInstr != nullptr)
         {
@@ -1118,7 +1117,7 @@ IRBuilder::CreateLabel(IR::BranchInstr * branchInstr, uint& offset)
 
 void IRBuilder::InsertInstr(IR::Instr *instr, IR::Instr* insertBeforeInstr)
 {
-    Assert(insertBeforeInstr->GetByteCodeOffset() < m_offsetToInstructionCount);
+    AssertOrFailFast(insertBeforeInstr->GetByteCodeOffset() < m_offsetToInstructionCount);
     instr->SetByteCodeOffset(insertBeforeInstr);
     uint32 offset = insertBeforeInstr->GetByteCodeOffset();
     if (m_offsetToInstruction[offset] == insertBeforeInstr)
@@ -1150,7 +1149,7 @@ IRBuilder::AddInstr(IR::Instr *instr, uint32 offset)
     m_lastInstr->InsertAfter(instr);
     if (offset != Js::Constants::NoByteCodeOffset)
     {
-        Assert(offset < m_offsetToInstructionCount);
+        AssertOrFailFast(offset < m_offsetToInstructionCount);
         if (m_offsetToInstruction[offset] == nullptr)
         {
             m_offsetToInstruction[offset] = instr;
@@ -1213,6 +1212,7 @@ IRBuilder::BuildIndirOpnd(IR::RegOpnd *baseReg, uint32 offset, const char16 *des
 IR::SymOpnd *
 IRBuilder::BuildFieldOpnd(Js::OpCode newOpcode, Js::RegSlot reg, Js::PropertyId propertyId, Js::PropertyIdIndexType propertyIdIndex, PropertyKind propertyKind, uint inlineCacheIndex)
 {
+    AssertOrFailFast(inlineCacheIndex < m_func->GetJITFunctionBody()->GetInlineCacheCount() || inlineCacheIndex == Js::Constants::NoInlineCacheIndex);
     PropertySym * propertySym = BuildFieldSym(reg, propertyId, propertyIdIndex, inlineCacheIndex, propertyKind);
     IR::SymOpnd * symOpnd;
 
@@ -1798,7 +1798,8 @@ IRBuilder::BuildReg1(Js::OpCode newOpcode, uint32 offset, Js::RegSlot R0)
     case Js::OpCode::Catch:
         if (this->handlerOffsetStack)
         {
-            Assert(this->handlerOffsetStack->Top().Second() == true);
+            AssertOrFailFast(!this->handlerOffsetStack->Empty());
+            AssertOrFailFast(this->handlerOffsetStack->Top().Second() == true);
             this->handlerOffsetStack->Pop();
         }
         dstIsCatchObject = true;
@@ -2032,9 +2033,12 @@ IRBuilder::BuildProfiledReg2(Js::OpCode newOpcode, uint32 offset, Js::RegSlot ds
 
     Js::OpCodeUtil::ConvertNonCallOpToNonProfiled(newOpcode);
 
+    Assert(newOpcode == Js::OpCode::BeginSwitch);
+
     IR::RegOpnd *   src1Opnd = this->BuildSrcOpnd(srcRegSlot);
     IR::RegOpnd *   dstOpnd;
-    if(newOpcode == Js::OpCode::BeginSwitch && srcRegSlot == dstRegSlot)
+
+    if(srcRegSlot == dstRegSlot)
     {
         //if the operands are the same for BeginSwitch, don't build a new operand in IR.
         dstOpnd = src1Opnd;
@@ -2044,50 +2048,11 @@ IRBuilder::BuildProfiledReg2(Js::OpCode newOpcode, uint32 offset, Js::RegSlot ds
         dstOpnd = this->BuildDstOpnd(dstRegSlot);
     }
 
-    bool isProfiled = true;
-    const Js::LdElemInfo *ldElemInfo = nullptr;
-    if (newOpcode == Js::OpCode::BeginSwitch)
-    {
-        m_switchBuilder.BeginSwitch();
-        switchFound = true;
-        newOpcode = Js::OpCode::Ld_A;   // BeginSwitch is originally equivalent to Ld_A
-    }
-    else
-    {
-        Assert(newOpcode == Js::OpCode::LdLen_A);
-        if(m_func->HasProfileInfo())
-        {
-            ldElemInfo = m_func->GetReadOnlyProfileInfo()->GetLdElemInfo(profileId);
-            ValueType arrayType(ldElemInfo->GetArrayType());
-            if(arrayType.IsLikelyNativeArray() &&
-                (
-                    (!(m_func->GetTopFunc()->HasTry() && !m_func->GetTopFunc()->DoOptimizeTry()) && m_func->GetWeakFuncRef() && !m_func->HasArrayInfo()) ||
-                    m_func->IsJitInDebugMode()
-                ))
-            {
-                arrayType = arrayType.SetArrayTypeId(Js::TypeIds_Array);
-
-                // An opnd's value type will get replaced in the forward phase when it is not fixed. Store the array type in the
-                // ProfiledInstr.
-                Js::LdElemInfo *const newLdElemInfo = JitAnew(m_func->m_alloc, Js::LdElemInfo, *ldElemInfo);
-                newLdElemInfo->arrayType = arrayType;
-                ldElemInfo = newLdElemInfo;
-            }
-            src1Opnd->SetValueType(arrayType);
-
-            if (m_func->GetTopFunc()->HasTry() && !m_func->GetTopFunc()->DoOptimizeTry())
-            {
-                isProfiled = false;
-            }
-        }
-        else
-        {
-            isProfiled = false;
-        }
-    }
+    m_switchBuilder.BeginSwitch();
+    switchFound = true;
+    newOpcode = Js::OpCode::Ld_A;   // BeginSwitch is originally equivalent to Ld_A
 
     IR::Instr *instr;
-
 
     if (m_func->DoSimpleJitDynamicProfile())
     {
@@ -2097,34 +2062,14 @@ IRBuilder::BuildProfiledReg2(Js::OpCode newOpcode, uint32 offset, Js::RegSlot ds
         profiledInstr->isBeginSwitch = newOpcode == Js::OpCode::Ld_A;
         instr = profiledInstr;
     }
-    else if(isProfiled)
+    else
     {
         IR::ProfiledInstr *profiledInstr = IR::ProfiledInstr::New(newOpcode, dstOpnd, src1Opnd, m_func);
         instr = profiledInstr;
-
-        switch (newOpcode) {
-        case Js::OpCode::Ld_A:
-            profiledInstr->u.FldInfo() = Js::FldInfo();
-            break;
-        case Js::OpCode::LdLen_A:
-            profiledInstr->u.ldElemInfo = ldElemInfo;
-            break;
-        default:
-            Assert(false);
-            __assume(false);
-        }
-    }
-    else
-    {
-        instr = IR::Instr::New(newOpcode, dstOpnd, src1Opnd, m_func);
+        profiledInstr->u.FldInfo() = Js::FldInfo();
     }
 
     this->AddInstr(instr, offset);
-
-    if(newOpcode == Js::OpCode::LdLen_A && ldElemInfo && !ldElemInfo->WasProfiled() && DoBailOnNoProfile())
-    {
-        InsertBailOnNoProfile(instr);
-    }
 
     if(switchFound && instr->IsProfiledInstr())
     {
@@ -4501,6 +4446,111 @@ IRBuilder::BuildElementCP(Js::OpCode newOpcode, uint32 offset, Js::RegSlot insta
     }
 }
 
+template <typename SizePolicy>
+void
+IRBuilder::BuildProfiledElementCP(Js::OpCode newOpcode, uint32 offset)
+{
+    Assert(OpCodeAttr::HasMultiSizeLayout(newOpcode));
+    auto layout = m_jnReader.GetLayout<Js::OpLayoutDynamicProfile<Js::OpLayoutT_ElementCP<SizePolicy>>>();
+
+    if (!PHASE_OFF(Js::ClosureRegCheckPhase, m_func))
+    {
+        this->DoClosureRegCheck(layout->Value);
+        this->DoClosureRegCheck(layout->Instance);
+    }
+
+    BuildProfiledElementCP(newOpcode, offset, layout->Instance, layout->Value, layout->inlineCacheIndex, layout->profileId);
+}
+
+void
+IRBuilder::BuildProfiledElementCP(Js::OpCode newOpcode, uint32 offset, Js::RegSlot instance, Js::RegSlot regSlot, Js::CacheId inlineCacheIndex, Js::ProfileId profileId)
+{
+    Assert(OpCodeAttr::HasMultiSizeLayout(newOpcode));
+
+    bool isProfiled = OpCodeAttr::IsProfiledOp(newOpcode);
+
+    if (isProfiled)
+    {
+        Js::OpCodeUtil::ConvertNonCallOpToNonProfiled(newOpcode);
+    }
+
+    Assert(newOpcode == Js::OpCode::LdLen_A);
+
+    Js::PropertyId propertyId = m_func->GetJITFunctionBody()->GetPropertyIdFromCacheId(inlineCacheIndex);
+    IR::SymOpnd * fieldSymOpnd = this->BuildFieldOpnd(newOpcode, instance, propertyId, (Js::PropertyIdIndexType) - 1, PropertyKindData, inlineCacheIndex);
+    IR::RegOpnd * dstOpnd = this->BuildDstOpnd(regSlot);
+
+    ValueType arrayType = ValueType::Uninitialized;
+
+    const Js::LdLenInfo * ldLenInfo = nullptr;
+    if (m_func->HasProfileInfo())
+    {
+        ldLenInfo = m_func->GetReadOnlyProfileInfo()->GetLdLenInfo(profileId);
+        arrayType = (ldLenInfo->GetArrayType());
+        if (arrayType.IsLikelyNativeArray() &&
+            (
+                (!(m_func->GetTopFunc()->HasTry() && !m_func->GetTopFunc()->DoOptimizeTry()) && m_func->GetWeakFuncRef() && !m_func->HasArrayInfo()) ||
+                m_func->IsJitInDebugMode()
+            ))
+        {
+            // An opnd's value type will get replaced in the forward phase when it is not fixed. Store the array type in the ProfiledInstr.
+            arrayType = arrayType.SetArrayTypeId(Js::TypeIds_Array);
+        }
+        fieldSymOpnd->SetValueType(arrayType);
+
+        if (m_func->GetTopFunc()->HasTry() && !m_func->GetTopFunc()->DoOptimizeTry())
+        {
+            isProfiled = false;
+        }
+    }
+    else
+    {
+        isProfiled = false;
+    }
+    
+    bool wasNotProfiled = false;
+    IR::Instr *instr = nullptr;
+
+    if (m_func->DoSimpleJitDynamicProfile())
+    {
+        // Since we're in simplejit, we want to keep track of the profileid:
+        IR::JitProfilingInstr * profiledInstr = IR::JitProfilingInstr::New(newOpcode, dstOpnd, fieldSymOpnd, m_func);
+        instr = profiledInstr;
+        profiledInstr->profileId = profileId;
+    }
+    else if (isProfiled)
+    {
+        IR::ProfiledInstr * profiledInstr = IR::ProfiledInstr::New(newOpcode, dstOpnd, fieldSymOpnd, m_func);
+        instr = profiledInstr;
+        profiledInstr->u.FldInfo() = *(m_func->GetReadOnlyProfileInfo()->GetFldInfo(inlineCacheIndex));
+        profiledInstr->u.LdLenInfo() = *ldLenInfo;
+        profiledInstr->u.LdLenInfo().arrayType = arrayType;
+        wasNotProfiled = !profiledInstr->u.FldInfo().WasLdFldProfiled();
+        dstOpnd->SetValueType(instr->AsProfiledInstr()->u.FldInfo().valueType);
+#if ENABLE_DEBUG_CONFIG_OPTIONS
+        if (Js::Configuration::Global.flags.TestTrace.IsEnabled(Js::DynamicProfilePhase))
+        {
+            const ValueType valueType(profiledInstr->u.FldInfo().valueType);
+            char valueTypeStr[VALUE_TYPE_MAX_STRING_SIZE];
+            valueType.ToString(valueTypeStr);
+            char16 debugStringBuffer[MAX_FUNCTION_BODY_DEBUG_STRING_SIZE];
+            Output::Print(_u("TestTrace function %s (%s) ValueType = %i "), m_func->GetJITFunctionBody()->GetDisplayName(), m_func->GetDebugNumberSet(debugStringBuffer), valueTypeStr);
+            instr->DumpTestTrace();
+        }
+#endif
+    }
+    else
+    {
+        instr = IR::Instr::New(newOpcode, dstOpnd, fieldSymOpnd, m_func);
+    }
+
+    this->AddInstr(instr, offset);
+
+    if (wasNotProfiled && DoBailOnNoProfile())
+    {
+        InsertBailOnNoProfile(instr);
+    }
+}
 
 ///----------------------------------------------------------------------------
 ///
@@ -6125,19 +6175,24 @@ IRBuilder::BuildProfiledCallI(Js::OpCode opcode, uint32 offset, Js::RegSlot retu
                 if(this->m_func->GetWorkItem()->GetJITTimeInfo())
                 {
                     const FunctionJITTimeInfo *inlinerData = this->m_func->GetWorkItem()->GetJITTimeInfo();
-                    if(!(this->IsLoopBody() && PHASE_OFF(Js::InlineInJitLoopBodyPhase, this->m_func)) && 
-                        inlinerData && inlinerData->GetInlineesBV() && (!inlinerData->GetInlineesBV()->Test(profileId)
-#if DBG
-                        || (PHASE_STRESS(Js::BailOnNoProfilePhase, this->m_func->GetTopFunc()) &&
-                            (CONFIG_FLAG(SkipFuncCountForBailOnNoProfile) < 0 ||
-                            this->m_func->m_callSiteCount >= (uint)CONFIG_FLAG(SkipFuncCountForBailOnNoProfile)))
-#endif
-                        ))
+                    if (!(this->IsLoopBody() && PHASE_OFF(Js::InlineInJitLoopBodyPhase, this->m_func))
+                        && inlinerData && inlinerData->GetInlineesBV())
                     {
-                        this->InsertBailOnNoProfile(offset);
-                        isProtectedByNoProfileBailout = true;
+                        AssertOrFailFast(profileId < inlinerData->GetInlineesBV()->Length());
+                        if (!inlinerData->GetInlineesBV()->Test(profileId)
+#if DBG
+                            || (PHASE_STRESS(Js::BailOnNoProfilePhase, this->m_func->GetTopFunc())
+                                && (CONFIG_FLAG(SkipFuncCountForBailOnNoProfile) < 0
+                                    || this->m_func->m_callSiteCount >= (uint)CONFIG_FLAG(SkipFuncCountForBailOnNoProfile)))
+#endif
+                            )
+                        {
+                            this->InsertBailOnNoProfile(offset);
+                            isProtectedByNoProfileBailout = true;
+                        }
                     }
-                    else
+
+                    if (!isProtectedByNoProfileBailout)
                     {
                         this->callTreeHasSomeProfileInfo = true;
                     }
@@ -6398,10 +6453,10 @@ IRBuilder::BuildCallCommon(IR::Instr * instr, StackSym * symDst, Js::ArgSlot arg
 #endif
 
     // Link all the args of this call by creating a def/use chain through the src2.
-
-    for (argInstr = this->m_argStack->Pop();
-        argInstr && argInstr->m_opcode != Js::OpCode::StartCall;
-        argInstr = this->m_argStack->Pop())
+    AssertOrFailFast(!m_argStack->Empty());
+    for (argInstr = m_argStack->Pop();
+        argInstr && !m_argStack->Empty() && argInstr->m_opcode != Js::OpCode::StartCall;
+        argInstr = m_argStack->Pop())
     {
         prevInstr->SetSrc2(argInstr->GetDst());
         prevInstr = argInstr;
@@ -6409,8 +6464,9 @@ IRBuilder::BuildCallCommon(IR::Instr * instr, StackSym * symDst, Js::ArgSlot arg
         count++;
 #endif
     }
+    AssertOrFailFast(argInstr == nullptr || argInstr->m_opcode == Js::OpCode::StartCall);
 
-    if (this->m_argStack->Empty())
+    if (m_argStack->Empty())
     {
         this->callTreeHasSomeProfileInfo = false;
     }
@@ -6736,7 +6792,8 @@ IRBuilder::BuildEmpty(Js::OpCode newOpcode, uint32 offset)
     case Js::OpCode::Finally:
         if (this->handlerOffsetStack)
         {
-            Assert(this->handlerOffsetStack->Top().Second() == false);
+            AssertOrFailFast(!this->handlerOffsetStack->Empty());
+            AssertOrFailFast(this->handlerOffsetStack->Top().Second() == false);
             this->handlerOffsetStack->Pop();
         }
         finallyBlockLevel++;
@@ -6971,7 +7028,6 @@ IRBuilder::BuildBr(Js::OpCode newOpcode, uint32 offset)
     IR::BranchInstr * branchInstr;
     const unaligned   Js::OpLayoutBr *branchInsn = m_jnReader.Br();
     unsigned int      targetOffset = m_jnReader.GetCurrentOffset() + branchInsn->RelativeJumpOffset;
-
 #ifdef BYTECODE_BRANCH_ISLAND
     bool isLongBranchIsland = (m_jnReader.PeekOp() == Js::OpCode::BrLong);
     if (isLongBranchIsland)
@@ -7154,6 +7210,7 @@ IRBuilder::BuildBrEnvProperty(Js::OpCode newOpcode, uint32 offset)
 BranchReloc *
 IRBuilder::AddBranchInstr(IR::BranchInstr * branchInstr, uint32 offset, uint32 targetOffset)
 {
+    AssertOrFailFast(targetOffset <= m_func->GetJITFunctionBody()->GetByteCodeLength());
     //
     // Loop jitting would be done only till the LoopEnd
     // Any branches beyond that offset are for the return stmt

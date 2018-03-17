@@ -177,17 +177,27 @@ JsErrorCode CreateContextCore(_In_ JsRuntimeHandle runtimeHandle, _In_ TTDRecord
 
     if(jsrtDebugManager != nullptr)
     {
+        // JsDiagStartDebugging was called
+        threadContext->GetDebugManager()->SetLocalsDisplayFlags(Js::DebugManager::LocalsDisplayFlags::LocalsDisplayFlags_NoGroupMethods);
+
         Js::ScriptContext* scriptContext = context->GetScriptContext();
-        scriptContext->InitializeDebugging();
 
         Js::DebugContext* debugContext = scriptContext->GetDebugContext();
         debugContext->SetHostDebugContext(jsrtDebugManager);
 
-        Js::ProbeContainer* probeContainer = debugContext->GetProbeContainer();
-        probeContainer->InitializeInlineBreakEngine(jsrtDebugManager);
-        probeContainer->InitializeDebuggerScriptOptionCallback(jsrtDebugManager);
-
-        threadContext->GetDebugManager()->SetLocalsDisplayFlags(Js::DebugManager::LocalsDisplayFlags::LocalsDisplayFlags_NoGroupMethods);
+        if (!jsrtDebugManager->IsDebugEventCallbackSet())
+        {
+            // JsDiagStopDebugging was called so we need to be in SourceRunDownMode
+            debugContext->SetDebuggerMode(Js::DebuggerMode::SourceRundown);
+        }
+        else
+        {
+            // Set Debugging mode
+            scriptContext->InitializeDebugging();
+            Js::ProbeContainer* probeContainer = debugContext->GetProbeContainer();
+            probeContainer->InitializeInlineBreakEngine(jsrtDebugManager);
+            probeContainer->InitializeDebuggerScriptOptionCallback(jsrtDebugManager);
+        }
     }
 #endif
 
@@ -203,11 +213,17 @@ JsErrorCode CreateContextCore(_In_ JsRuntimeHandle runtimeHandle, _In_ TTDRecord
 }
 
 #if ENABLE_TTD
-void CALLBACK CreateExternalObject_TTDCallback(Js::ScriptContext* ctx, Js::Var* object)
+void CALLBACK CreateExternalObject_TTDCallback(Js::ScriptContext* ctx, Js::Var prototype, Js::Var* object)
 {
     TTDAssert(object != nullptr, "This should always be a valid location");
 
-    *object = JsrtExternalObject::Create(nullptr, nullptr, nullptr, ctx);
+    Js::RecyclableObject * prototypeObject = nullptr;
+    if (prototype != JS_INVALID_REFERENCE)
+    {
+        prototypeObject = Js::RecyclableObject::FromVar(prototype);
+    }
+
+    *object = JsrtExternalObject::Create(nullptr, nullptr, prototypeObject, ctx);
 }
 
 void CALLBACK TTDDummyPromiseContinuationCallback(JsValueRef task, void *callbackState)
@@ -269,6 +285,7 @@ JsErrorCode CreateRuntimeCore(_In_ JsRuntimeAttributes attributes,
             JsRuntimeAttributeEnableIdleProcessing |
             JsRuntimeAttributeDisableEval |
             JsRuntimeAttributeDisableNativeCodeGeneration |
+            JsRuntimeAttributeDisableExecutablePageAllocation |
             JsRuntimeAttributeEnableExperimentalFeatures |
             JsRuntimeAttributeDispatchSetExceptionsToDebugger |
             JsRuntimeAttributeDisableFatalOnOOM
@@ -323,6 +340,12 @@ JsErrorCode CreateRuntimeCore(_In_ JsRuntimeAttributes attributes,
             threadContext->SetThreadContextFlag(ThreadContextFlagNoJIT);
         }
 
+        if (attributes & JsRuntimeAttributeDisableExecutablePageAllocation)
+        {
+            threadContext->SetThreadContextFlag(ThreadContextFlagNoJIT);
+            threadContext->SetThreadContextFlag(ThreadContextFlagNoDynamicThunks);
+        }
+
         if (attributes & JsRuntimeAttributeDisableFatalOnOOM)
         {
             threadContext->SetThreadContextFlag(ThreadContextFlagDisableFatalOnOOM);
@@ -361,11 +384,6 @@ JsErrorCode CreateRuntimeCore(_In_ JsRuntimeAttributes attributes,
         if(isRecord && isReplay)
         {
             return JsErrorInvalidArgument; //A runtime can only be in 1 mode
-        }
-
-        if(isDebug && !isReplay)
-        {
-            return JsErrorInvalidArgument; //A debug runtime also needs to be in runtime mode (and we are going to be strict about it)
         }
 
         if(isReplay && optTTUri == nullptr)
@@ -1285,34 +1303,18 @@ CHAKRA_API JsCreateObject(_Out_ JsValueRef *object)
     });
 }
 
-CHAKRA_API JsCreateExternalObject(_In_opt_ void *data, _In_opt_ JsFinalizeCallback finalizeCallback, _Out_ JsValueRef *object)
-{
-    return ContextAPINoScriptWrapper([&](Js::ScriptContext *scriptContext, TTDRecorder& _actionEntryPopper) -> JsErrorCode {
-        PERFORM_JSRT_TTD_RECORD_ACTION(scriptContext, RecordJsRTAllocateExternalObject);
-
-        PARAM_NOT_NULL(object);
-
-        *object = JsrtExternalObject::Create(data, finalizeCallback, nullptr, scriptContext);
-
-        PERFORM_JSRT_TTD_RECORD_ACTION_RESULT(scriptContext, object);
-
-        return JsNoError;
-    });
-}
-
-#ifndef NTBUILD
 CHAKRA_API JsCreateExternalObjectWithPrototype(_In_opt_ void *data,
     _In_opt_ JsFinalizeCallback finalizeCallback,
-    _In_ JsValueRef prototype,
+    _In_opt_ JsValueRef prototype,
     _Out_ JsValueRef *object)
 {
     return ContextAPINoScriptWrapper([&](Js::ScriptContext *scriptContext, TTDRecorder& _actionEntryPopper) -> JsErrorCode {
-        PERFORM_JSRT_TTD_RECORD_ACTION(scriptContext, RecordJsRTAllocateExternalObject);
+        PERFORM_JSRT_TTD_RECORD_ACTION(scriptContext, RecordJsRTAllocateExternalObject, prototype);
 
         PARAM_NOT_NULL(object);
 
         Js::RecyclableObject * prototypeObject = nullptr;
-        if (prototype != nullptr)
+        if (prototype != JS_INVALID_REFERENCE)
         {
             VALIDATE_INCOMING_OBJECT(prototype, scriptContext);
             prototypeObject = Js::RecyclableObject::FromVar(prototype);
@@ -1322,15 +1324,14 @@ CHAKRA_API JsCreateExternalObjectWithPrototype(_In_opt_ void *data,
 
         PERFORM_JSRT_TTD_RECORD_ACTION_RESULT(scriptContext, object);
 
-        if (prototypeObject != nullptr)
-        {
-            PERFORM_JSRT_TTD_RECORD_ACTION(scriptContext, RecordJsRTSetPrototype, *object, prototypeObject);
-        }
-
         return JsNoError;
     });
 }
-#endif
+
+CHAKRA_API JsCreateExternalObject(_In_opt_ void *data, _In_opt_ JsFinalizeCallback finalizeCallback, _Out_ JsValueRef *object)
+{
+    return JsCreateExternalObjectWithPrototype(data, finalizeCallback, JS_INVALID_REFERENCE, object);
+}
 
 CHAKRA_API JsConvertValueToObject(_In_ JsValueRef value, _Out_ JsValueRef *result)
 {
@@ -2883,9 +2884,28 @@ CHAKRA_API JsCreateNamedFunction(_In_ JsValueRef name, _In_ JsNativeFunction nat
     return JsCreateEnhancedFunctionHelper<true>(nativeFunction, name, callbackState, function);
 }
 
-void SetErrorMessage(Js::ScriptContext *scriptContext, JsValueRef newError, JsValueRef message)
+void SetErrorMessage(Js::ScriptContext *scriptContext, Js::JavascriptError *newError, JsValueRef message)
 {
-    Js::JavascriptOperators::OP_SetProperty(newError, Js::PropertyIds::message, message, scriptContext);
+    // ECMA262 #sec-error-message
+    if (!Js::JavascriptOperators::IsUndefined(message))
+    {
+        Js::JavascriptString *messageStr = nullptr;
+        if (Js::JavascriptString::Is(message))
+        {
+            messageStr = Js::JavascriptString::FromVar(message);
+        }
+        else
+        {
+            messageStr = Js::JavascriptConversion::ToString(message, scriptContext);
+        }
+
+        Js::PropertyDescriptor desc;
+        desc.SetValue(messageStr);
+        desc.SetWritable(true);
+        desc.SetEnumerable(false);
+        desc.SetConfigurable(true);
+        Js::JavascriptOperators::SetPropertyDescriptor(newError, Js::PropertyIds::message, desc);
+    }
 }
 
 CHAKRA_API JsCreateError(_In_ JsValueRef message, _Out_ JsValueRef *error)
@@ -2897,7 +2917,7 @@ CHAKRA_API JsCreateError(_In_ JsValueRef message, _Out_ JsValueRef *error)
         PARAM_NOT_NULL(error);
         *error = nullptr;
 
-        JsValueRef newError = scriptContext->GetLibrary()->CreateError();
+        Js::JavascriptError *newError = scriptContext->GetLibrary()->CreateError();
         SetErrorMessage(scriptContext, newError, message);
         *error = newError;
 
@@ -2916,7 +2936,7 @@ CHAKRA_API JsCreateRangeError(_In_ JsValueRef message, _Out_ JsValueRef *error)
         PARAM_NOT_NULL(error);
         *error = nullptr;
 
-        JsValueRef newError = scriptContext->GetLibrary()->CreateRangeError();
+        Js::JavascriptError *newError = scriptContext->GetLibrary()->CreateRangeError();
         SetErrorMessage(scriptContext, newError, message);
         *error = newError;
 
@@ -2935,7 +2955,7 @@ CHAKRA_API JsCreateReferenceError(_In_ JsValueRef message, _Out_ JsValueRef *err
         PARAM_NOT_NULL(error);
         *error = nullptr;
 
-        JsValueRef newError = scriptContext->GetLibrary()->CreateReferenceError();
+        Js::JavascriptError *newError = scriptContext->GetLibrary()->CreateReferenceError();
         SetErrorMessage(scriptContext, newError, message);
         *error = newError;
 
@@ -2954,7 +2974,7 @@ CHAKRA_API JsCreateSyntaxError(_In_ JsValueRef message, _Out_ JsValueRef *error)
         PARAM_NOT_NULL(error);
         *error = nullptr;
 
-        JsValueRef newError = scriptContext->GetLibrary()->CreateSyntaxError();
+        Js::JavascriptError *newError = scriptContext->GetLibrary()->CreateSyntaxError();
         SetErrorMessage(scriptContext, newError, message);
         *error = newError;
 
@@ -2973,7 +2993,7 @@ CHAKRA_API JsCreateTypeError(_In_ JsValueRef message, _Out_ JsValueRef *error)
         PARAM_NOT_NULL(error);
         *error = nullptr;
 
-        JsValueRef newError = scriptContext->GetLibrary()->CreateTypeError();
+        Js::JavascriptError *newError = scriptContext->GetLibrary()->CreateTypeError();
         SetErrorMessage(scriptContext, newError, message);
         *error = newError;
 
@@ -2992,7 +3012,7 @@ CHAKRA_API JsCreateURIError(_In_ JsValueRef message, _Out_ JsValueRef *error)
         PARAM_NOT_NULL(error);
         *error = nullptr;
 
-        JsValueRef newError = scriptContext->GetLibrary()->CreateURIError();
+        Js::JavascriptError *newError = scriptContext->GetLibrary()->CreateURIError();
         SetErrorMessage(scriptContext, newError, message);
         *error = newError;
 
@@ -3934,7 +3954,7 @@ CHAKRA_API JsRunSerializedScriptWithCallback(_In_ JsSerializedScriptLoadSourceCa
 
 /////////////////////
 
-CHAKRA_API JsTTDCreateRecordRuntime(_In_ JsRuntimeAttributes attributes, _In_ size_t snapInterval, _In_ size_t snapHistoryLength,
+CHAKRA_API JsTTDCreateRecordRuntime(_In_ JsRuntimeAttributes attributes, _In_ bool enableDebugging, _In_ size_t snapInterval, _In_ size_t snapHistoryLength,
     _In_ TTDOpenResourceStreamCallback openResourceStream, _In_ JsTTDWriteBytesToStreamCallback writeBytesToStream, _In_ JsTTDFlushAndCloseStreamCallback flushAndCloseStream,
     _In_opt_ JsThreadServiceCallback threadService, _Out_ JsRuntimeHandle *runtime)
 {
@@ -3946,7 +3966,7 @@ CHAKRA_API JsTTDCreateRecordRuntime(_In_ JsRuntimeAttributes attributes, _In_ si
         return JsErrorInvalidArgument;
     }
 
-    return CreateRuntimeCore(attributes, nullptr, 0, true, false, false, (uint32)snapInterval, (uint32)snapHistoryLength,
+    return CreateRuntimeCore(attributes, nullptr, 0, true, false, enableDebugging, (uint32)snapInterval, (uint32)snapHistoryLength,
         openResourceStream, nullptr, writeBytesToStream, flushAndCloseStream,
         threadService, runtime);
 #endif
@@ -4596,7 +4616,7 @@ CHAKRA_API JsTTDReplayExecution(_Inout_ JsTTDMoveMode* moveMode, _Out_ int64_t* 
             *moveMode = (JsTTDMoveMode)abortException.GetMoveMode();
             *rootEventTime = abortException.GetTargetEventTime();
 
-            //Check if we are tracking execution and, if so, set the exception locaiton so we can access it later
+            //Check if we are tracking execution and, if so, set the exception location so we can access it later
             if(emanager != nullptr && abortException.IsTopLevelException())
             {
                 emanager->SetPendingTTDUnhandledException();
@@ -4641,7 +4661,7 @@ CHAKRA_API JsCreateString(
         length = strlen(content);
     }
 
-    if (length > static_cast<CharCount>(-1))
+    if (length > MaxCharCount)
     {
         return JsErrorOutOfMemory;
     }
@@ -5308,6 +5328,56 @@ CHAKRA_API JsGetDataViewInfo(
 #endif
 
     END_JSRT_NO_EXCEPTION
+}
+
+CHAKRA_API JsSetHostPromiseRejectionTracker(_In_ JsHostPromiseRejectionTrackerCallback promiseRejectionTrackerCallback, _In_opt_ void *callbackState)
+{
+    return ContextAPINoScriptWrapper_NoRecord([&](Js::ScriptContext *scriptContext) -> JsErrorCode {
+        scriptContext->GetLibrary()->SetNativeHostPromiseRejectionTrackerCallback((Js::JavascriptLibrary::HostPromiseRejectionTrackerCallback) promiseRejectionTrackerCallback, callbackState);
+        return JsNoError;
+    },
+    /*allowInObjectBeforeCollectCallback*/true);
+}
+
+CHAKRA_API JsGetProxyProperties (_In_ JsValueRef object, _Out_ bool* isProxy, _Out_opt_ JsValueRef* target, _Out_opt_ JsValueRef* handler)
+{
+    return ContextAPINoScriptWrapper_NoRecord([&](Js::ScriptContext * scriptContext) -> JsErrorCode {
+        VALIDATE_INCOMING_REFERENCE(object, scriptContext);
+        PARAM_NOT_NULL(isProxy);
+
+        if (target != nullptr)
+        {
+            *target = JS_INVALID_REFERENCE;
+        }
+
+        if (handler != nullptr)
+        {
+            *handler = JS_INVALID_REFERENCE;
+        }
+
+        *isProxy = Js::JavascriptProxy::Is(object);
+
+        if (!*isProxy)
+        {
+            return JsNoError;
+        }
+
+        Js::JavascriptProxy* proxy = Js::JavascriptProxy::UnsafeFromVar(object);
+        bool revoked = proxy->IsRevoked();
+
+        if (target != nullptr && !revoked)
+        {
+            *target = static_cast<JsValueRef>(proxy->GetTarget());
+        }
+
+        if (handler != nullptr && !revoked)
+        {
+            *handler = static_cast<JsValueRef>(proxy->GetHandler());
+        }
+
+        return JsNoError;
+    },
+    /*allowInObjectBeforeCollectCallback*/true);
 }
 
 #endif // _CHAKRACOREBUILD

@@ -105,8 +105,6 @@
   <test>
     <default>
       <files>compare.js</files>
-      <baseline>compare.baseline</baseline>
-      <compile-flags>-Intl-</compile-flags>
     </default>
   </test>
   <test>
@@ -238,7 +236,6 @@
   <test>
     <default>
       <files>bug_OS_3080673.js</files>
-      <tags>BugFix</tags>
     </default>
   </test>
   <test>

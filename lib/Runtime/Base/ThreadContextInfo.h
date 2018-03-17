@@ -103,7 +103,7 @@ public:
     virtual ptrdiff_t GetCRTBaseAddressDifference() const = 0;
 
 #if ENABLE_NATIVE_CODEGEN
-#if (defined(ENABLE_SIMDJS) || defined(ENABLE_WASM_SIMD)) && (defined(_M_IX86) || defined(_M_X64))
+#if defined(ENABLE_WASM_SIMD)
     virtual intptr_t GetSimdTempAreaAddr(uint8 tempIndex) const = 0;
 #endif
     virtual intptr_t GetBailOutRegisterSaveSpaceAddr() const = 0;
@@ -141,6 +141,26 @@ protected:
     bool m_isClosed;
 
 };
+
+#pragma warning(push)
+#pragma warning(error: 4440)
+// MSVC will give warning C4440 in case of calling convention redefinition
+template<typename F> void EnsureStdcall(F*) { typedef F __stdcall* T; }
+template<typename F> void EnsureCdecl(F*) { typedef F __cdecl* T; }
+#pragma warning(pop)
+template<typename T>
+uintptr_t ShiftCdeclAddr(const ThreadContextInfo*const context, T* address)
+{
+    EnsureCdecl(address);
+    return ShiftAddr(context, (uintptr_t)address);
+}
+
+template<typename T>
+uintptr_t ShiftStdcallAddr(const ThreadContextInfo*const context, T* address)
+{
+    EnsureStdcall(address);
+    return ShiftAddr(context, (uintptr_t)address);
+}
 
 template<typename T>
 uintptr_t ShiftAddr(const ThreadContextInfo*const context, T* address)

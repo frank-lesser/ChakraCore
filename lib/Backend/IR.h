@@ -169,6 +169,9 @@ protected:
         isCallInstrProtectedByNoProfileBailout(false),
         hasSideEffects(false),
         isNonFastPathFrameDisplay(false)
+#if DBG
+        , highlight(0)
+#endif
     {
     }
 public:
@@ -530,6 +533,9 @@ protected:
     Opnd *          m_dst;
     Opnd *          m_src1;
     Opnd *          m_src2;
+#if DBG
+    WORD            highlight;
+#endif
 
 
 
@@ -608,17 +614,30 @@ public:
         const Js::LdElemInfo *  ldElemInfo;
         const Js::StElemInfo *  stElemInfo;
     private:
-        Js::FldInfo::TSize      fldInfoData;
+        struct
+        {
+            Js::FldInfo::TSize      fldInfoData;
+            Js::LdLenInfo::TSize    ldLenInfoData;
+        };
 
     public:
         Js::FldInfo &FldInfo()
         {
             return reinterpret_cast<Js::FldInfo &>(fldInfoData);
         }
+        Js::LdLenInfo & LdLenInfo()
+        {
+            return reinterpret_cast<Js::LdLenInfo &>(ldLenInfoData);
+        }
     } u;
 
     static const uint InvalidProfileId = (uint)-1;
 };
+
+#if TARGET_64
+// Ensure that the size of the union doesn't exceed the size of a 64 bit pointer.
+CompileAssert(sizeof(ProfiledInstr::u) <= sizeof(void*));
+#endif
 
 ///---------------------------------------------------------------------------
 ///
@@ -664,6 +683,7 @@ public:
         m_hasNonBranchRef(false), m_region(nullptr), m_loweredBasicBlock(nullptr), m_isDataLabel(false), m_isForInExit(false)
 #if DBG
         , m_noHelperAssert(false)
+        , m_name(nullptr)
 #endif
     {
 #if DBG_DUMP
@@ -692,6 +712,9 @@ public:
 #endif
     unsigned int            m_id;
     LoweredBasicBlock*      m_loweredBasicBlock;
+#if DBG
+    const char16*           m_name;
+#endif
 private:
     union labelLocation
     {
@@ -732,7 +755,15 @@ private:
 
 protected:
     void                    Init(Js::OpCode opcode, IRKind kind, Func *func, bool isOpHelper);
- };
+};
+
+#if DBG
+#define LABELNAMESET(label, name) do { label->m_name = _u(name); } while(false)
+#define LABELNAME(label) do { label->m_name = _u(#label); } while(false)
+#else
+#define LABELNAMESET(label, name)
+#define LABELNAME(label)
+#endif
 
 class ProfiledLabelInstr: public LabelInstr
 {

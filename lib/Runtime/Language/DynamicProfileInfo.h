@@ -54,6 +54,7 @@ namespace Js
     {
     public:
         Field(Js::ArgSlot) paramInfoCount;
+        Field(ProfileId) ldLenInfoCount;
         Field(ProfileId) ldElemInfoCount;
         Field(ProfileId) stElemInfoCount;
         Field(ProfileId) arrayCallSiteCount;
@@ -176,6 +177,42 @@ namespace Js
     };
     CompileAssert(sizeof(FldInfo::TSize) == sizeof(FldInfo));
 
+    struct LdLenInfo
+    {
+        typedef struct { ValueType::TSize f1; byte f2; } TSize;
+
+        ValueType arrayType;
+
+        union
+        {
+            struct
+            {
+                bool disableAggressiveSpecialization : 1;
+            };
+            byte bits;
+        };
+
+        LdLenInfo() : bits(0)
+        {
+        }
+
+        void Merge(const LdLenInfo & other)
+        {
+            arrayType = arrayType.Merge(other.arrayType);
+        }
+
+        ValueType GetArrayType() const
+        {
+            return arrayType;
+        }
+
+        bool IsAggressiveSpecializationDisabled() const
+        {
+            return disableAggressiveSpecialization;
+        }
+    };
+    CompileAssert(sizeof(LdLenInfo::TSize) == sizeof(LdLenInfo));
+
     struct LdElemInfo
     {
         ValueType arrayType;
@@ -187,6 +224,7 @@ namespace Js
             {
                 bool wasProfiled : 1;
                 bool neededHelperCall : 1;
+                bool disableAggressiveSpecialization : 1;
             };
             byte bits;
         };
@@ -222,6 +260,11 @@ namespace Js
         {
             return neededHelperCall;
         }
+
+        bool IsAggressiveSpecializationDisabled() const
+        {
+            return disableAggressiveSpecialization;
+        }
     };
 
     struct StElemInfo
@@ -238,6 +281,7 @@ namespace Js
                 bool neededHelperCall : 1;
                 bool storedOutsideHeadSegmentBounds : 1;
                 bool storedOutsideArrayBounds : 1;
+                bool disableAggressiveSpecialization : 1;
             };
             byte bits;
         };
@@ -286,6 +330,11 @@ namespace Js
         bool LikelyStoresOutsideArrayBounds() const
         {
             return storedOutsideArrayBounds;
+        }
+
+        bool IsAggressiveSpecializationDisabled() const
+        {
+            return disableAggressiveSpecialization;
         }
     };
 
@@ -350,6 +399,9 @@ namespace Js
         FunctionBody * GetFunctionBody() const { Assert(hasFunctionBody); return functionBody; }
 #endif
 
+        void RecordLengthLoad(FunctionBody* functionBody, ProfileId ldLenId, const LdLenInfo& info);
+        const LdLenInfo *GetLdLenInfo() const { return ldLenInfo; }
+
         void RecordElementLoad(FunctionBody* functionBody, ProfileId ldElemId, const LdElemInfo& info);
         void RecordElementLoadAsProfiled(FunctionBody *const functionBody, const ProfileId ldElemId);
         const LdElemInfo *GetLdElemInfo() const { return ldElemInfo; }
@@ -389,7 +441,7 @@ namespace Js
 #ifdef ASMJS_PLAT
         void RecordAsmJsCallSiteInfo(FunctionBody* callerBody, ProfileId callSiteId, FunctionBody* calleeBody);
 #endif
-        void RecordCallSiteInfo(FunctionBody* functionBody, ProfileId callSiteId, FunctionInfo * calleeFunctionInfo, JavascriptFunction* calleeFunction, ArgSlot actualArgCount, bool isConstructorCall, InlineCacheIndex ldFldInlineCacheId = Js::Constants::NoInlineCacheIndex);
+        void RecordCallSiteInfo(FunctionBody* functionBody, ProfileId callSiteId, FunctionInfo * calleeFunctionInfo, JavascriptFunction* calleeFunction, uint actualArgCount, bool isConstructorCall, InlineCacheIndex ldFldInlineCacheId = Js::Constants::NoInlineCacheIndex);
         void RecordConstParameterAtCallSite(ProfileId callSiteId, int argNum);
         static bool HasCallSiteInfo(FunctionBody* functionBody);
         bool HasCallSiteInfo(FunctionBody* functionBody, ProfileId callSiteId); // Does a particular callsite have ProfileInfo?
@@ -464,6 +516,7 @@ namespace Js
         Field(ValueType *) returnTypeInfo; // return type of calls for non inline call sites
         Field(ValueType *) divideTypeInfo;
         Field(ValueType *) switchTypeInfo;
+        Field(LdLenInfo *) ldLenInfo;
         Field(LdElemInfo *) ldElemInfo;
         Field(StElemInfo *) stElemInfo;
         Field(ArrayCallSiteInfo *) arrayCallSiteInfo;
@@ -866,6 +919,7 @@ namespace Js
         {
             if (lengthLeft < sizeof(T))
             {
+                AssertOrFailFast(false);
                 return false;
             }
             *data = *(T *)current;
@@ -891,6 +945,7 @@ namespace Js
             size_t size = sizeof(T) * len;
             if (lengthLeft < size)
             {
+                AssertOrFailFast(false);
                 return false;
             }
             memcpy_s(data, size, current, size);

@@ -112,9 +112,7 @@ IRBuilderAsmJs::Build()
         offsetToInstructionCount = lastOffset + 2;
     }
 
-#if DBG
     m_offsetToInstructionCount = offsetToInstructionCount;
-#endif
     m_offsetToInstruction = JitAnewArrayZ(m_tempAlloc, IR::Instr *, offsetToInstructionCount);
 
     LoadNativeCodeData();
@@ -220,7 +218,7 @@ IRBuilderAsmJs::AddInstr(IR::Instr * instr, uint32 offset)
     m_lastInstr->InsertAfter(instr);
     if (offset != Js::Constants::NoByteCodeOffset)
     {
-        Assert(offset < m_offsetToInstructionCount);
+        AssertOrFailFast(offset < m_offsetToInstructionCount);
         if (m_offsetToInstruction[offset] == nullptr)
         {
             m_offsetToInstruction[offset] = instr;
@@ -670,6 +668,7 @@ IRBuilderAsmJs::RegIsConstant(Js::RegSlot reg)
 BranchReloc *
 IRBuilderAsmJs::AddBranchInstr(IR::BranchInstr * branchInstr, uint32 offset, uint32 targetOffset)
 {
+    AssertOrFailFast(targetOffset <= m_func->GetJITFunctionBody()->GetByteCodeLength());
     //
     // Loop jitting would be done only till the LoopEnd
     // Any branches beyond that offset are for the return statement
@@ -1042,8 +1041,8 @@ IRBuilderAsmJs::CreateLabel(IR::BranchInstr * branchInstr, uint & offset)
     IR::Instr * targetInstr = nullptr;
     while (targetInstr == nullptr)
     {
+        AssertOrFailFast(offset < m_offsetToInstructionCount);
         targetInstr = m_offsetToInstruction[offset];
-        Assert(offset < m_offsetToInstructionCount);
         ++offset;
     }
 
@@ -1421,64 +1420,20 @@ IRBuilderAsmJs::BuildStartCall(Js::OpCodeAsmJs newOpcode, uint32 offset)
 void
 IRBuilderAsmJs::InitializeMemAccessTypeInfo(Js::ArrayBufferView::ViewType viewType, _Out_ MemAccessTypeInfo * typeInfo)
 {
-    typeInfo->type = TyInt32;
-    typeInfo->valueRegType = WAsmJs::INT32;
-
+    AssertOrFailFast(typeInfo);
+    
     switch (viewType)
     {
-    case Js::ArrayBufferView::TYPE_INT8_TO_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-    case Js::ArrayBufferView::TYPE_INT8:
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Int8Array);
-        typeInfo->type = TyInt8;
+#define ARRAYBUFFER_VIEW(name, align, RegType, MemType, irSuffix) \
+    case Js::ArrayBufferView::TYPE_##name: \
+        typeInfo->valueRegType = WAsmJs::FromPrimitiveType<RegType>(); \
+        typeInfo->type = Ty##irSuffix;\
+        typeInfo->arrayType = ValueType::GetObject(ObjectType::##irSuffix##Array); \
+        Assert(TySize[Ty##irSuffix] == (1<<align)); \
         break;
-    case Js::ArrayBufferView::TYPE_UINT8_TO_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-    case Js::ArrayBufferView::TYPE_UINT8:
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Uint8Array);
-        typeInfo->type = TyUint8;
-        break;
-    case Js::ArrayBufferView::TYPE_INT16_TO_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-    case Js::ArrayBufferView::TYPE_INT16:
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Int16Array);
-        typeInfo->type = TyInt16;
-        break;
-    case Js::ArrayBufferView::TYPE_UINT16_TO_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-    case Js::ArrayBufferView::TYPE_UINT16:
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Uint16Array);
-        typeInfo->type = TyUint16;
-        break;
-    case Js::ArrayBufferView::TYPE_INT32_TO_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-    case Js::ArrayBufferView::TYPE_INT32:
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Int32Array);
-        typeInfo->type = TyInt32;
-        break;
-    case Js::ArrayBufferView::TYPE_UINT32_TO_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-    case Js::ArrayBufferView::TYPE_UINT32:
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Uint32Array);
-        typeInfo->type = TyUint32;
-        break;
-    case Js::ArrayBufferView::TYPE_FLOAT32:
-        typeInfo->valueRegType = WAsmJs::FLOAT32;
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Float32Array);
-        typeInfo->type = TyFloat32;
-        break;
-    case Js::ArrayBufferView::TYPE_FLOAT64:
-        typeInfo->valueRegType = WAsmJs::FLOAT64;
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Float64Array);
-        typeInfo->type = TyFloat64;
-        break;
-    case Js::ArrayBufferView::TYPE_INT64:
-        typeInfo->valueRegType = WAsmJs::INT64;
-        typeInfo->arrayType = ValueType::GetObject(ObjectType::Int64Array);
-        typeInfo->type = TyInt64;
-        break;
+#include "Language/AsmJsArrayBufferViews.h"
     default:
-        Assume(UNREACHED);
+        AssertOrFailFast(UNREACHED);
     }
 }
 
@@ -1494,11 +1449,15 @@ IRBuilderAsmJs::BuildWasmMemAccess(Js::OpCodeAsmJs newOpcode, uint32 offset)
 void
 IRBuilderAsmJs::BuildWasmMemAccess(Js::OpCodeAsmJs newOpcode, uint32 offset, uint32 slotIndex, Js::RegSlot value, uint32 constOffset, Js::ArrayBufferView::ViewType viewType)
 {
-    bool isLd = newOpcode == Js::OpCodeAsmJs::LdArrWasm;
-    Js::OpCode op = isLd ? Js::OpCode::LdArrViewElemWasm : Js::OpCode::StArrViewElem;
+    bool isAtomic = newOpcode == Js::OpCodeAsmJs::StArrAtomic || newOpcode == Js::OpCodeAsmJs::LdArrAtomic;
+    bool isLd = newOpcode == Js::OpCodeAsmJs::LdArrWasm || newOpcode == Js::OpCodeAsmJs::LdArrAtomic;
+    Js::OpCode op = isAtomic ? 
+        isLd ? Js::OpCode::LdAtomicWasm : Js::OpCode::StAtomicWasm
+        : isLd ? Js::OpCode::LdArrViewElemWasm : Js::OpCode::StArrViewElem;
 
     MemAccessTypeInfo typeInfo;
     InitializeMemAccessTypeInfo(viewType, &typeInfo);
+    const uint32 memAccessSize = TySize[typeInfo.type];
 
     Js::RegSlot valueRegSlot = GetRegSlotFromTypedReg(value, typeInfo.valueRegType);
     IR::Instr * instr = nullptr;
@@ -1507,6 +1466,22 @@ IRBuilderAsmJs::BuildWasmMemAccess(Js::OpCodeAsmJs newOpcode, uint32 offset, uin
 
     Js::RegSlot indexRegSlot = GetRegSlotFromIntReg(slotIndex);
     IR::RegOpnd * indexOpnd = BuildSrcOpnd(indexRegSlot, TyUint32);
+    if (isAtomic && memAccessSize > 1)
+    {
+        const uint32 mask = memAccessSize - 1;
+        // We need (constOffset + index) & mask == 0
+        // Since we know constOffset ahead of time
+        // what we need to check is index & mask == (memAccessSize - (constOffset & mask)) & mask
+        const uint32 offseted = constOffset & mask;
+        // In this IntContOpnd, the value is what the index&mask should be, the type carries the size of the access
+        IR::Opnd* offsetedOpnd = IR::IntConstOpnd::NewFromType((memAccessSize - offseted) & mask, typeInfo.type, m_func);
+        IR::RegOpnd* intermediateIndex = IR::RegOpnd::New(TyUint32, m_func);
+        instr = IR::Instr::New(Js::OpCode::TrapIfUnalignedAccess, intermediateIndex, indexOpnd, offsetedOpnd, m_func);
+        AddInstr(instr, offset);
+
+        // Create dependency between load/store and trap through the index
+        indexOpnd = intermediateIndex;
+    }
     indirOpnd = IR::IndirOpnd::New(BuildSrcOpnd(AsmJsRegSlots::BufferReg, TyVar), constOffset, typeInfo.type, m_func);
     indirOpnd->SetIndexOpnd(indexOpnd);
     indirOpnd->GetBaseOpnd()->SetValueType(typeInfo.arrayType);
@@ -1550,7 +1525,7 @@ IRBuilderAsmJs::BuildWasmMemAccess(Js::OpCodeAsmJs newOpcode, uint32 offset, uin
     }
     AddInstr(instr, offset);
 
-#if DBG
+#if DBG && defined(ENABLE_WASM)
     if (newOpcode == Js::OpCodeAsmJs::StArrWasm && PHASE_TRACE(Js::WasmMemWritesPhase, m_func))
     {
         IR::Opnd* prevArg = nullptr;
@@ -1728,6 +1703,7 @@ IRBuilderAsmJs::BuildAsmCall(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::ArgSl
         case Js::AsmJsRetType::Which::Void:
             break;
 
+#ifdef ENABLE_WASM_SIMD
         case Js::AsmJsRetType::Which::Float32x4:
             dstRegSlot = GetRegSlotFromSimd128Reg(ret);
             dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
@@ -1772,6 +1748,7 @@ IRBuilderAsmJs::BuildAsmCall(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::ArgSl
             dstRegSlot = GetRegSlotFromSimd128Reg(ret);
             dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128U16);
             break;
+#endif
         default:
             Assume(UNREACHED);
         }
@@ -1789,7 +1766,7 @@ IRBuilderAsmJs::BuildAsmCall(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::ArgSl
                 instr->AsProfiledInstr()->u.profileId = profileId;
             }
         }
-
+        AssertOrFailFast(!this->m_argOffsetStack->Empty());
         argOffset = m_argOffsetStack->Pop();
         argOffset -= MachPtr;
         break;
@@ -1811,7 +1788,8 @@ IRBuilderAsmJs::BuildAsmCall(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::ArgSl
     IR::Instr * argInstr = nullptr;
     IR::Instr * prevInstr = instr;
 
-    for (argInstr = m_argStack->Pop(); argInstr->m_opcode != Js::OpCode::StartCall; argInstr = m_argStack->Pop())
+    AssertOrFailFast(!this->m_argStack->Empty());
+    for (argInstr = m_argStack->Pop(); !m_argStack->Empty() && argInstr->m_opcode != Js::OpCode::StartCall; argInstr = m_argStack->Pop())
     {
         if (newOpcode == Js::OpCodeAsmJs::I_Call || newOpcode == Js::OpCodeAsmJs::ProfiledI_Call)
         {
@@ -1828,25 +1806,16 @@ IRBuilderAsmJs::BuildAsmCall(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::ArgSl
         // associate the ArgOuts with this call via src2
         prevInstr->SetSrc2(argInstr->GetDst());
         prevInstr = argInstr;
-
-#ifdef ENABLE_SIMDJS
-#if defined(_M_X64)
-        if (m_func->IsSIMDEnabled())
-        {
-            m_tempList->Push(argInstr);
-        }
-#endif
-#endif
-
         count++;
     }
 
-    Assert(argInstr->m_opcode == Js::OpCode::StartCall);
+    AssertOrFailFast(argInstr->m_opcode == Js::OpCode::StartCall);
     argInstr->SetSrc1(IR::IntConstOpnd::New(count, TyUint16, m_func));
 
-    Assert(argOffset == 0);
+    AssertOrFailFast(argOffset == 0);
     prevInstr->SetSrc2(argInstr->GetDst());
 
+    // todo:: are we sure we don't need this for wasm ?
 #ifdef ENABLE_SIMDJS
 #if defined(_M_X64)
     // Without SIMD vars, all args are Var in size. So offset in Var = arg position in args list.
@@ -2254,7 +2223,7 @@ IRBuilderAsmJs::BuildFloat32x4_IntConst4(Js::OpCodeAsmJs newOpcode, uint32 offse
 {
     Assert(newOpcode == Js::OpCodeAsmJs::Simd128_LdC);
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
     SIMDValue simdConst{ C1, C2, C3, C4 };
     IR::Instr * instr = IR::Instr::New(Js::OpCode::Simd128_LdC, dstOpnd, IR::Simd128ConstOpnd::New(simdConst, TySimd128F4, m_func), m_func);
     AddInstr(instr, offset);
@@ -2475,7 +2444,7 @@ IRBuilderAsmJs::BuildInt2(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::RegSlot 
         instr = IR::Instr::New(Js::OpCode::GrowWasmMemory, dstOpnd, BuildSrcOpnd(AsmJsRegSlots::WasmMemoryReg, TyVar), srcOpnd, m_func);
         break;
 
-    case Js::OpCodeAsmJs::I32Extend8_s: 
+    case Js::OpCodeAsmJs::I32Extend8_s:
         instr = CreateSignExtendInstr(dstOpnd, srcOpnd, TyInt8);
         break;
     case Js::OpCodeAsmJs::I32Extend16_s:
@@ -3643,6 +3612,7 @@ Js::PropertyId IRBuilderAsmJs::CalculatePropertyOffset(Js::RegSlot regSlot, IRTy
 
 Js::OpCode IRBuilderAsmJs::GetSimdOpcode(Js::OpCodeAsmJs asmjsOpcode)
 {
+    Assert(m_func->GetJITFunctionBody()->IsWasmFunction());
     Js::OpCode opcode = (Js::OpCode) 0;
     Assert(IsSimd128AsmJsOpcode(asmjsOpcode));
     if (asmjsOpcode <= Js::OpCodeAsmJs::Simd128_End)
@@ -3663,24 +3633,24 @@ void IRBuilderAsmJs::GetSimdTypesFromAsmType(Js::AsmJsType::Which asmType, IRTyp
     IRType irType = IRType::TyVar;
     ValueType vType = ValueType::Uninitialized;
 
-#define SIMD_TYPE_CHECK(type1, type2, type3) \
+#define SIMD_TYPE_CHECK(type1, type2) \
 case Js::AsmJsType::Which::##type1: \
         irType = type2; \
-        vType = ValueType::GetSimd128(ObjectType::##type3); \
+        vType = ValueType::Simd; \
         break;
 
     switch (asmType)
     {
-        SIMD_TYPE_CHECK(Float32x4,  TySimd128F4,    Simd128Float32x4)
-        SIMD_TYPE_CHECK(Int32x4,    TySimd128I4,    Simd128Int32x4  )
-        SIMD_TYPE_CHECK(Int16x8,    TySimd128I8,    Simd128Int16x8  )
-        SIMD_TYPE_CHECK(Int8x16,    TySimd128I16,   Simd128Int8x16  )
-        SIMD_TYPE_CHECK(Uint32x4,   TySimd128U4,    Simd128Uint32x4 )
-        SIMD_TYPE_CHECK(Uint16x8,   TySimd128U8,    Simd128Uint16x8 )
-        SIMD_TYPE_CHECK(Uint8x16,   TySimd128U16,   Simd128Uint8x16 )
-        SIMD_TYPE_CHECK(Bool32x4,   TySimd128B4,    Simd128Bool32x4 )
-        SIMD_TYPE_CHECK(Bool16x8,   TySimd128B8,    Simd128Bool16x8 )
-        SIMD_TYPE_CHECK(Bool8x16,   TySimd128B16,   Simd128Bool8x16 )
+        SIMD_TYPE_CHECK(Float32x4,  TySimd128F4)
+        SIMD_TYPE_CHECK(Int32x4,    TySimd128I4)
+        SIMD_TYPE_CHECK(Int16x8,    TySimd128I8)
+        SIMD_TYPE_CHECK(Int8x16,    TySimd128I16)
+        SIMD_TYPE_CHECK(Uint32x4,   TySimd128U4)
+        SIMD_TYPE_CHECK(Uint16x8,   TySimd128U8)
+        SIMD_TYPE_CHECK(Uint8x16,   TySimd128U16)
+        SIMD_TYPE_CHECK(Bool32x4,   TySimd128B4)
+        SIMD_TYPE_CHECK(Bool16x8,   TySimd128B8)
+        SIMD_TYPE_CHECK(Bool8x16,   TySimd128B16)
     default:
         Assert(UNREACHED);
     }
@@ -3734,10 +3704,10 @@ IRBuilderAsmJs::BuildFloat32x4_1Bool32x4_1Float32x4_2(Js::OpCodeAsmJs newOpcode,
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -3768,10 +3738,10 @@ IRBuilderAsmJs::BuildFloat32x4_4(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD
 
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -3802,7 +3772,7 @@ void IRBuilderAsmJs::BuildFloat32x4_1Float4(Js::OpCodeAsmJs newOpcode, uint32 of
 
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
     src1Opnd->SetValueType(ValueType::Float);
     src2Opnd->SetValueType(ValueType::Float);
     src3Opnd->SetValueType(ValueType::Float);
@@ -3832,8 +3802,8 @@ IRBuilderAsmJs::BuildFloat32x4_2Int4(Js::OpCodeAsmJs newOpcode, uint32 offset, B
     IR::RegOpnd * src5Opnd = BuildIntConstOpnd(src5RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -3859,9 +3829,9 @@ IRBuilderAsmJs::BuildFloat32x4_3Int4(Js::OpCodeAsmJs newOpcode, uint32 offset, B
     IR::RegOpnd * src6Opnd = BuildIntConstOpnd(src6RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -3882,7 +3852,7 @@ IRBuilderAsmJs::BuildFloat32x4_1Float1(Js::OpCodeAsmJs newOpcode, uint32 offset,
     src1Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Assert(newOpcode == Js::OpCodeAsmJs::Simd128_Splat_F4);
     Js::OpCode opcode = Js::OpCode::Simd128_Splat_F4;
@@ -3895,13 +3865,13 @@ void
 IRBuilderAsmJs::BuildFloat32x4_2Float1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyFloat32);
     src1Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
     AssertMsg((uint32)opcode, "Invalid backend SIMD opcode");
@@ -3916,10 +3886,10 @@ void
 IRBuilderAsmJs::BuildFloat32x4_1Float64x2_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128D2);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
 
@@ -3975,7 +3945,7 @@ IRBuilderAsmJs::BuildFloat32x4_1Uint8x16_1(Js::OpCodeAsmJs newOpcode, uint32 off
 void IRBuilderAsmJs::BuildReg1Float32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -3991,7 +3961,7 @@ void IRBuilderAsmJs::BuildReg1Float32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offs
             Fatal();
         }
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128F4, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -4063,10 +4033,10 @@ IRBuilderAsmJs::BuildInt32x4_1Bool32x4_1Int32x4_2(Js::OpCodeAsmJs newOpcode, uin
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128I4);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -4109,8 +4079,8 @@ void IRBuilderAsmJs::BuildInt32x4_2Int4(Js::OpCodeAsmJs newOpcode, uint32 offset
     IR::RegOpnd * src5Opnd = BuildIntConstOpnd(src5RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -4136,9 +4106,9 @@ void IRBuilderAsmJs::BuildInt32x4_3Int4(Js::OpCodeAsmJs newOpcode, uint32 offset
     IR::RegOpnd * src6Opnd = BuildIntConstOpnd(src6RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -4178,7 +4148,7 @@ void
 IRBuilderAsmJs::BuildInt1Int32x4_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128I4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4198,7 +4168,7 @@ void
 IRBuilderAsmJs::BuildFloat32x4_2Int1Float1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG4)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4207,7 +4177,7 @@ IRBuilderAsmJs::BuildFloat32x4_2Int1Float1(Js::OpCodeAsmJs newOpcode, uint32 off
     src3Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -4231,7 +4201,7 @@ void
 IRBuilderAsmJs::BuildFloat1Float32x4_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4300,7 +4270,7 @@ IRBuilderAsmJs::BuildInt32x4_1Float64x2_1(Js::OpCodeAsmJs newOpcode, uint32 offs
 void IRBuilderAsmJs::BuildReg1Int32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128I4);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -4317,7 +4287,7 @@ void IRBuilderAsmJs::BuildReg1Int32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128I4, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -4384,10 +4354,10 @@ IRBuilderAsmJs::BuildInt8x16_1Bool8x16_1Int8x16_2(Js::OpCodeAsmJs newOpcode, uin
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128I16);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool8x16));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -4431,7 +4401,7 @@ void
 IRBuilderAsmJs::BuildInt1Int8x16_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128I16);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4473,9 +4443,9 @@ void IRBuilderAsmJs::BuildInt8x16_3Int16(Js::OpCodeAsmJs newOpcode, uint32 offse
     srcOpnds[15] = BuildIntConstOpnd(src18RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -4516,8 +4486,8 @@ void IRBuilderAsmJs::BuildInt8x16_2Int16(Js::OpCodeAsmJs newOpcode, uint32 offse
     srcOpnds[15] = BuildIntConstOpnd(src17RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
 
@@ -4577,7 +4547,7 @@ IRBuilderAsmJs::BuildInt8x16_1Uint8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offse
 void IRBuilderAsmJs::BuildReg1Int8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128I16);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -4593,7 +4563,7 @@ void IRBuilderAsmJs::BuildReg1Int8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offset
             Fatal();
         }
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128I16, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int8x16));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -4615,7 +4585,7 @@ IRBuilderAsmJs::BuildInt64x2_1Long1(Js::OpCodeAsmJs newOpcode, uint32 offset, BU
     src1Opnd->SetValueType(ValueType::GetInt(false));
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128I2);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
     AssertMsg((uint32)opcode, "Invalid backend SIMD opcode");
@@ -4629,7 +4599,7 @@ IRBuilderAsmJs::BuildInt1Bool64x2_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BU
 {
     Assert(newOpcode == Js::OpCodeAsmJs::Simd128_AnyTrue_B2 || newOpcode == Js::OpCodeAsmJs::Simd128_AllTrue_B2);
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128I2);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int64x2));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TyInt32);
     dstOpnd->SetValueType(ValueType::GetInt(false));
@@ -4646,7 +4616,7 @@ IRBuilderAsmJs::BuildLong1Int64x2_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset
 {
     Assert(newOpcode == Js::OpCodeAsmJs::Simd128_ExtractLane_I2);
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128I2);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int64x2));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4701,7 +4671,7 @@ void
 IRBuilderAsmJs::BuildDouble1Float64x2_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4723,7 +4693,7 @@ void IRBuilderAsmJs::BuildFloat64x2_1Double1(Js::OpCodeAsmJs newOpcode, uint32 o
     src1Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
 
@@ -4736,10 +4706,10 @@ void
 IRBuilderAsmJs::BuildFloat64x2_2(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode;
 
@@ -4755,13 +4725,13 @@ void
 IRBuilderAsmJs::BuildFloat64x2_3(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TySimd128F4);
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src2Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode;
 
@@ -4777,7 +4747,7 @@ void
 IRBuilderAsmJs::BuildFloat64x2_2Int1Double1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG4)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -4786,7 +4756,7 @@ IRBuilderAsmJs::BuildFloat64x2_2Int1Double1(Js::OpCodeAsmJs newOpcode, uint32 of
     src3Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128F4);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -4816,10 +4786,10 @@ IRBuilderAsmJs::BuildFloat64x2_4(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128D2);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -4848,7 +4818,7 @@ void IRBuilderAsmJs::BuildFloat64x2_1Double2(Js::OpCodeAsmJs newOpcode, uint32 o
     src2Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128D2);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
 
@@ -4863,13 +4833,13 @@ void
 IRBuilderAsmJs::BuildFloat64x2_2Double1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128D2);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyFloat64);
     src1Opnd->SetValueType(ValueType::Float);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128D2);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
     AssertMsg((uint32)opcode, "Invalid backend SIMD opcode");
@@ -4888,8 +4858,8 @@ IRBuilderAsmJs::BuildFloat64x2_2Int2(Js::OpCodeAsmJs newOpcode, uint32 offset, B
     IR::RegOpnd * src3Opnd = BuildIntConstOpnd(src3RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -4912,9 +4882,9 @@ IRBuilderAsmJs::BuildFloat64x2_3Int2(Js::OpCodeAsmJs newOpcode, uint32 offset, B
     IR::RegOpnd * src4Opnd = BuildIntConstOpnd(src4RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -4931,10 +4901,10 @@ void
 IRBuilderAsmJs::BuildFloat64x2_1Float32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128F4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128D2);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
 
@@ -4948,10 +4918,10 @@ void
 IRBuilderAsmJs::BuildFloat64x2_1Int32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128I4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128D2);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
 
     Js::OpCode opcode = GetSimdOpcode(newOpcode);
 
@@ -4971,10 +4941,10 @@ IRBuilderAsmJs::BuildFloat64x2_1Int32x4_1Float64x2_2(Js::OpCodeAsmJs newOpcode, 
 
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -4989,7 +4959,7 @@ IRBuilderAsmJs::BuildFloat64x2_1Int32x4_1Float64x2_2(Js::OpCodeAsmJs newOpcode, 
 void IRBuilderAsmJs::BuildReg1Float64x2_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128D2);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -5005,7 +4975,7 @@ void IRBuilderAsmJs::BuildReg1Float64x2_1(Js::OpCodeAsmJs newOpcode, uint32 offs
             Fatal();
         }
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128D2, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float64x2));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -5042,7 +5012,7 @@ void IRBuilderAsmJs::BuildInt16x8_1Int8(Js::OpCodeAsmJs newOpcode, uint32 offset
 void IRBuilderAsmJs::BuildReg1Int16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128I8);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -5059,7 +5029,7 @@ void IRBuilderAsmJs::BuildReg1Int16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offset
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128I8, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -5076,7 +5046,7 @@ void
 IRBuilderAsmJs::BuildInt1Int16x8_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128I8);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -5107,8 +5077,8 @@ void IRBuilderAsmJs::BuildInt16x8_2Int8(Js::OpCodeAsmJs newOpcode, uint32 offset
     IR::RegOpnd * src9Opnd = BuildIntConstOpnd(src9RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5142,9 +5112,9 @@ void IRBuilderAsmJs::BuildInt16x8_3Int8(Js::OpCodeAsmJs newOpcode, uint32 offset
     IR::RegOpnd * src10Opnd = BuildIntConstOpnd(src10RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5204,10 +5174,10 @@ IRBuilderAsmJs::BuildInt16x8_1Bool16x8_1Int16x8_2(Js::OpCodeAsmJs newOpcode, uin
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128I8);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool16x8));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Int16x8));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -5292,7 +5262,7 @@ void IRBuilderAsmJs::BuildUint32x4_1Int4(Js::OpCodeAsmJs newOpcode, uint32 offse
 void IRBuilderAsmJs::BuildReg1Uint32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128U4);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -5309,7 +5279,7 @@ void IRBuilderAsmJs::BuildReg1Uint32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offse
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128U4, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -5326,7 +5296,7 @@ void
 IRBuilderAsmJs::BuildInt1Uint32x4_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128U4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -5353,8 +5323,8 @@ void IRBuilderAsmJs::BuildUint32x4_2Int4(Js::OpCodeAsmJs newOpcode, uint32 offse
     IR::RegOpnd * src5Opnd = BuildIntConstOpnd(src5RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5380,9 +5350,9 @@ void IRBuilderAsmJs::BuildUint32x4_3Int4(Js::OpCodeAsmJs newOpcode, uint32 offse
     IR::RegOpnd * src6Opnd = BuildIntConstOpnd(src6RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5438,10 +5408,10 @@ IRBuilderAsmJs::BuildUint32x4_1Bool32x4_1Uint32x4_2(Js::OpCodeAsmJs newOpcode, u
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128U4);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint32x4));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -5533,7 +5503,7 @@ void IRBuilderAsmJs::BuildUint16x8_1Int8(Js::OpCodeAsmJs newOpcode, uint32 offse
 void IRBuilderAsmJs::BuildReg1Uint16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128U8);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -5550,7 +5520,7 @@ void IRBuilderAsmJs::BuildReg1Uint16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offse
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128U4, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -5567,7 +5537,7 @@ void
 IRBuilderAsmJs::BuildInt1Uint16x8_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128U8);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -5598,8 +5568,8 @@ void IRBuilderAsmJs::BuildUint16x8_2Int8(Js::OpCodeAsmJs newOpcode, uint32 offse
     IR::RegOpnd * src9Opnd = BuildIntConstOpnd(src9RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5633,9 +5603,9 @@ void IRBuilderAsmJs::BuildUint16x8_3Int8(Js::OpCodeAsmJs newOpcode, uint32 offse
     IR::RegOpnd * src10Opnd = BuildIntConstOpnd(src10RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5695,10 +5665,10 @@ IRBuilderAsmJs::BuildUint16x8_1Bool16x8_1Uint16x8_2(Js::OpCodeAsmJs newOpcode, u
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128U8);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool16x8));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -5796,7 +5766,7 @@ void IRBuilderAsmJs::BuildUint8x16_1Int16(Js::OpCodeAsmJs newOpcode, uint32 offs
 void IRBuilderAsmJs::BuildReg1Uint8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128U16);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -5813,7 +5783,7 @@ void IRBuilderAsmJs::BuildReg1Uint8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offse
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128U16, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint16x8));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -5836,7 +5806,7 @@ void
 IRBuilderAsmJs::BuildInt1Uint8x16_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128U16);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -5875,8 +5845,8 @@ void IRBuilderAsmJs::BuildUint8x16_2Int16(Js::OpCodeAsmJs newOpcode, uint32 offs
     IR::RegOpnd * src17Opnd = BuildIntConstOpnd(src17RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -5915,9 +5885,9 @@ IRBuilderAsmJs::BuildAsmShuffle(Js::OpCodeAsmJs newOpcode, uint32 offset)
     IR::RegOpnd * dstOpnd = BuildDstOpnd(GetRegSlotFromSimd128Reg(layout->R0), TySimd128U16);
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(GetRegSlotFromSimd128Reg(layout->R1), TySimd128U16);
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(GetRegSlotFromSimd128Reg(layout->R2), TySimd128U16);
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
@@ -5955,9 +5925,9 @@ void IRBuilderAsmJs::BuildUint8x16_3Int16(Js::OpCodeAsmJs newOpcode, uint32 offs
     IR::RegOpnd * src18Opnd = BuildIntConstOpnd(src18RegSlot);
 
     IR::Instr * instr = nullptr;
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
 
     instr = AddExtendedArg(src1Opnd, nullptr, offset);
     instr = AddExtendedArg(src2Opnd, instr->GetDst()->AsRegOpnd(), offset);
@@ -6022,10 +5992,10 @@ IRBuilderAsmJs::BuildUint8x16_1Bool8x16_1Uint8x16_2(Js::OpCodeAsmJs newOpcode, u
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TySimd128U16);
     IR::Instr * instr = nullptr;
 
-    dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool8x16));
-    src2Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
-    src3Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Uint8x16));
+    dstOpnd->SetValueType(ValueType::Simd);
+    src1Opnd->SetValueType(ValueType::Simd);
+    src2Opnd->SetValueType(ValueType::Simd);
+    src3Opnd->SetValueType(ValueType::Simd);
 
     // Given bytecode: dst = op s1, s2, s3
     // Generate:
@@ -6112,7 +6082,7 @@ void
 IRBuilderAsmJs::BuildInt1Bool32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128B4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TyInt32);
     dstOpnd->SetValueType(ValueType::GetInt(false));
@@ -6141,7 +6111,7 @@ IRBuilderAsmJs::BuildBool32x4_3(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_
 void IRBuilderAsmJs::BuildReg1Bool32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128B4);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -6158,7 +6128,7 @@ void IRBuilderAsmJs::BuildReg1Bool32x4_1(Js::OpCodeAsmJs newOpcode, uint32 offse
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128B4, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -6195,7 +6165,7 @@ void
 IRBuilderAsmJs::BuildInt1Bool16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128B8);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool16x8));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TyInt32);
     dstOpnd->SetValueType(ValueType::GetInt(false));
@@ -6225,7 +6195,7 @@ void
 IRBuilderAsmJs::BuildReg1Bool16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128B8);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool16x8));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -6242,7 +6212,7 @@ IRBuilderAsmJs::BuildReg1Bool16x8_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BU
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128B8, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool16x8));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -6287,7 +6257,7 @@ void
 IRBuilderAsmJs::BuildInt1Bool8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128B16);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool8x16));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * dstOpnd = BuildDstOpnd(dstRegSlot, TyInt32);
     dstOpnd->SetValueType(ValueType::GetInt(false));
@@ -6316,7 +6286,7 @@ IRBuilderAsmJs::BuildBool8x16_3(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_
 void IRBuilderAsmJs::BuildReg1Bool8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG2)
 {
     IR::RegOpnd * srcOpnd = BuildSrcOpnd(src1RegSlot, TySimd128B16);
-    srcOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool8x16));
+    srcOpnd->SetValueType(ValueType::Simd);
 
     IR::Instr * instr = nullptr;
     IR::Opnd * dstOpnd = nullptr;
@@ -6333,7 +6303,7 @@ void IRBuilderAsmJs::BuildReg1Bool8x16_1(Js::OpCodeAsmJs newOpcode, uint32 offse
         }
 
         dstOpnd = IR::SymOpnd::New(symDst, TySimd128B16, m_func);
-        dstOpnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool8x16));
+        dstOpnd->SetValueType(ValueType::Simd);
 
         instr = IR::Instr::New(Js::OpCode::ArgOut_A, dstOpnd, srcOpnd, m_func);
         AddInstr(instr, offset);
@@ -6372,7 +6342,7 @@ void
 IRBuilderAsmJs::BuildInt1Bool32x4_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128B4);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool32x4));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -6392,7 +6362,7 @@ void
 IRBuilderAsmJs::BuildInt1Bool16x8_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128B8);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool16x8));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -6412,7 +6382,7 @@ void
 IRBuilderAsmJs::BuildInt1Bool8x16_1Int1(Js::OpCodeAsmJs newOpcode, uint32 offset, BUILD_SIMD_ARGS_REG3)
 {
     IR::RegOpnd * src1Opnd = BuildSrcOpnd(src1RegSlot, TySimd128B16);
-    src1Opnd->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Bool8x16));
+    src1Opnd->SetValueType(ValueType::Simd);
 
     IR::RegOpnd * src2Opnd = BuildSrcOpnd(src2RegSlot, TyInt32);
     src2Opnd->SetValueType(ValueType::GetInt(false));
@@ -6519,7 +6489,7 @@ void IRBuilderAsmJs::BuildSimd_2(Js::OpCodeAsmJs newOpcode, uint32 offset, Js::R
         SIMDValue zeroVec{ 0 };
         IR::Opnd* zeroConst = IR::Simd128ConstOpnd::New(zeroVec, TySimd128F4, m_func);
         IR::RegOpnd* tmpReg = IR::RegOpnd::New(TyMachSimd128F4, m_func);
-        tmpReg->SetValueType(ValueType::GetSimd128(ObjectType::Simd128Float32x4));
+        tmpReg->SetValueType(ValueType::Simd);
         IR::Instr * instr = IR::Instr::New(Js::OpCode::Simd128_LdC, tmpReg, zeroConst, m_func);
         AddInstr(instr, offset);
         instr = IR::Instr::New(Js::OpCode::Simd128_Sub_I2, dstOpnd, tmpReg, src1Opnd, m_func);
@@ -6624,29 +6594,29 @@ ValueType IRBuilderAsmJs::GetSimdValueTypeFromIRType(IRType type)
     switch (type)
     {
     case TySimd128F4:
-        return ValueType::GetSimd128(ObjectType::Simd128Float32x4);
+        return ValueType::Simd;
     case TySimd128D2:
-        return ValueType::GetSimd128(ObjectType::Simd128Float64x2);
+        return ValueType::Simd;
     case TySimd128I2:
-        return ValueType::GetSimd128(ObjectType::Simd128Int64x2);
+        return ValueType::Simd;
     case TySimd128I4:
-        return ValueType::GetSimd128(ObjectType::Simd128Int32x4);
+        return ValueType::Simd;
     case TySimd128I8:
-        return ValueType::GetSimd128(ObjectType::Simd128Int16x8);
+        return ValueType::Simd;
     case TySimd128I16:
-        return ValueType::GetSimd128(ObjectType::Simd128Int8x16);
+        return ValueType::Simd;
     case TySimd128U4:
-        return ValueType::GetSimd128(ObjectType::Simd128Uint32x4);
+        return ValueType::Simd;
     case TySimd128U8:
-        return ValueType::GetSimd128(ObjectType::Simd128Uint16x8);
+        return ValueType::Simd;
     case TySimd128U16:
-        return ValueType::GetSimd128(ObjectType::Simd128Uint8x16);
+        return ValueType::Simd;
     case TySimd128B4:
-        return ValueType::GetSimd128(ObjectType::Simd128Bool32x4);
+        return ValueType::Simd;
     case TySimd128B8:
-        return ValueType::GetSimd128(ObjectType::Simd128Bool16x8);
+        return ValueType::Simd;
     case TySimd128B16:
-        return ValueType::GetSimd128(ObjectType::Simd128Bool8x16);
+        return ValueType::Simd;
     default:
         Assert(UNREACHED);
     }
@@ -6701,57 +6671,49 @@ IRBuilderAsmJs::BuildAsmSimdTypedArr(Js::OpCodeAsmJs newOpcode, uint32 offset, u
     IR::Instr * maskInstr = nullptr;
 
     Js::OpCode op = GetSimdOpcode(newOpcode);
-    ValueType arrayType, valueType;
+    ValueType arrayType;
     bool isLd = false, isConst = false;
     uint32 mask = 0;
 
     switch (newOpcode)
     {
     case Js::OpCodeAsmJs::Simd128_LdArr_I4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int32x4);
         isLd = true;
         isConst = false;
         type = TySimd128I4;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArr_I8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int16x8);
         isLd = true;
         isConst = false;
         type = TySimd128I8;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArr_I16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int8x16);
         isLd = true;
         isConst = false;
         type = TySimd128I16;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArr_U4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint32x4);
         isLd = true;
         isConst = false;
         type = TySimd128U4;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArr_U8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint16x8);
         isLd = true;
         isConst = false;
         type = TySimd128U8;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArr_U16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint8x16);
         isLd = true;
         isConst = false;
         type = TySimd128U16;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArr_F4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float32x4);
         isLd = true;
         isConst = false;
         type = TySimd128F4;
         break;
 #if 0
     case Js::OpCodeAsmJs::Simd128_LdArr_D2:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float64x2);
         isLd = true;
         isConst = false;
         type = TySimd128D2;
@@ -6759,50 +6721,42 @@ IRBuilderAsmJs::BuildAsmSimdTypedArr(Js::OpCodeAsmJs newOpcode, uint32 offset, u
 #endif // 0
 
     case Js::OpCodeAsmJs::Simd128_StArr_I4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int32x4);
         isLd = false;
         isConst = false;
         type = TySimd128I4;
         break;
     case Js::OpCodeAsmJs::Simd128_StArr_I8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int16x8);
         isLd = false;
         isConst = false;
         type = TySimd128I8;
         break;
     case Js::OpCodeAsmJs::Simd128_StArr_I16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int8x16);
         isLd = false;
         isConst = false;
         type = TySimd128I16;
         break;
     case Js::OpCodeAsmJs::Simd128_StArr_U4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint32x4);
         isLd = false;
         isConst = false;
         type = TySimd128U4;
         break;
     case Js::OpCodeAsmJs::Simd128_StArr_U8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint16x8);
         isLd = false;
         isConst = false;
         type = TySimd128U8;
         break;
     case Js::OpCodeAsmJs::Simd128_StArr_U16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint8x16);
         isLd = false;
         isConst = false;
         type = TySimd128U16;
         break;
     case Js::OpCodeAsmJs::Simd128_StArr_F4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float32x4);
         isLd = false;
         isConst = false;
         type = TySimd128F4;
         break;
 #if 0
     case Js::OpCodeAsmJs::Simd128_StArr_D2:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float64x2);
         isLd = false;
         isConst = false;
         type = TySimd128D2;
@@ -6810,100 +6764,84 @@ IRBuilderAsmJs::BuildAsmSimdTypedArr(Js::OpCodeAsmJs newOpcode, uint32 offset, u
 #endif // 0
 
     case Js::OpCodeAsmJs::Simd128_LdArrConst_I4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int32x4);
         isLd = true;
         isConst = true;
         type = TySimd128I4;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArrConst_I8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int16x8);
         isLd = true;
         isConst = true;
         type = TySimd128I8;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArrConst_I16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int8x16);
         isLd = true;
         isConst = true;
         type = TySimd128I16;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArrConst_U4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint32x4);
         isLd = true;
         isConst = true;
         type = TySimd128U4;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArrConst_U8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint16x8);
         isLd = true;
         isConst = true;
         type = TySimd128U8;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArrConst_U16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint8x16);
         isLd = true;
         isConst = true;
         type = TySimd128U16;
         break;
     case Js::OpCodeAsmJs::Simd128_LdArrConst_F4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float32x4);
         isLd = true;
         isConst = true;
         type = TySimd128F4;
         break;
 #if 0
     case Js::OpCodeAsmJs::Simd128_LdArrConst_D2:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float64x2);
         isLd = true;
         isConst = true;
         type = TySimd128D2;
         break;
 #endif
     case Js::OpCodeAsmJs::Simd128_StArrConst_I4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int32x4);
         isLd = false;
         type = TySimd128I4;
         isConst = true;
         break;
     case Js::OpCodeAsmJs::Simd128_StArrConst_I8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int16x8);
         isLd = false;
         isConst = true;
         type = TySimd128I8;
         break;
     case Js::OpCodeAsmJs::Simd128_StArrConst_I16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Int8x16);
         isLd = false;
         isConst = true;
         type = TySimd128I16;
         break;
     case Js::OpCodeAsmJs::Simd128_StArrConst_U4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint32x4);
         isLd = false;
         isConst = true;
         type = TySimd128U4;
         break;
     case Js::OpCodeAsmJs::Simd128_StArrConst_U8:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint16x8);
         isLd = false;
         isConst = true;
         type = TySimd128U8;
         break;
     case Js::OpCodeAsmJs::Simd128_StArrConst_U16:
-        valueType = ValueType::GetObject(ObjectType::Simd128Uint8x16);
         isLd = false;
         isConst = true;
         type = TySimd128U16;
         break;
     case Js::OpCodeAsmJs::Simd128_StArrConst_F4:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float32x4);
         isLd = false;
         isConst = true;
         type = TySimd128F4;
         break;
 #if 0
     case Js::OpCodeAsmJs::Simd128_StArrConst_D2:
-        valueType = ValueType::GetObject(ObjectType::Simd128Float64x2);
         isLd = false;
         isConst = true;
         type = TySimd128D2;
@@ -6915,36 +6853,12 @@ IRBuilderAsmJs::BuildAsmSimdTypedArr(Js::OpCodeAsmJs newOpcode, uint32 offset, u
 
     switch (viewType)
     {
-    case Js::ArrayBufferView::TYPE_INT8:
-        arrayType = ValueType::GetObject(ObjectType::Int8Array);
+#define ARRAYBUFFER_VIEW(name, align, RegType, MemType, irSuffix) \
+    case Js::ArrayBufferView::TYPE_##name: \
+        mask = ARRAYBUFFER_VIEW_MASK(align); \
+        arrayType = ValueType::GetObject(ObjectType::##irSuffix##Array); \
         break;
-    case Js::ArrayBufferView::TYPE_UINT8:
-        arrayType = ValueType::GetObject(ObjectType::Uint8Array);
-        break;
-    case Js::ArrayBufferView::TYPE_INT16:
-        arrayType = ValueType::GetObject(ObjectType::Int16Array);
-        mask = (uint32)~1;
-        break;
-    case Js::ArrayBufferView::TYPE_UINT16:
-        arrayType = ValueType::GetObject(ObjectType::Uint16Array);
-        mask = (uint32)~1;
-        break;
-    case Js::ArrayBufferView::TYPE_INT32:
-        arrayType = ValueType::GetObject(ObjectType::Int32Array);
-        mask = (uint32)~3;
-        break;
-    case Js::ArrayBufferView::TYPE_UINT32:
-        arrayType = ValueType::GetObject(ObjectType::Uint32Array);
-        mask = (uint32)~3;
-        break;
-    case Js::ArrayBufferView::TYPE_FLOAT32:
-        arrayType = ValueType::GetObject(ObjectType::Float32Array);
-        mask = (uint32)~3;
-        break;
-    case Js::ArrayBufferView::TYPE_FLOAT64:
-        arrayType = ValueType::GetObject(ObjectType::Float64Array);
-        mask = (uint32)~7;
-        break;
+#include "Language/AsmJsArrayBufferViews.h"
     default:
         Assert(UNREACHED);
     }
@@ -6978,7 +6892,7 @@ IRBuilderAsmJs::BuildAsmSimdTypedArr(Js::OpCodeAsmJs newOpcode, uint32 offset, u
     if (isLd)
     {
         regOpnd = BuildDstOpnd(valueRegSlot, type);
-        regOpnd->SetValueType(valueType);
+        regOpnd->SetValueType(ValueType::Simd);
         if (!isConst)
         {
             Assert(maskedOpnd);
@@ -6999,7 +6913,7 @@ IRBuilderAsmJs::BuildAsmSimdTypedArr(Js::OpCodeAsmJs newOpcode, uint32 offset, u
     else
     {
         regOpnd = BuildSrcOpnd(valueRegSlot, type);
-        regOpnd->SetValueType(valueType);
+        regOpnd->SetValueType(ValueType::Simd);
         if (!isConst)
         {
             Assert(maskedOpnd);

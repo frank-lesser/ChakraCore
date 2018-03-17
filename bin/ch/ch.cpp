@@ -757,6 +757,11 @@ HRESULT ExecuteTest(const char* fileName)
             IfFailGo(E_FAIL);
         }
 
+        if (HostConfigFlags::flags.TrackRejectedPromises)
+        {
+            ChakraRTInterface::JsSetHostPromiseRejectionTracker(WScriptJsrt::PromiseRejectionTrackerCallback, nullptr);
+        }
+        
         len = strlen(fullPath);
         if (HostConfigFlags::flags.GenerateLibraryByteCodeHeaderIsEnabled)
         {
@@ -1104,6 +1109,11 @@ int _cdecl wmain(int argc, __in_ecount(argc) LPWSTR argv[])
 
     if (success)
     {
+        if (HostConfigFlags::flags.CustomConfigFile != NULL) 
+        {
+            ChakraRTInterface::SetConfigFile(HostConfigFlags::flags.CustomConfigFile);
+        }
+
 #ifdef _WIN32
 #if ENABLE_NATIVE_CODEGEN
         if (HostConfigFlags::flags.OOPJIT)

@@ -29,7 +29,6 @@
 #include "Types/JavascriptStaticEnumerator.h"
 #include "Library/ForInObjectEnumerator.h"
 #include "Library/ES5Array.h"
-#include "Library/SimdLib.h"
 
 namespace Js
 {
@@ -89,48 +88,6 @@ namespace Js
 #endif
             pOMDisplay = Anew(pRefArena->Arena(), RecyclableArrayDisplay, this);
         }
-#ifdef ENABLE_SIMDJS
-        else if (Js::JavascriptSIMDInt32x4::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdInt32x4ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDFloat32x4::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdFloat32x4ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDInt8x16::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdInt8x16ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDInt16x8::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdInt16x8ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDBool32x4::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdBool32x4ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDBool8x16::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdBool8x16ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDBool16x8::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdBool16x8ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDUint32x4::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdUint32x4ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDUint8x16::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdUint8x16ObjectDisplay, this);
-        }
-        else if (Js::JavascriptSIMDUint16x8::Is(obj))
-        {
-            pOMDisplay = Anew(pRefArena->Arena(), RecyclableSimdUint16x8ObjectDisplay, this);
-        }
-#endif
         else
         {
             pOMDisplay = Anew(pRefArena->Arena(), RecyclableObjectDisplay, this);
@@ -1904,9 +1861,8 @@ namespace Js
             Var objValue = nullptr;
 
 #if ENABLE_TTD
-            bool suppressGetterForTTDebug = requestContext->GetThreadContext()->IsRuntimeInTTDMode() && requestContext->GetThreadContext()->TTDLog->ShouldDoGetterInvocationSupression();
             TTD::TTModeStackAutoPopper suppressModeAutoPopper(requestContext->GetThreadContext()->TTDLog);
-            if(suppressGetterForTTDebug)
+            if(requestContext->GetThreadContext()->IsRuntimeInTTDMode())
             {
                 suppressModeAutoPopper.PushModeAndSetToAutoPop(TTD::TTDMode::DebuggerSuppressGetter);
             }
@@ -2141,7 +2097,7 @@ namespace Js
                     auto funcPtr = [&]()
                     {
                         IGNORE_STACKWALK_EXCEPTION(scriptContext);
-                        if (object->CanHaveInterceptors())
+                        if (object->IsExternal())
                         {
                             Js::ForInObjectEnumerator enumerator(object, object->GetScriptContext(), /* enumSymbols */ true);
                             Js::PropertyId propertyId;
@@ -2258,9 +2214,8 @@ namespace Js
         BOOL retValue = FALSE;
 
 #if ENABLE_TTD
-        bool suppressGetterForTTDebug = scriptContext->GetThreadContext()->IsRuntimeInTTDMode() && scriptContext->GetThreadContext()->TTDLog->ShouldDoGetterInvocationSupression();
         TTD::TTModeStackAutoPopper suppressModeAutoPopper(scriptContext->GetThreadContext()->TTDLog);
-        if(suppressGetterForTTDebug)
+        if(scriptContext->GetThreadContext()->IsRuntimeInTTDMode())
         {
             suppressModeAutoPopper.PushModeAndSetToAutoPop(TTD::TTDMode::DebuggerSuppressGetter);
         }
@@ -2461,7 +2416,7 @@ namespace Js
 
                 if (JavascriptOperators::IsObject(object))
                 {
-                    if (object->CanHaveInterceptors() || JavascriptOperators::GetTypeId(object) == TypeIds_Proxy)
+                    if (object->IsExternal() || JavascriptOperators::GetTypeId(object) == TypeIds_Proxy)
                     {
                         try
                         {
@@ -3896,6 +3851,7 @@ namespace Js
                 break;
             case JavascriptPromise::PromiseStatusCode_Unresolved:
                 pResolvedObject->obj = scriptContext->GetLibrary()->CreateStringFromCppLiteral(_u("pending"));
+                break;
             case JavascriptPromise::PromiseStatusCode_HasResolution:
                 pResolvedObject->obj = scriptContext->GetLibrary()->CreateStringFromCppLiteral(_u("resolved"));
                 break;
@@ -4085,7 +4041,7 @@ namespace Js
         else
         {
             // The scope is defined by a slot array object so grab the function body out to get the function name.
-            ScopeSlots slotArray = ScopeSlots(reinterpret_cast<Var*>(instance));
+            ScopeSlots slotArray = ScopeSlots(reinterpret_cast<Field(Var)*>(instance));
 
             if(slotArray.IsDebuggerScopeSlotArray())
             {
@@ -4259,140 +4215,5 @@ namespace Js
         return FALSE;
     }
 #endif
-
-#ifdef ENABLE_SIMDJS
-    //--------------------------
-    // RecyclableSimdObjectWalker
-
-    template <typename simdType, uint elementCount>
-    BOOL RecyclableSimdObjectWalker<simdType, elementCount>::Get(int i, ResolvedObject* pResolvedObject)
-    {
-        Assert(elementCount == 4 || elementCount == 8 || elementCount == 16); // SIMD types such as int32x4, int8x16, int16x8
-        Assert(i >= 0 && i <= elementCount);
-
-        simdType* simd = simdType::FromVar(instance);
-        SIMDValue value = simd->GetValue();
-
-        WCHAR* indexName = AnewArray(GetArenaFromContext(scriptContext), WCHAR, SIMD_INDEX_VALUE_MAX);
-        Assert(indexName);
-        swprintf_s(indexName, SIMD_INDEX_VALUE_MAX, _u("[%d]"), i);
-        pResolvedObject->name = indexName;
-
-        TypeId simdTypeId = JavascriptOperators::GetTypeId(instance);
-
-        switch (simdTypeId)
-        {
-        case TypeIds_SIMDInt32x4:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.i32[i], scriptContext);
-            break;
-        case TypeIds_SIMDFloat32x4:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.f32[i], scriptContext);
-            break;
-        case TypeIds_SIMDInt8x16:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.i8[i], scriptContext);
-            break;
-        case TypeIds_SIMDInt16x8:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.i16[i], scriptContext);
-            break;
-        case TypeIds_SIMDBool32x4:
-            pResolvedObject->obj = JavascriptBoolean::ToVar(value.i32[i], scriptContext);
-            break;
-        case TypeIds_SIMDBool8x16:
-            pResolvedObject->obj = JavascriptBoolean::ToVar(value.i8[i], scriptContext);
-            break;
-        case TypeIds_SIMDBool16x8:
-            pResolvedObject->obj = JavascriptBoolean::ToVar(value.i16[i], scriptContext);
-            break;
-        case TypeIds_SIMDUint32x4:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.u32[i], scriptContext);
-            break;
-        case TypeIds_SIMDUint8x16:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.u8[i], scriptContext);
-            break;
-        case TypeIds_SIMDUint16x8:
-            pResolvedObject->obj = JavascriptNumber::ToVarWithCheck(value.u16[i], scriptContext);
-            break;
-        default:
-            AssertMsg(false, "Unexpected SIMD typeId");
-            return FALSE;
-        }
-
-        pResolvedObject->propId = Constants::NoProperty;
-        pResolvedObject->scriptContext = scriptContext;
-        pResolvedObject->typeId = simdTypeId;
-        pResolvedObject->objectDisplay = pResolvedObject->CreateDisplay();
-        pResolvedObject->objectDisplay->SetDefaultTypeAttribute(DBGPROP_ATTRIB_VALUE_READONLY | DBGPROP_ATTRIB_VALUE_IS_FAKE);
-        pResolvedObject->address = nullptr;
-
-        return TRUE;
-    }
-
-    //--------------------------
-    // RecyclableSimdObjectDisplay
-
-    template <typename simdType, typename simdWalker>
-    LPCWSTR RecyclableSimdObjectDisplay<simdType, simdWalker>::Type()
-    {
-        TypeId simdTypeId = JavascriptOperators::GetTypeId(instance);
-
-        switch (simdTypeId)
-        {
-        case TypeIds_SIMDInt32x4:
-            return  _u("SIMD.Int32x4");
-        case TypeIds_SIMDFloat32x4:
-            return  _u("SIMD.Float32x4");
-        case TypeIds_SIMDInt8x16:
-            return  _u("SIMD.Int8x16");
-        case TypeIds_SIMDInt16x8:
-            return  _u("SIMD.Int16x8");
-        case TypeIds_SIMDBool32x4:
-            return  _u("SIMD.Bool32x4");
-        case TypeIds_SIMDBool8x16:
-            return  _u("SIMD.Bool8x16");
-        case TypeIds_SIMDBool16x8:
-            return  _u("SIMD.Bool16x8");
-        case TypeIds_SIMDUint32x4:
-            return  _u("SIMD.Uint32x4");
-        case TypeIds_SIMDUint8x16:
-            return  _u("SIMD.Uint8x16");
-        case TypeIds_SIMDUint16x8:
-            return  _u("SIMD.Uint16x8");
-        default:
-            AssertMsg(false, "Unexpected SIMD typeId");
-            return nullptr;
-        }
-    }
-
-    template <typename simdType, typename simdWalker>
-    LPCWSTR RecyclableSimdObjectDisplay<simdType, simdWalker>::Value(int radix)
-    {
-        StringBuilder<ArenaAllocator>* builder = GetStringBuilder();
-        builder->Reset();
-
-        simdType* simd = simdType::FromVar(instance);
-        SIMDValue value = simd->GetValue();
-
-        char16* stringBuffer = AnewArray(GetArenaFromContext(scriptContext), char16, SIMD_STRING_BUFFER_MAX);
-
-        simdType::ToStringBuffer(value, stringBuffer, SIMD_STRING_BUFFER_MAX, scriptContext);
-
-        builder->AppendSz(stringBuffer);
-
-        return builder->Detach();
-    }
-
-    template <typename simdType, typename simdWalker>
-    WeakArenaReference<IDiagObjectModelWalkerBase>* RecyclableSimdObjectDisplay<simdType, simdWalker>::CreateWalker()
-    {
-        ReferencedArenaAdapter* pRefArena = scriptContext->GetThreadContext()->GetDebugManager()->GetDiagnosticArena();
-        if (pRefArena)
-        {
-            IDiagObjectModelWalkerBase* pOMWalker = Anew(pRefArena->Arena(), simdWalker, scriptContext, instance);
-            return HeapNew(WeakArenaReference<IDiagObjectModelWalkerBase>, pRefArena, pOMWalker);
-        }
-        return nullptr;
-    }
-
-#endif // #ifdef ENABLE_SIMDJS
 }
 #endif
