@@ -45,7 +45,8 @@ namespace Js
     void GlobalObject::Initialize(ScriptContext * scriptContext)
     {
         Assert(type->javascriptLibrary == nullptr);
-        JavascriptLibrary* localLibrary = RecyclerNewFinalized(scriptContext->GetRecycler(), JavascriptLibrary, this);
+        Recycler * recycler = scriptContext->GetRecycler();
+        JavascriptLibrary* localLibrary = RecyclerNewFinalized(recycler, JavascriptLibrary, this, recycler);
         scriptContext->SetLibrary(localLibrary);
         type->javascriptLibrary = localLibrary;
         scriptContext->InitializeCache();
@@ -125,7 +126,7 @@ namespace Js
 
     BOOL GlobalObject::ReserveGlobalProperty(PropertyId propertyId)
     {
-        if (JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId)))
+        if (JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId, nullptr /*info*/)))
         {
             return false;
         }
@@ -897,14 +898,14 @@ namespace Js
             Parser parser(scriptContext, strictMode);
             bool forceNoNative = false;
 
-            ParseNodePtr parseTree = nullptr;
+            ParseNodeProg * parseTree = nullptr;
 
             SourceContextInfo * sourceContextInfo = pSrcInfo->sourceContextInfo;
             ULONG deferParseThreshold = Parser::GetDeferralThreshold(sourceContextInfo->IsSourceProfileLoaded());
             if ((ULONG)sourceLength > deferParseThreshold && !PHASE_OFF1(Phase::DeferParsePhase))
             {
                 // Defer function bodies declared inside large dynamic blocks.
-                grfscr |= fscrDeferFncParse;
+                grfscr |= fscrWillDeferFncParse;
             }
 
             grfscr = grfscr | fscrDynamicCode;
@@ -926,7 +927,7 @@ namespace Js
                 // TODO: Handle strict mode.
                 if (isIndirect &&
                     !strictMode &&
-                    !parseTree->AsParseNodeFnc()->GetStrictMode())
+                    !parseTree->GetStrictMode())
                 {
                     grfscr &= ~fscrEval;
                 }
@@ -1674,9 +1675,20 @@ LHexError:
         PROBE_STACK(function->GetScriptContext(), Js::Constants::MinStackDefault);
         ARGUMENTS(args, callInfo);
 
-        if(function->GetScriptContext()->ShouldPerformRecordOrReplayAction())
+        if (function->GetScriptContext()->ShouldPerformReplayAction())
         {
-            return function->GetScriptContext()->GetLibrary()->GetTrue();
+            TTD::EventLog* ttlog = function->GetScriptContext()->GetThreadContext()->TTDLog;
+            bool isEnabled = ttlog->ReplayTTDFetchAutoTraceStatusLogEvent();
+
+            return function->GetScriptContext()->GetLibrary()->CreateBoolean(isEnabled);
+        }
+        else if (function->GetScriptContext()->ShouldPerformRecordAction())
+        {
+            TTD::EventLog* ttlog = function->GetScriptContext()->GetThreadContext()->TTDLog;
+            bool isEnabled = ttlog->GetAutoTraceEnabled();
+            ttlog->RecordTTDFetchAutoTraceStatusEvent(isEnabled);
+
+            return function->GetScriptContext()->GetLibrary()->CreateBoolean(isEnabled);
         }
         else
         {
@@ -1780,9 +1792,9 @@ LHexError:
         return FALSE;
     }
 
-    PropertyQueryFlags GlobalObject::HasPropertyQuery(PropertyId propertyId)
+    PropertyQueryFlags GlobalObject::HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info)
     {
-        return JavascriptConversion::BooleanToPropertyQueryFlags(JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId)) ||
+        return JavascriptConversion::BooleanToPropertyQueryFlags(JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId, info)) ||
             (this->directHostObject && JavascriptOperators::HasProperty(this->directHostObject, propertyId)) ||
             (this->hostObject && JavascriptOperators::HasProperty(this->hostObject, propertyId)));
     }
@@ -1796,13 +1808,13 @@ LHexError:
 
     BOOL GlobalObject::HasOwnProperty(PropertyId propertyId)
     {
-        return JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId)) ||
+        return JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId, nullptr /*info*/)) ||
             (this->directHostObject && this->directHostObject->HasProperty(propertyId));
     }
 
     BOOL GlobalObject::HasOwnPropertyNoHostObject(PropertyId propertyId)
     {
-        return JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId));
+        return JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId, nullptr /*info*/));
     }
 
     PropertyQueryFlags GlobalObject::GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext)
@@ -1922,7 +1934,7 @@ LHexError:
 
     BOOL GlobalObject::SetExistingProperty(PropertyId propertyId, Var value, PropertyValueInfo* info, BOOL *setAttempted)
     {
-        BOOL hasOwnProperty = JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId));
+        BOOL hasOwnProperty = JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::HasPropertyQuery(propertyId, nullptr /*info*/));
         BOOL hasProperty = JavascriptOperators::HasProperty(this->GetPrototype(), propertyId);
         *setAttempted = TRUE;
 
@@ -2167,7 +2179,7 @@ LHexError:
 
     BOOL GlobalObject::DeleteProperty(PropertyId propertyId, PropertyOperationFlags flags)
     {
-        if (JavascriptConversion::PropertyQueryFlagsToBoolean(__super::HasPropertyQuery(propertyId)))
+        if (JavascriptConversion::PropertyQueryFlagsToBoolean(__super::HasPropertyQuery(propertyId, nullptr /*info*/)))
         {
             return __super::DeleteProperty(propertyId, flags);
         }

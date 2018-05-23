@@ -54,7 +54,7 @@ namespace Js
         return static_cast<PropertyString *>(aValue);
     }
 
-    void const * PropertyString::GetOriginalStringReference()
+    const void * PropertyString::GetOriginalStringReference()
     {
         // Property record is the allocation containing the string buffer
         return this->propertyRecordUsageCache.GetPropertyRecord();
@@ -67,7 +67,7 @@ namespace Js
         const PropertyOperationFlags propertyOperationFlags,
         _Inout_ PropertyValueInfo *const propertyValueInfo)
     {
-        return this->propertyRecordUsageCache.TrySetPropertyFromCache(object, propertyValue, requestContext, propertyOperationFlags, propertyValueInfo, this);
+        return this->propertyRecordUsageCache.TrySetPropertyFromCache<false /* ReturnOperationInfo */>(object, propertyValue, requestContext, propertyOperationFlags, propertyValueInfo, this, nullptr);
     }
 
     RecyclableObject * PropertyString::CloneToScriptContext(ScriptContext* requestContext)

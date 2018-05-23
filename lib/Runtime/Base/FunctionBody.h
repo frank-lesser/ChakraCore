@@ -13,7 +13,6 @@
 struct CodeGenWorkItem;
 class SourceContextInfo;
 struct DeferredFunctionStub;
-struct CodeGenNumberChunk;
 #ifdef DYNAMIC_PROFILE_MUTATOR
 class DynamicProfileMutator;
 class DynamicProfileMutatorImpl;
@@ -21,6 +20,15 @@ class DynamicProfileMutatorImpl;
 #define MAX_FUNCTION_BODY_DEBUG_STRING_SIZE 42 //11*3+8+1
 
 typedef BVSparse<ArenaAllocator> ActiveFunctionSet;
+
+#if ENABLE_NATIVE_CODEGEN
+class JitTransferData;
+class NativeEntryPointData;
+class InProcNativeEntryPointData;
+#if ENABLE_OOP_NATIVE_CODEGEN
+class OOPNativeEntryPointData;
+#endif
+#endif
 
 namespace Js
 {
@@ -58,9 +66,6 @@ namespace Js
     class JavascriptNumber;
 #pragma endregion
 
-    typedef JsUtil::BaseDictionary<Js::PropertyId, const Js::PropertyRecord*, RecyclerNonLeafAllocator, PowerOf2SizePolicy, DefaultComparer, JsUtil::SimpleDictionaryEntry> PropertyRecordList;
-    typedef JsUtil::BaseHashSet<void*, Recycler, PowerOf2SizePolicy> TypeRefSet;
-
      // Definition of scopes such as With, Catch and Block which will be used further in the debugger for additional look-ups.
     enum DiagExtraScopesType
     {
@@ -77,7 +82,7 @@ namespace Js
         DiagParamScopeInObject,     // The scope represents symbols at formals and formal scope in activation object
     };
 
-    struct ForInCache
+    struct EnumeratorCache
     {
         Type * type;
         void * data;
@@ -212,26 +217,12 @@ namespace Js
         virtual bool IsFunctionEntryPointInfo() const { return false; }
     };
 
-
-    struct TypeGuardTransferData
-    {
-        Field(unsigned int) propertyGuardCount;
-        FieldNoBarrier(TypeGuardTransferEntryIDL*) entries;
-    };
-
-    struct CtorCacheTransferData
-    {
-        Field(unsigned int) ctorCachesCount;
-        FieldNoBarrier(CtorCacheTransferEntryIDL **) entries;
-    };
-
-
-
     // Not thread safe.
     // Note that instances of this class are read from and written to from the
     // main and JIT threads.
     class EntryPointInfo : public ProxyEntryPointInfo
     {
+        
     private:
         enum State : BYTE
         {
@@ -250,165 +241,20 @@ namespace Js
         Field(bool)                isLoopBody : 1;
         Field(bool)                hasJittedStackClosure : 1;
         Field(bool)                isAsmJsFunction : 1; // true if entrypoint is for asmjs function
+        Field(bool)                nativeEntryPointProcessed : 1;
+        Field(bool)                mIsTemplatizedJitMode : 1; // true only if in TJ mode, used only for debugging
         Field(State)               state; // Single state member so users can query state w/o a lock
 #if ENABLE_NATIVE_CODEGEN
-        Field(BYTE)                pendingInlinerVersion;
-        Field(ImplicitCallFlags)   pendingImplicitCallFlags;
-        Field(uint32)              pendingPolymorphicCacheState;
-
-        class JitTransferData
-        {
-            friend EntryPointInfo;
-
-        private:
-            Field(TypeRefSet*) jitTimeTypeRefs;
-
-            Field(PinnedTypeRefsIDL*) runtimeTypeRefs;
-
-
-            Field(int) propertyGuardCount;
-            // This is a dynamically sized array of dynamically sized TypeGuardTransferEntries.  It's heap allocated by the JIT
-            // thread and lives until entry point is installed, at which point it is explicitly freed.
-            FieldNoBarrier(TypeGuardTransferEntry*) propertyGuardsByPropertyId;
-            Field(size_t) propertyGuardsByPropertyIdPlusSize;
-
-            // This is a dynamically sized array of dynamically sized CtorCacheGuardTransferEntry.  It's heap allocated by the JIT
-            // thread and lives until entry point is installed, at which point it is explicitly freed.
-            FieldNoBarrier(CtorCacheGuardTransferEntry*) ctorCacheGuardsByPropertyId;
-            Field(size_t) ctorCacheGuardsByPropertyIdPlusSize;
-
-            Field(int) equivalentTypeGuardCount;
-            Field(int) lazyBailoutPropertyCount;
-            // This is a dynamically sized array of JitEquivalentTypeGuards. It's heap allocated by the JIT thread and lives
-            // until entry point is installed, at which point it is explicitly freed. We need it during installation so as to
-            // swap the cache associated with each guard from the heap to the recycler (so the types in the cache are kept alive).
-            FieldNoBarrier(JitEquivalentTypeGuard**) equivalentTypeGuards;
-            FieldNoBarrier(Js::PropertyId*) lazyBailoutProperties;
-            FieldNoBarrier(NativeCodeData*) jitTransferRawData;
-            FieldNoBarrier(EquivalentTypeGuardOffsets*) equivalentTypeGuardOffsets;
-            Field(TypeGuardTransferData) typeGuardTransferData;
-            Field(CtorCacheTransferData) ctorCacheTransferData;
-
-            Field(bool) falseReferencePreventionBit;
-            Field(bool) isReady;
-
-        public:
-            JitTransferData():
-                jitTimeTypeRefs(nullptr), runtimeTypeRefs(nullptr),
-                propertyGuardCount(0), propertyGuardsByPropertyId(nullptr), propertyGuardsByPropertyIdPlusSize(0),
-                ctorCacheGuardsByPropertyId(nullptr), ctorCacheGuardsByPropertyIdPlusSize(0),
-                equivalentTypeGuardCount(0), equivalentTypeGuards(nullptr), jitTransferRawData(nullptr),
-                falseReferencePreventionBit(true), isReady(false), lazyBailoutProperties(nullptr), lazyBailoutPropertyCount(0){}
-
-            void SetRawData(NativeCodeData* rawData) { jitTransferRawData = rawData; }
-            void AddJitTimeTypeRef(void* typeRef, Recycler* recycler);
-
-            int GetRuntimeTypeRefCount() { return this->runtimeTypeRefs ? this->runtimeTypeRefs->count : 0; }
-            void** GetRuntimeTypeRefs() { return this->runtimeTypeRefs ? (void**)this->runtimeTypeRefs->typeRefs : nullptr; }
-            void SetRuntimeTypeRefs(PinnedTypeRefsIDL* pinnedTypeRefs) { this->runtimeTypeRefs = pinnedTypeRefs;}
-
-            JitEquivalentTypeGuard** GetEquivalentTypeGuards() const { return this->equivalentTypeGuards; }
-            void SetEquivalentTypeGuards(JitEquivalentTypeGuard** guards, int count)
-            {
-                this->equivalentTypeGuardCount = count;
-                this->equivalentTypeGuards = guards;
-            }
-            void SetLazyBailoutProperties(Js::PropertyId* properties, int count)
-            {
-                this->lazyBailoutProperties = properties;
-                this->lazyBailoutPropertyCount = count;
-            }
-            void SetEquivalentTypeGuardOffsets(EquivalentTypeGuardOffsets* offsets)
-            {
-                equivalentTypeGuardOffsets = offsets;
-            }
-            void SetTypeGuardTransferData(JITOutputIDL* data)
-            {
-                typeGuardTransferData.entries = data->typeGuardEntries;
-                typeGuardTransferData.propertyGuardCount = data->propertyGuardCount;
-            }
-            void SetCtorCacheTransferData(JITOutputIDL * data)
-            {
-                ctorCacheTransferData.entries = data->ctorCacheEntries;
-                ctorCacheTransferData.ctorCachesCount = data->ctorCachesCount;
-            }
-            bool GetIsReady() { return this->isReady; }
-            void SetIsReady() { this->isReady = true; }
-
-        private:
-            void EnsureJitTimeTypeRefs(Recycler* recycler);
-        };
-
-        Field(NativeCodeData *) inProcJITNaticeCodedata;
-        FieldNoBarrier(char*) nativeDataBuffer;
-        union
-        {
-            Field(Field(JavascriptNumber*)*) numberArray;
-            Field(CodeGenNumberChunk*) numberChunks;
-        };
-        Field(XProcNumberPageSegment*) numberPageSegments;
-
-        FieldNoBarrier(SmallSpanSequence *) nativeThrowSpanSequence;
-        typedef JsUtil::BaseHashSet<RecyclerWeakReference<FunctionBody>*, Recycler, PowerOf2SizePolicy> WeakFuncRefSet;
-        Field(WeakFuncRefSet *) weakFuncRefSet;
-        // Need to keep strong references to the guards here so they don't get collected while the entry point is alive.
-        typedef JsUtil::BaseDictionary<Js::PropertyId, PropertyGuard*, Recycler, PowerOf2SizePolicy> SharedPropertyGuardDictionary;
-        Field(SharedPropertyGuardDictionary*) sharedPropertyGuards;
-        typedef JsUtil::List<LazyBailOutRecord, HeapAllocator> BailOutRecordMap;
-        Field(BailOutRecordMap*) bailoutRecordMap;
-
-        // This array holds fake weak references to type property guards. We need it to zero out the weak references when the
-        // entry point is finalized and the guards are about to be freed. Otherwise, if one of the guards was to be invalidated
-        // from the thread context, we would AV trying to access freed memory. Note that the guards themselves are allocated by
-        // NativeCodeData::Allocator and are kept alive by the data field. The weak references are recycler allocated, and so
-        // the array must be recycler allocated also, so that the recycler doesn't collect the weak references.
-        Field(Field(FakePropertyGuardWeakReference*)*) propertyGuardWeakRefs;
-        Field(EquivalentTypeCache*) equivalentTypeCaches;
-        Field(EntryPointInfo **) registeredEquivalentTypeCacheRef;
-
-        Field(int) propertyGuardCount;
-        Field(int) equivalentTypeCacheCount;
-
-        Field(uint) inlineeFrameOffsetArrayOffset;
-        Field(uint) inlineeFrameOffsetArrayCount;
-
-        typedef SListCounted<ConstructorCache*, Recycler> ConstructorCacheList;
-        Field(ConstructorCacheList*) constructorCaches;
-
-        Field(EntryPointPolymorphicInlineCacheInfo *) polymorphicInlineCacheInfo;
-
-        // This field holds any recycler allocated references that must be kept alive until
-        // we install the entry point.  It is freed at that point, so anything that must survive
-        // until the EntryPointInfo itself goes away, must be copied somewhere else.
-        Field(JitTransferData*) jitTransferData;
-
-        // If we pin types this array contains strong references to types, otherwise it holds weak references.
-        Field(Field(void*)*) runtimeTypeRefs;
-     protected:
-#if PDATA_ENABLED
-        Field(XDataAllocation *) xdataInfo;
-#endif
+        Field(NativeEntryPointData *) nativeEntryPointData;
 #endif // ENABLE_NATIVE_CODEGEN
-
-        Field(CodeGenWorkItem *) workItem;
-        FieldNoBarrier(Js::JavascriptMethod) nativeAddress;
-        FieldNoBarrier(Js::JavascriptMethod) thunkAddress;
-        Field(ptrdiff_t) codeSize;
-
     protected:
+        Field(CodeGenWorkItem *) workItem;
         Field(JavascriptLibrary*) library;
-#if ENABLE_NATIVE_CODEGEN
-        typedef JsUtil::List<NativeOffsetInlineeFramePair, HeapAllocator> InlineeFrameMap;
-        Field(InlineeFrameMap*)   inlineeFrameMap;
-#endif
+
+#if ENABLE_ENTRYPOINT_CLEANUP_TRACE
 #if ENABLE_DEBUG_STACK_BACK_TRACE
         FieldNoBarrier(StackBackTrace*) cleanupStack;  // NoCheckHeapAllocator
 #endif
-    public:
-        Field(uint) frameHeight;
-        Field(bool) nativeEntryPointProcessed;
-
-#if ENABLE_DEBUG_CONFIG_OPTIONS
     public:
         enum CleanupReason
         {
@@ -423,7 +269,7 @@ namespace Js
         };
     private:
         Field(CleanupReason) cleanupReason;
-#endif
+#endif // ENABLE_ENTRYPOINT_CLEANUP_TRACE
 
 #ifdef FIELD_ACCESS_STATS
     private:
@@ -453,48 +299,28 @@ namespace Js
         virtual bool IsFunctionEntryPointInfo() const override { return true; }
 
 #if ENABLE_NATIVE_CODEGEN
-        char** GetNativeDataBufferRef() { return &nativeDataBuffer; }
-        char* GetNativeDataBuffer() { return nativeDataBuffer; }
-        void SetInProcJITNativeCodeData(NativeCodeData* nativeCodeData) { inProcJITNaticeCodedata = nativeCodeData; }
-        void SetNumberChunks(CodeGenNumberChunk* chunks)
-        {
-            Assert(numberPageSegments == nullptr);
-            numberChunks = chunks;
-        }
-        void SetNumberArray(Field(Js::JavascriptNumber*)* array)
-        {
-            Assert(numberPageSegments != nullptr);
-            numberArray = array;
-        }
-        void SetNumberPageSegment(XProcNumberPageSegment * segments)
-        {
-            Assert(numberPageSegments == nullptr);
-            numberPageSegments = segments;
-        }
+        NativeEntryPointData * EnsureNativeEntryPointData();
+        bool HasNativeEntryPointData() const;
+        NativeEntryPointData * GetNativeEntryPointData() const;
+        InProcNativeEntryPointData * GetInProcNativeEntryPointData();
+#if ENABLE_OOP_NATIVE_CODEGEN
+        OOPNativeEntryPointData * GetOOPNativeEntryPointData();
+#endif
 #endif
 
     protected:
-        EntryPointInfo(Js::JavascriptMethod method, JavascriptLibrary* library, void* validationCookie, ThreadContext* context = nullptr, bool isLoopBody = false) :
-            ProxyEntryPointInfo(method, context), tag(1), nativeEntryPointProcessed(false),
+        EntryPointInfo(Js::JavascriptMethod method, JavascriptLibrary* library, ThreadContext* context = nullptr, bool isLoopBody = false) :
+            ProxyEntryPointInfo(method, context), tag(1), nativeEntryPointProcessed(false), mIsTemplatizedJitMode(false),
 #if ENABLE_NATIVE_CODEGEN
-            nativeThrowSpanSequence(nullptr), workItem(nullptr), weakFuncRefSet(nullptr),
-            jitTransferData(nullptr), sharedPropertyGuards(nullptr), propertyGuardCount(0), propertyGuardWeakRefs(nullptr),
-            equivalentTypeCacheCount(0), equivalentTypeCaches(nullptr), constructorCaches(nullptr), state(NotScheduled), inProcJITNaticeCodedata(nullptr),
-            numberChunks(nullptr), numberPageSegments(nullptr), polymorphicInlineCacheInfo(nullptr), runtimeTypeRefs(nullptr),
-            isLoopBody(isLoopBody), hasJittedStackClosure(false), registeredEquivalentTypeCacheRef(nullptr), bailoutRecordMap(nullptr), inlineeFrameMap(nullptr),
-#if PDATA_ENABLED
-            xdataInfo(nullptr),
+            nativeEntryPointData(nullptr), workItem(nullptr), state(NotScheduled),
+            isLoopBody(isLoopBody), hasJittedStackClosure(false),
 #endif
-#endif
-            library(library), codeSize(0), nativeAddress(nullptr), isAsmJsFunction(false), validationCookie(validationCookie)
+            library(library), isAsmJsFunction(false)
+#if ENABLE_ENTRYPOINT_CLEANUP_TRACE
 #if ENABLE_DEBUG_STACK_BACK_TRACE
             , cleanupStack(nullptr)
 #endif
-#if ENABLE_DEBUG_CONFIG_OPTIONS
             , cleanupReason(NotCleanedUp)
-#endif
-#if DBG_DUMP | defined(VTUNE_PROFILING)
-            , nativeOffsetMaps(&HeapAllocator::Instance)
 #endif
 #ifdef FIELD_ACCESS_STATS
             , fieldAccessStats(nullptr)
@@ -520,15 +346,9 @@ namespace Js
 
         virtual FunctionBody *GetFunctionBody() const = 0;
 #if ENABLE_NATIVE_CODEGEN
-        EntryPointPolymorphicInlineCacheInfo * EnsurePolymorphicInlineCacheInfo(Recycler * recycler, FunctionBody * functionBody);
-        EntryPointPolymorphicInlineCacheInfo * GetPolymorphicInlineCacheInfo() { return polymorphicInlineCacheInfo; }
+        uint GetFrameHeight();
 
-        JitTransferData* GetJitTransferData() { return this->jitTransferData; }
-        JitTransferData* EnsureJitTransferData(Recycler* recycler);
-#if PDATA_ENABLED
-        XDataAllocation* GetXDataInfo() { return this->xdataInfo; }
-        void SetXDataInfo(XDataAllocation* xdataInfo) { this->xdataInfo = xdataInfo; }
-#endif
+        JitTransferData* GetJitTransferData();
 
 #ifdef FIELD_ACCESS_STATS
         FieldAccessStats* GetFieldAccessStats() { return this->fieldAccessStats; }
@@ -541,8 +361,10 @@ namespace Js
 
         void Cleanup(bool isShutdown, bool captureCleanupStack);
 
+#if ENABLE_ENTRYPOINT_CLEANUP_TRACE
 #if ENABLE_DEBUG_STACK_BACK_TRACE
         void CaptureCleanupStackTrace();
+#endif
 #endif
 
         bool IsNotScheduled() const
@@ -612,7 +434,7 @@ namespace Js
             this->state = PendingCleanup;
         }
 
-#if ENABLE_DEBUG_CONFIG_OPTIONS
+#if ENABLE_ENTRYPOINT_CLEANUP_TRACE
         void SetCleanupReason(CleanupReason reason)
         {
             this->cleanupReason = reason;
@@ -636,7 +458,7 @@ namespace Js
         }
 #endif
 
-        void Reset(bool resetStateToNotScheduled = true);
+        void Reset(bool resetStateToNotScheduled);
 
 #if ENABLE_NATIVE_CODEGEN
         void SetCodeGenPending(CodeGenWorkItem * workItem)
@@ -674,19 +496,7 @@ namespace Js
             this->state = CodeGenPending;
         }
 
-        void SetCodeGenRecorded(Js::JavascriptMethod thunkAddress, Js::JavascriptMethod nativeAddress, ptrdiff_t codeSize)
-        {
-            Assert(this->GetState() == CodeGenQueued);
-            Assert(codeSize > 0);
-            this->nativeAddress = nativeAddress;
-            this->thunkAddress = thunkAddress;
-            this->codeSize = codeSize;
-            this->state = CodeGenRecorded;
-
-#ifdef PERF_COUNTERS
-            this->OnRecorded();
-#endif
-        }
+        void SetCodeGenRecorded(Js::JavascriptMethod thunkAddress, Js::JavascriptMethod nativeAddress, ptrdiff_t codeSize, void * validationCookie);
 
         void SetCodeGenDone();
 
@@ -697,56 +507,20 @@ namespace Js
             this->workItem = nullptr;
         }
 
-        SmallSpanSequence* GetNativeThrowSpanSequence() const
-        {
-            Assert(this->GetState() != NotScheduled);
-            Assert(this->GetState() != CleanedUp);
-            return nativeThrowSpanSequence;
-        }
-
-        void SetNativeThrowSpanSequence(SmallSpanSequence* seq)
-        {
-            Assert(this->GetState() == CodeGenQueued);
-            Assert(this->nativeThrowSpanSequence == nullptr);
-
-            nativeThrowSpanSequence = seq;
-        }
+        SmallSpanSequence* GetNativeThrowSpanSequence() const;
+        void SetNativeThrowSpanSequence(SmallSpanSequence* seq);
 
         bool IsInNativeAddressRange(DWORD_PTR codeAddress) {
             return (IsNativeCode() &&
                 codeAddress >= GetNativeAddress() &&
                 codeAddress < GetNativeAddress() + GetCodeSize());
         }
+
+        DWORD_PTR GetNativeAddress() const;
+        Js::JavascriptMethod GetThunkAddress() const;
+        Js::JavascriptMethod GetNativeEntrypoint() const;
+        ptrdiff_t GetCodeSize() const;
 #endif
-
-        DWORD_PTR GetNativeAddress() const
-        {
-            // need the assert to skip for asmjsFunction as nativeAddress can be interpreter too for asmjs
-            Assert(this->GetState() == CodeGenRecorded || this->GetState() == CodeGenDone || this->isAsmJsFunction);
-
-            // !! this is illegal, however (by design) `IsInNativeAddressRange` (right above) needs it
-            return reinterpret_cast<DWORD_PTR>(this->nativeAddress);
-        }
-
-        Js::JavascriptMethod GetThunkAddress() const
-        {
-            Assert(this->GetState() == CodeGenRecorded || this->GetState() == CodeGenDone);
-
-            return this->thunkAddress;
-        }
-
-        Js::JavascriptMethod GetNativeEntrypoint() const
-        {
-            Assert(this->GetState() == CodeGenRecorded || this->GetState() == CodeGenDone || this->isAsmJsFunction);
-
-            return this->thunkAddress ? this->thunkAddress : this->nativeAddress;
-        }
-
-        ptrdiff_t GetCodeSize() const
-        {
-            Assert(this->GetState() == CodeGenRecorded || this->GetState() == CodeGenDone);
-            return codeSize;
-        }
 
         CodeGenWorkItem * GetWorkItem() const
         {
@@ -765,22 +539,23 @@ namespace Js
 
 #ifdef ASMJS_PLAT
         // set code size, used by TJ to set the code size
-        void SetCodeSize(ptrdiff_t size)
-        {
-            Assert(isAsmJsFunction);
-            this->codeSize = size;
-        }
-
-        void SetNativeAddress(Js::JavascriptMethod address)
-        {
-            Assert(isAsmJsFunction);
-            this->nativeAddress = address;
-        }
+        void SetTJCodeSize(ptrdiff_t size);
+        void SetTJNativeAddress(Js::JavascriptMethod address, void * validationCookie);
 
         void SetIsAsmJSFunction(bool value)
         {
             this->isAsmJsFunction = value;
         }
+
+        void SetTJCodeGenDone()
+        {
+            Assert(isAsmJsFunction);
+            this->state = CodeGenDone;
+            this->workItem = nullptr;
+        }
+
+        void SetIsTJMode(bool value);
+        bool GetIsTJMode() const;
 #endif
 
         bool GetIsAsmJSFunction()const
@@ -788,96 +563,45 @@ namespace Js
             return this->isAsmJsFunction;
         }
 
-#ifdef ASMJS_PLAT
-        void SetTJCodeGenDone()
-        {
-            Assert(isAsmJsFunction);
-            this->state = CodeGenDone;
-            this->workItem = nullptr;
-        }
-#endif
-
 #if ENABLE_NATIVE_CODEGEN
-        void AddWeakFuncRef(RecyclerWeakReference<FunctionBody> *weakFuncRef, Recycler *recycler);
-        WeakFuncRefSet *EnsureWeakFuncRefSet(Recycler *recycler);
+        bool IsNativeEntryPointProcessed() { return this->nativeEntryPointProcessed; }
+        void SetNativeEntryPointProcessed() { this->nativeEntryPointProcessed = true; }
 
         void EnsureIsReadyToCall();
         void ProcessJitTransferData();
         void ResetOnLazyBailoutFailure();
         void OnNativeCodeInstallFailure();
         virtual void ResetOnNativeCodeInstallFailure() = 0;
+               
+        void FreeJitTransferData();        
+        bool ClearEquivalentTypeCaches();        
 
-        Js::PropertyGuard* RegisterSharedPropertyGuard(Js::PropertyId propertyId, ScriptContext* scriptContext);
-        Js::PropertyId* GetSharedPropertyGuards(_Out_ unsigned int& count);
-
-        bool TryGetSharedPropertyGuard(Js::PropertyId propertyId, Js::PropertyGuard*& guard);
-        void RecordTypeGuards(int propertyGuardCount, TypeGuardTransferEntry* typeGuardTransferRecord, size_t typeGuardTransferPlusSize);
-        void RecordCtorCacheGuards(CtorCacheGuardTransferEntry* ctorCacheTransferRecord, size_t ctorCacheTransferPlusSize);
-        void FreePropertyGuards();
-        void FreeJitTransferData();
-        void RegisterEquivalentTypeCaches();
-        void UnregisterEquivalentTypeCaches();
-        bool ClearEquivalentTypeCaches();
-
-        void RegisterConstructorCache(Js::ConstructorCache* constructorCache, Recycler* recycler);
-        uint GetConstructorCacheCount() const { return this->constructorCaches != nullptr ? this->constructorCaches->Count() : 0; }
-        uint32 GetPendingPolymorphicCacheState() const { return this->pendingPolymorphicCacheState; }
-        void SetPendingPolymorphicCacheState(uint32 state) { this->pendingPolymorphicCacheState = state; }
-        BYTE GetPendingInlinerVersion() const { return this->pendingInlinerVersion; }
-        void SetPendingInlinerVersion(BYTE version) { this->pendingInlinerVersion = version; }
-        ImplicitCallFlags GetPendingImplicitCallFlags() const { return this->pendingImplicitCallFlags; }
-        void SetPendingImplicitCallFlags(ImplicitCallFlags flags) { this->pendingImplicitCallFlags = flags; }
         virtual void Invalidate(bool prolongEntryPoint) { Assert(false); }
-        void RecordBailOutMap(JsUtil::List<LazyBailOutRecord, ArenaAllocator>* bailoutMap);
-        void RecordInlineeFrameMap(JsUtil::List<NativeOffsetInlineeFramePair, ArenaAllocator>* tempInlineeFrameMap);
-        void RecordInlineeFrameOffsetsInfo(unsigned int offsetsArrayOffset, unsigned int offsetsArrayCount);
         InlineeFrameRecord* FindInlineeFrame(void* returnAddress);
-        bool HasInlinees() { return this->frameHeight > 0; }
+        bool HasInlinees();
         void DoLazyBailout(BYTE** addressOfReturnAddress, Js::FunctionBody* functionBody, const PropertyRecord* propertyRecord);
-#endif
+
+        void CleanupNativeCode(ScriptContext * scriptContext);
 #if DBG_DUMP
     public:
 #elif defined(VTUNE_PROFILING)
     private:
 #endif
 #if DBG_DUMP || defined(VTUNE_PROFILING)
-        // NativeOffsetMap is public for DBG_DUMP, private for VTUNE_PROFILING
-        struct NativeOffsetMap
-        {
-            uint32 statementIndex;
-            regex::Interval nativeOffsetSpan;
-        };
-
-    private:
-        typedef JsUtil::List<NativeOffsetMap, HeapAllocator> NativeOffsetMapListType;
-        Field(NativeOffsetMapListType) nativeOffsetMaps;
     public:
         void RecordNativeMap(uint32 offset, uint32 statementIndex);
-
         int GetNativeOffsetMapCount() const;
 #endif
-
 #if DBG_DUMP && ENABLE_NATIVE_CODEGEN
         void DumpNativeOffsetMaps();
         void DumpNativeThrowSpanSequence();
-        NativeOffsetMap* GetNativeOffsetMap(int index)
-        {
-             Assert(index >= 0);
-             Assert(index < GetNativeOffsetMapCount());
-
-             return &nativeOffsetMaps.Item(index);
-        }
 #endif
-
 #ifdef VTUNE_PROFILING
-
     public:
         uint PopulateLineInfo(void* pLineInfo, FunctionBody* body);
-
 #endif
+#endif // ENABLE_NATIVE_CODEGEN
 
-    protected:
-        Field(void*) validationCookie;
     };
 
     class FunctionEntryPointInfo : public EntryPointInfo
@@ -897,15 +621,8 @@ namespace Js
 
     private:
         Field(ExecutionMode) jitMode;
-        Field(bool)       mIsTemplatizedJitMode; // true only if in TJ mode, used only for debugging
     public:
-        FunctionEntryPointInfo(FunctionProxy * functionInfo, Js::JavascriptMethod method, ThreadContext* context, void* validationCookie);
-
-#ifdef ASMJS_PLAT
-        void SetIsTJMode(bool value);
-        bool GetIsTJMode()const;
-        //End AsmJS Support
-#endif
+        FunctionEntryPointInfo(FunctionProxy * functionInfo, Js::JavascriptMethod method, ThreadContext* context);
 
         bool ExecutedSinceCallCountCollection() const;
         void CollectCallCounts();
@@ -941,12 +658,11 @@ namespace Js
         Field(LoopHeader*) loopHeader;
         Field(uint) jittedLoopIterationsSinceLastBailout; // number of times the loop iterated in the jitted code before bailing out
         Field(uint) totalJittedLoopIterations; // total number of times the loop has iterated in the jitted code for this entry point for a particular invocation of the loop
-        LoopEntryPointInfo(LoopHeader* loopHeader, Js::JavascriptLibrary* library, void* validationCookie) :
-            EntryPointInfo(nullptr, library, validationCookie, /*threadContext*/ nullptr, /*isLoopBody*/ true),
+        LoopEntryPointInfo(LoopHeader* loopHeader, Js::JavascriptLibrary* library) :
+            EntryPointInfo(nullptr, library, /*threadContext*/ nullptr, /*isLoopBody*/ true),
             loopHeader(loopHeader),
             jittedLoopIterationsSinceLastBailout(0),
-            totalJittedLoopIterations(0),
-            mIsTemplatizedJitMode(false)
+            totalJittedLoopIterations(0)
 #ifdef BGJIT_STATS
             ,used(false)
 #endif
@@ -964,19 +680,6 @@ namespace Js
         }
 #endif
 
-#ifdef ASMJS_PLAT
-        void SetIsTJMode(bool value)
-        {
-            Assert(this->GetIsAsmJSFunction());
-            mIsTemplatizedJitMode = value;
-        }
-
-        bool GetIsTJMode()const
-        {
-            return mIsTemplatizedJitMode;
-        };
-#endif
-
 #ifdef PERF_COUNTERS
         virtual void OnRecorded() override;
 #endif
@@ -991,12 +694,9 @@ namespace Js
         {
             this->used = true;
         }
-#endif
     private:
-#ifdef BGJIT_STATS
         Field(bool) used;
 #endif
-        Field(bool)       mIsTemplatizedJitMode;
     };
 
     typedef RecyclerWeakReference<FunctionEntryPointInfo> FunctionEntryPointWeakRef;
@@ -1021,6 +721,7 @@ namespace Js
 #endif
         Field(bool) isNested;
         Field(bool) isInTry;
+        Field(bool) isInTryFinally;
         Field(FunctionBody *) functionBody;
 
 #if DBG_DUMP
@@ -1188,6 +889,8 @@ namespace Js
             FormalsPropIdArray = 21,
             ForInCacheArray = 22,
             SlotIdInCachedScopeToNestedIndexArray = 23,
+            CodeGenCallbackRuntimeData = 24,
+            CallbackArgOutInfoList = 25,
 
             Max,
             Invalid = 0xff
@@ -1315,11 +1018,6 @@ namespace Js
         bool IsJsBuiltInCode() const { return m_isJsBuiltInCode; }
 
 #if DBG
-        void SetIsJsBuiltInInitCode() { m_isJsBuiltInInitCode = true; }
-        bool IsJsBuiltInInitCode() { return m_isJsBuiltInInitCode; }
-#endif
-
-#if DBG
         bool HasValidEntryPoint() const;
 #if defined(ENABLE_SCRIPT_PROFILING) || defined(ENABLE_SCRIPT_DEBUGGING)
         bool HasValidProfileEntryPoint() const;
@@ -1380,9 +1078,6 @@ namespace Js
         FieldWithBarrier(bool) m_isTopLevel : 1; // Indicates that this function is top-level function, currently being used in script profiler and debugger
         FieldWithBarrier(bool) m_isPublicLibraryCode: 1; // Indicates this function is public boundary library code that should be visible in JS stack
         FieldWithBarrier(bool) m_isJsBuiltInCode: 1; // Indicates this function comes from the JS Built In implementation
-#if DBG
-        FieldWithBarrier(bool) m_isJsBuiltInInitCode: 1;
-#endif
         FieldWithBarrier(bool) m_canBeDeferred : 1;
         FieldWithBarrier(bool) m_displayNameIsRecyclerAllocated : 1;
 
@@ -1652,6 +1347,7 @@ namespace Js
     class ParseableFunctionInfo: public FunctionProxy
     {
         friend class ByteCodeBufferReader;
+        friend class ByteCodeBufferBuilder;
 
     public:
 
@@ -1669,7 +1365,7 @@ namespace Js
         };
 
     protected:
-        ParseableFunctionInfo(JavascriptMethod method, int nestedFunctionCount, LocalFunctionId functionId, Utf8SourceInfo* sourceInfo, ScriptContext* scriptContext, uint functionNumber, const char16* displayName, uint m_displayNameLength, uint displayShortNameOffset, FunctionInfo::Attributes attributes, Js::PropertyRecordList* propertyRecordList, FunctionBodyFlags flags);
+        ParseableFunctionInfo(JavascriptMethod method, int nestedFunctionCount, LocalFunctionId functionId, Utf8SourceInfo* sourceInfo, ScriptContext* scriptContext, uint functionNumber, const char16* displayName, uint m_displayNameLength, uint displayShortNameOffset, FunctionInfo::Attributes attributes, FunctionBodyFlags flags);
 
         ParseableFunctionInfo(ParseableFunctionInfo * proxy);
 
@@ -1702,13 +1398,13 @@ namespace Js
         uint GetNestedCount() const { return nestedArray == nullptr ? 0 : nestedArray->nestedCount; }
 
     public:
-        static ParseableFunctionInfo* New(ScriptContext* scriptContext, int nestedFunctionCount, LocalFunctionId functionId, Utf8SourceInfo* utf8SourceInfo, const char16* displayName, uint m_displayNameLength, uint displayShortNameOffset, Js::PropertyRecordList* propertyRecordList, FunctionInfo::Attributes attributes, FunctionBodyFlags flags);
+        static ParseableFunctionInfo* New(ScriptContext* scriptContext, int nestedFunctionCount, LocalFunctionId functionId, Utf8SourceInfo* utf8SourceInfo, const char16* displayName, uint m_displayNameLength, uint displayShortNameOffset, FunctionInfo::Attributes attributes, FunctionBodyFlags flags);
         static ParseableFunctionInfo* NewDeferredFunctionFromFunctionBody(FunctionBody *functionBody);
 
         DEFINE_VTABLE_CTOR_NO_REGISTER(ParseableFunctionInfo, FunctionProxy);
         FunctionBody* Parse(ScriptFunction ** functionRef = nullptr, bool isByteCodeDeserialization = false);
 #ifdef ASMJS_PLAT
-        FunctionBody* ParseAsmJs(Parser * p, __out CompileScriptException * se, __out ParseNodePtr * ptree);
+        FunctionBody* ParseAsmJs(Parser * p, __out CompileScriptException * se, __out ParseNodeProg ** ptree);
 #endif
 
         FunctionBodyFlags GetFlags() const { return flags; }
@@ -1815,7 +1511,6 @@ namespace Js
         ScopeInfo* GetScopeInfo() const { return static_cast<ScopeInfo*>(this->GetAuxPtr(AuxPointerType::ScopeInfo)); }
         void SetScopeInfo(ScopeInfo* scopeInfo) {  this->SetAuxPtr(AuxPointerType::ScopeInfo, scopeInfo); }
         PropertyId GetOrAddPropertyIdTracked(JsUtil::CharacterBuffer<WCHAR> const& propName);
-        bool IsTrackedPropertyId(PropertyId pid);
 
         void SetScopeSlotArraySizes(uint scopeSlotCount, uint scopeSlotCountForParamScope)
         {
@@ -1828,17 +1523,6 @@ namespace Js
         {
             SetScopeSlotArraySizes(scopeSlotCount, scopeSlotCountForParamScope);
             this->SetAuxPtr(AuxPointerType::PropertyIdsForScopeSlotArray, propertyIdsForScopeSlotArray);
-        }
-
-        Js::PropertyRecordList* GetBoundPropertyRecords() { return this->m_boundPropertyRecords; }
-        void SetBoundPropertyRecords(Js::PropertyRecordList* boundPropertyRecords)
-        {
-            Assert(this->m_boundPropertyRecords == nullptr);
-            this->m_boundPropertyRecords = boundPropertyRecords;
-        }
-        void ClearBoundPropertyRecords()
-        {
-            this->m_boundPropertyRecords = nullptr;
         }
 
         void SetInitialDefaultEntryPoint();
@@ -1926,7 +1610,7 @@ namespace Js
             m_hasBeenParsed = hasBeenParsed;
         }
 
-        void SetSourceInfo(uint sourceIndex, ParseNodePtr node, bool isEval, bool isDynamicFunction);
+        void SetSourceInfo(uint sourceIndex, ParseNodeFnc * node, bool isEval, bool isDynamicFunction);
         void SetSourceInfo(uint sourceIndex);
         void Copy(ParseableFunctionInfo * other);
         void Copy(FunctionBody* other);
@@ -1953,12 +1637,9 @@ namespace Js
 
         virtual void Finalize(bool isShutdown) override;
 
-        Var GetCachedSourceString() { return this->GetAuxPtr(AuxPointerType::CachedSourceString); }
-        void SetCachedSourceString(Var sourceString)
-        {
-            Assert(this->GetCachedSourceString() == nullptr);
-            this->SetAuxPtr(AuxPointerType::CachedSourceString, sourceString);
-        }
+        JavascriptString * GetCachedSourceString();
+
+        void SetCachedSourceString(JavascriptString * sourceString);
 
         FunctionInfoArray GetNestedFuncArray();
         FunctionInfo* GetNestedFunc(uint index);
@@ -1966,12 +1647,14 @@ namespace Js
         FunctionProxy* GetNestedFunctionProxy(uint index);
         ParseableFunctionInfo* GetNestedFunctionForExecution(uint index);
         void SetNestedFunc(FunctionInfo* nestedFunc, uint index, uint32 flags);
-        void BuildDeferredStubs(ParseNode *pnodeFnc);
+        void BuildDeferredStubs(ParseNodeFnc* pnodeFnc);
         DeferredFunctionStub *GetDeferredStubs() const { return static_cast<DeferredFunctionStub *>(this->GetAuxPtr(AuxPointerType::DeferredStubs)); }
         void SetDeferredStubs(DeferredFunctionStub *stub) { this->SetAuxPtr(AuxPointerType::DeferredStubs, stub); }
         void RegisterFuncToDiag(ScriptContext * scriptContext, char16 const * pszTitle);
         bool IsES6ModuleCode() const;
-
+    private:
+        RecyclerWeakReference<JavascriptString> * GetCachedSourceStringWeakRef();
+        void SetCachedSourceStringWeakRef(RecyclerWeakReference<JavascriptString> * weakRef);
     protected:
         static HRESULT MapDeferredReparseError(HRESULT& hrParse, const CompileScriptException& se);
 
@@ -2039,7 +1722,6 @@ namespace Js
         FieldWithBarrier(ULONG) m_columnNumber;
         FieldWithBarrier(const char16*) m_displayName;  // Optional name
         FieldWithBarrier(uint) m_displayNameLength;
-        FieldWithBarrier(PropertyRecordList*) m_boundPropertyRecords;
         FieldWithBarrier(NestedArray*) nestedArray;
 
     public:
@@ -2439,7 +2121,7 @@ namespace Js
 #endif
 
         FunctionBody(ScriptContext* scriptContext, const char16* displayName, uint displayNameLength, uint displayShortNameOffset, uint nestedCount, Utf8SourceInfo* sourceInfo,
-            uint uFunctionNumber, uint uScriptId, Js::LocalFunctionId functionId, Js::PropertyRecordList* propRecordList, FunctionInfo::Attributes attributes, FunctionBodyFlags flags
+            uint uFunctionNumber, uint uScriptId, Js::LocalFunctionId functionId, FunctionInfo::Attributes attributes, FunctionBodyFlags flags
 #ifdef PERF_COUNTERS
             , bool isDeserializedFunction = false
 #endif
@@ -2451,7 +2133,7 @@ namespace Js
 #if DYNAMIC_INTERPRETER_THUNK
         void GenerateDynamicInterpreterThunk();
 #endif
-        void CloneByteCodeInto(ScriptContext * scriptContext, FunctionBody *newFunctionBody, uint sourceIndex);
+      
         Js::JavascriptMethod GetEntryPoint(ProxyEntryPointInfo* entryPoint) const { return entryPoint->jsMethod; }
         void CaptureDynamicProfileState(FunctionEntryPointInfo* entryPointInfo);
 #if ENABLE_DEBUG_CONFIG_OPTIONS
@@ -2460,7 +2142,7 @@ namespace Js
 
     public:
         FunctionBody(ByteCodeCache* cache, Utf8SourceInfo* sourceInfo, ScriptContext* scriptContext):
-            ParseableFunctionInfo((JavascriptMethod) nullptr, 0, (LocalFunctionId) 0, sourceInfo, scriptContext, 0, nullptr, 0, 0, FunctionInfo::Attributes::None, nullptr, Flags_None)
+            ParseableFunctionInfo((JavascriptMethod) nullptr, 0, (LocalFunctionId) 0, sourceInfo, scriptContext, 0, nullptr, 0, 0, FunctionInfo::Attributes::None, Flags_None)
         {
             // Dummy constructor- does nothing
             // Must be stack allocated
@@ -2468,21 +2150,21 @@ namespace Js
         }
 
         static FunctionBody * NewFromRecycler(Js::ScriptContext * scriptContext, const char16 * displayName, uint displayNameLength, uint displayShortNameOffset, uint nestedCount,
-            Utf8SourceInfo* sourceInfo, uint uScriptId, Js::LocalFunctionId functionId, Js::PropertyRecordList* boundPropertyRecords, FunctionInfo::Attributes attributes
+            Utf8SourceInfo* sourceInfo, uint uScriptId, Js::LocalFunctionId functionId, FunctionInfo::Attributes attributes
             , FunctionBodyFlags flags
 #ifdef PERF_COUNTERS
             , bool isDeserializedFunction
 #endif
             );
         static FunctionBody * NewFromRecycler(Js::ScriptContext * scriptContext, const char16 * displayName, uint displayNameLength, uint displayShortNameOffset, uint nestedCount,
-            Utf8SourceInfo* sourceInfo, uint uFunctionNumber, uint uScriptId, Js::LocalFunctionId functionId, Js::PropertyRecordList* boundPropertyRecords, FunctionInfo::Attributes attributes
+            Utf8SourceInfo* sourceInfo, uint uFunctionNumber, uint uScriptId, Js::LocalFunctionId functionId, FunctionInfo::Attributes attributes
             , FunctionBodyFlags flags
 #ifdef PERF_COUNTERS
             , bool isDeserializedFunction
 #endif
             );
 
-        static FunctionBody * NewFromParseableFunctionInfo(ParseableFunctionInfo * info, PropertyRecordList *boundPropertyRecords);
+        static FunctionBody * NewFromParseableFunctionInfo(ParseableFunctionInfo * info);
 
         FunctionEntryPointInfo * GetEntryPointInfo(int index) const;
         FunctionEntryPointInfo * TryGetEntryPointInfo(int index) const;
@@ -2794,6 +2476,10 @@ namespace Js
         Field(FunctionCodeGenRuntimeData*)* GetCodeGenRuntimeDataWithLock() const { return static_cast<Field(FunctionCodeGenRuntimeData*)*>(this->GetAuxPtrWithLock(AuxPointerType::CodeGenRuntimeData)); }
         void SetCodeGenRuntimeData(FunctionCodeGenRuntimeData** codeGenRuntimeData) { this->SetAuxPtr(AuxPointerType::CodeGenRuntimeData, codeGenRuntimeData); }
 
+        Field(FunctionCodeGenRuntimeData*)* GetCodeGenCallbackRuntimeData() const { return static_cast<Field(FunctionCodeGenRuntimeData*)*>(this->GetAuxPtr(AuxPointerType::CodeGenCallbackRuntimeData)); }
+        Field(FunctionCodeGenRuntimeData*)* GetCodeGenCallbackRuntimeDataWithLock() const { return static_cast<Field(FunctionCodeGenRuntimeData*)*>(this->GetAuxPtrWithLock(AuxPointerType::CodeGenCallbackRuntimeData)); }
+        void SetCodeGenCallbackRuntimeData(FunctionCodeGenRuntimeData** codeGenArgumentRuntimeData) { this->SetAuxPtr(AuxPointerType::CodeGenCallbackRuntimeData, codeGenArgumentRuntimeData); }
+
         template <typename TStatementMapList>
         static StatementMap * GetNextNonSubexpressionStatementMap(TStatementMapList *statementMapList, int & startingAtIndex);
         static StatementMap * GetPrevNonSubexpressionStatementMap(StatementMapList *statementMapList, int & startingAtIndex);
@@ -2923,9 +2609,9 @@ namespace Js
         JavascriptMethod EnsureDynamicInterpreterThunk(FunctionEntryPointInfo* entryPointInfo);
 #endif
 
+#if ENABLE_NATIVE_CODEGEN
         void SetCheckCodeGenEntryPoint(FunctionEntryPointInfo* entryPointInfo, JavascriptMethod entryPoint);
 
-#if ENABLE_NATIVE_CODEGEN
         typedef void (*SetNativeEntryPointFuncType)(FunctionEntryPointInfo* entryPointInfo, Js::FunctionBody * functionBody, Js::JavascriptMethod entryPoint);
         static void DefaultSetNativeEntryPoint(FunctionEntryPointInfo* entryPointInfo, FunctionBody * functionBody, JavascriptMethod entryPoint);
         static void ProfileSetNativeEntryPoint(FunctionEntryPointInfo* entryPointInfo, FunctionBody * functionBody, JavascriptMethod entryPoint);
@@ -3007,6 +2693,10 @@ namespace Js
 #if ENABLE_NATIVE_CODEGEN
         void SetPolymorphicCallSiteInfoHead(PolymorphicCallSiteInfo *polyCallSiteInfo) { this->SetAuxPtr(AuxPointerType::PolymorphicCallSiteInfoHead, polyCallSiteInfo); }
         PolymorphicCallSiteInfo * GetPolymorphicCallSiteInfoHead() { return static_cast<PolymorphicCallSiteInfo *>(this->GetAuxPtr(AuxPointerType::PolymorphicCallSiteInfoHead)); }
+
+        void SetCallbackInfoList(CallbackInfoList * callbackInfoList) { this->SetAuxPtr(AuxPointerType::CallbackArgOutInfoList, callbackInfoList); }
+        CallbackInfoList * GetCallbackInfoList() { return static_cast<CallbackInfoList *>(this->GetAuxPtr(AuxPointerType::CallbackArgOutInfoList)); }
+        CallbackInfoList * GetCallbackInfoListWithLock() { return static_cast<CallbackInfoList *>(this->GetAuxPtrWithLock(AuxPointerType::CallbackArgOutInfoList)); }
 #endif
 
         FunctionBodyPolymorphicInlineCache * GetPolymorphicInlineCachesHead() { return static_cast<FunctionBodyPolymorphicInlineCache *>(this->GetAuxPtr(AuxPointerType::PolymorphicInlineCachesHead)); }
@@ -3101,6 +2791,7 @@ namespace Js
         uint GetNumberOfRecursiveCallSites();
         bool CanInlineRecursively(uint depth, bool tryAggressive = true);
     public:
+#if ENABLE_NATIVE_CODEGEN
         bool CanInlineAgain() const
         {
             // Block excessive recursive inlining of the same function
@@ -3121,7 +2812,7 @@ namespace Js
         void ResetBailOnMisingProfileCount() { bailOnMisingProfileCount = 0; }
         uint8 IncrementBailOnMisingProfileRejitCount() { return ++bailOnMisingProfileRejitCount; }
         uint32 GetFrameHeight(EntryPointInfo* entryPointInfo) const;
-        void SetFrameHeight(EntryPointInfo* entryPointInfo, uint32 frameHeight);
+#endif
 
         RegSlot GetLocalsCount();
         RegSlot GetConstantCount() const { return this->GetCountField(CounterFields::ConstantCount); }
@@ -3229,8 +2920,8 @@ namespace Js
         uint IncLiteralRegexCount() { return IncreaseCountField(CounterFields::LiteralRegexCount); }
 
         void AllocateForInCache();
-        ForInCache * GetForInCache(uint index);
-        ForInCache * GetForInCacheArray();
+        EnumeratorCache * GetForInCache(uint index);
+        EnumeratorCache * GetForInCacheArray();
         void CleanUpForInCache(bool isShutdown);
 
         void AllocateInlineCache();
@@ -3330,6 +3021,12 @@ namespace Js
 
         void FindClosestStatements(int32 characterOffset, StatementLocation *firstStatementLocation, StatementLocation *secondStatementLocation);
 #if ENABLE_NATIVE_CODEGEN
+        FunctionCodeGenRuntimeData *EnsureCodeGenRuntimeDataCommon(
+            Recycler *const recycler,
+            __in_range(0, profiledCallSiteCount - 1) const ProfileId profiledCallSiteId,
+            FunctionBody *const inlinee,
+            AuxPointerType auxType);
+
         const FunctionCodeGenRuntimeData *GetInlineeCodeGenRuntimeData(const ProfileId profiledCallSiteId) const;
         const FunctionCodeGenRuntimeData *GetInlineeCodeGenRuntimeDataForTargetInlinee(const ProfileId profiledCallSiteId, FunctionBody *inlineeFuncBody) const;
         FunctionCodeGenRuntimeData *EnsureInlineeCodeGenRuntimeData(
@@ -3340,6 +3037,11 @@ namespace Js
         FunctionCodeGenRuntimeData *EnsureLdFldInlineeCodeGenRuntimeData(
             Recycler *const recycler,
             const InlineCacheIndex inlineCacheIndex,
+            FunctionBody *const inlinee);
+        const FunctionCodeGenRuntimeData * GetCallbackInlineeCodeGenRuntimeData(const ProfileId profiledCallSiteId) const;
+        FunctionCodeGenRuntimeData * EnsureCallbackInlineeCodeGenRuntimeData(
+            Recycler *const recycler,
+            __in_range(0, profiledCallSiteCount - 1) const ProfileId profiledCallSiteId,
             FunctionBody *const inlinee);
 
         void LoadDynamicProfileInfo();
@@ -3375,8 +3077,8 @@ namespace Js
         void SetDontRethunkAfterBailout() { dontRethunkAfterBailout = true; }
         void ClearDontRethunkAfterBailout() { dontRethunkAfterBailout = false; }
 
-        void SaveState(ParseNodePtr pnode);
-        void RestoreState(ParseNodePtr pnode);
+        void SaveState(ParseNodeFnc * pnodeFnc);
+        void RestoreState(ParseNodeFnc * pnodeFnc);
 
         // Used for the debug purpose, this info will be stored (in the non-debug mode), when a function has all locals marked as non-local-referenced.
         // So when we got to no-refresh debug mode, and try to re-use the same function body we can then enforce all locals to be non-local-referenced.
@@ -3678,6 +3380,12 @@ namespace Js
         // CONSIDER: Use TaggedInt instead of range of slot count to distinguish slot array with others.
         static bool Is(void* object)
         {
+            if (object == nullptr)
+            {
+                // Null slot in a frame where nothing is captured and the scope object has been eliminated
+                // by stack args optimization.
+                return false;
+            }
             size_t slotCount = *((size_t*)object);
             if(slotCount <= MaxEncodedSlotCount)
             {

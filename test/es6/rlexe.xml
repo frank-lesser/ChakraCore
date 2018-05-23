@@ -248,7 +248,7 @@
       <files>blockscope-functionbinding.js</files>
       <compile-flags>-lic:1 -InitializeInterpreterSlotsWithInvalidStackVar</compile-flags>
       <baseline>blockscope-functionbinding.baseline</baseline>
-      <tags>exclude_fre</tags>
+      <tags>exclude_test</tags>
     </default>
   </test>
   <test>
@@ -452,7 +452,7 @@
   <test>
     <default>
       <files>ES6TypedArrayExtensions.js</files>
-      <compile-flags>-ES6ObjectLiterals -ES6Species -ESSharedArrayBuffer -args summary -endargs</compile-flags>
+      <compile-flags>-CollectGarbage -ES6ObjectLiterals -ES6Species -ESSharedArrayBuffer -args summary -endargs</compile-flags>
     </default>
   </test>
   <test>
@@ -476,14 +476,14 @@
   <test>
     <default>
       <files>ES6Symbol.js</files>
-      <compile-flags>-ES6ObjectLiterals -ES6Species -ES6RegExSymbols -args summary -endargs</compile-flags>
+      <compile-flags>-CollectGarbage -ES6ObjectLiterals -ES6Species -ES6RegExSymbols -args summary -endargs</compile-flags>
     </default>
   </test>
   <test>
     <default>
       <files>ES6Symbol_540238.js</files>
       <compile-flags>-RecyclerStress</compile-flags>
-      <tags>exclude_fre</tags>
+      <tags>exclude_test</tags>
     </default>
   </test>
   <test>
@@ -525,7 +525,7 @@
       <files>unicode_6_identifiers_utf8.js</files>
       <baseline>unicode_6_identifiers_utf8.baseline</baseline>
       <compile-flags> -ES6Unicode</compile-flags>
-      <tags>exclude_win7,require_winglob,exclude_noicu</tags> <!-- Microsoft/ChakraCore#3777: Fix this test under ICU -->
+      <tags>exclude_win7,exclude_noicu</tags>
     </default>
   </test>
   <test>
@@ -557,6 +557,12 @@
     <default>
       <files>proxyTrapConsumeNewTarget.js</files>
       <compile-flags>-ES6Classes -args summary -endargs</compile-flags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>boundConstruction.js</files>
+      <compile-flags>-args summary -endargs</compile-flags>
     </default>
   </test>
   <test>
@@ -597,7 +603,7 @@
     <default>
       <files>bug620694.js</files>
       <compile-flags>-es6all -recyclerstress</compile-flags>
-      <tags>exclude_fre,Slow</tags>
+      <tags>exclude_test,Slow</tags>
     </default>
   </test>
   <test>
@@ -689,7 +695,7 @@
   <test>
     <default>
       <files>ES6Species-bugs.js</files>
-      <compile-flags>-ES6 -ES6Species -args summary -endargs</compile-flags>
+      <compile-flags>-CollectGarbage -ES6 -ES6Species -args summary -endargs</compile-flags>
     </default>
   </test>
   <test>
@@ -963,7 +969,7 @@
       <files>blue_641922.js</files>
       <baseline>blue_641922.baseline</baseline>
       <compile-flags> -ES6Rest -RecyclerNoPageReuse -PageHeap:2</compile-flags>
-      <tags>exclude_fre</tags>
+      <tags>exclude_test</tags>
     </default>
   </test>
   <test>
@@ -1001,7 +1007,7 @@
     <default>
       <files>regex-octoquad.js</files>
       <compile-flags>-RegexOptimize -args summary -endargs</compile-flags>
-      <tags>exclude_fre</tags>
+      <tags>exclude_test</tags>
     </default>
   </test>
   <test>
@@ -1118,7 +1124,7 @@
       <files>ProxyInProxy.js</files>
       <baseline>ProxyInProxy.baseline</baseline>
       <compile-flags> -mic:1 -off:simpleJIT </compile-flags>
-      <tags>exclude_fre</tags>
+      <tags>exclude_test</tags>
     </default>
   </test>
   <test>
@@ -1455,6 +1461,11 @@
 <test>
   <default>
     <files>function-expr-capture.js</files>
+  </default>
+</test>
+<test>
+  <default>
+    <files>setUserFuncAsProto.js</files>
   </default>
 </test>
 <test>

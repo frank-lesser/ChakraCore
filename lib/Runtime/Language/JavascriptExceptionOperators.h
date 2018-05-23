@@ -54,6 +54,16 @@ namespace Js
             ~TryCatchFrameAddrStack();
         };
 
+        class PendingFinallyExceptionStack
+        {
+        private:
+            ThreadContext* m_threadContext;
+
+        public:
+            PendingFinallyExceptionStack(ScriptContext* scriptContext, Js::JavascriptExceptionObject *exceptionObj);
+            ~PendingFinallyExceptionStack();
+        };
+
         static void __declspec(noreturn) OP_Throw(Var object, ScriptContext* scriptContext);
         static void __declspec(noreturn) Throw(Var object, ScriptContext* scriptContext);
         static void __declspec(noreturn) ThrowExceptionObject(Js::JavascriptExceptionObject* exceptionObject, ScriptContext* scriptContext, bool considerPassingToDebugger = false, PVOID returnAddress = NULL, bool resetStack = false);
@@ -65,15 +75,15 @@ namespace Js
 #ifdef _M_X64
         static void *OP_TryCatch(void *try_, void *catch_, void *frame, size_t spillSize, size_t argsSize, int hasBailedOutOffset, ScriptContext *scriptContext);
         static void *OP_TryFinally(void *try_, void *finally_, void *frame, size_t spillSize, size_t argsSize, int hasBailedOutOffset, ScriptContext *scriptContext);
-        static void *OP_TryFinallySimpleJit(void *try_, void *finally_, void *frame, size_t spillSize, size_t argsSize, ScriptContext *scriptContext);
+        static void *OP_TryFinallyNoOpt(void *try_, void *finally_, void *frame, size_t spillSize, size_t argsSize, ScriptContext *scriptContext);
 #elif defined(_M_ARM32_OR_ARM64)
         static void* OP_TryCatch(void* continuationAddr, void* handlerAddr, void* framePtr, void *localsPtr, size_t argsSize, int hasBailedOutOffset, ScriptContext* scriptContext);
         static void* OP_TryFinally(void* continuationAddr, void* handlerAddr, void* framePtr, void *localsPtr, size_t argsSize, int hasBailedOutOffset, ScriptContext* scriptContext);
-        static void* OP_TryFinallySimpleJit(void* continuationAddr, void* handlerAddr, void* framePtr, void *localsPtr, size_t argsSize, ScriptContext* scriptContext);
+        static void* OP_TryFinallyNoOpt(void* continuationAddr, void* handlerAddr, void* framePtr, void *localsPtr, size_t argsSize, ScriptContext* scriptContext);
 #else
         static void* OP_TryCatch(void* continuationAddr, void* handlerAddr, void* framePtr, int hasBailedOutOffset, ScriptContext* scriptContext);
         static void* OP_TryFinally(void* continuationAddr, void* handlerAddr, void* framePtr, int hasBailedOutOffset, ScriptContext* scriptContext);
-        static void* OP_TryFinallySimpleJit(void* continuationAddr, void* handlerAddr, void* framePtr, ScriptContext* scriptContext);
+        static void* OP_TryFinallyNoOpt(void* continuationAddr, void* handlerAddr, void* framePtr, ScriptContext* scriptContext);
 #endif
 #if defined(DBG) && defined(_M_IX86)
         static void DbgCheckEHChain();

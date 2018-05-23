@@ -495,6 +495,17 @@
 
 #define PROCESS_GET_ELEM_SLOT_FB(name, func) PROCESS_GET_ELEM_SLOT_FB_COMMON(name, func,)
 
+#define PROCESS_GET_ELEM_SLOT_FB_HMO_COMMON(name, func, suffix) \
+    case OpCode::name: \
+    { \
+        PROCESS_READ_LAYOUT(name, ElementSlotI3, suffix); \
+        SetReg(playout->Value, \
+                func((FrameDisplay*)GetNonVarReg(playout->Instance), this->m_functionBody->GetNestedFuncReference(playout->SlotIndex), GetReg(playout->HomeObj))); \
+        break; \
+    }
+
+#define PROCESS_GET_ELEM_SLOT_FB_HMO(name, func) PROCESS_GET_ELEM_SLOT_FB_HMO_COMMON(name, func,)
+
 #define PROCESS_GET_SLOT_FB_COMMON(name, func, suffix) \
     case OpCode::name: \
     { \
@@ -505,6 +516,17 @@
     }
 
 #define PROCESS_GET_SLOT_FB(name, func) PROCESS_GET_SLOT_FB_COMMON(name, func,)
+
+#define PROCESS_GET_SLOT_FB_HMO_COMMON(name, func, suffix) \
+    case OpCode::name: \
+    { \
+        PROCESS_READ_LAYOUT(name, ElementSlot, suffix); \
+        SetReg(playout->Value, \
+               func(this->GetFrameDisplayForNestedFunc(), this->m_functionBody->GetNestedFuncReference(playout->SlotIndex), GetReg(playout->Instance))); \
+        break; \
+    }
+
+#define PROCESS_GET_SLOT_FB_HMO(name, func) PROCESS_GET_SLOT_FB_HMO_COMMON(name, func,)
 
 #define PROCESS_GET_ELEM_IMem_COMMON(name, func, suffix) \
     case OpCode::name: \
@@ -1090,7 +1112,8 @@ namespace Js
 #if ENABLE_NATIVE_CODEGEN
         bool doJITLoopBody =
             !this->executeFunction->GetScriptContext()->GetConfig()->IsNoNative() &&
-            !(this->executeFunction->GetHasTry() && (PHASE_OFF((Js::JITLoopBodyInTryCatchPhase), this->executeFunction) || this->executeFunction->GetHasFinally())) &&
+            !(this->executeFunction->GetHasTry() && (PHASE_OFF((Js::JITLoopBodyInTryCatchPhase), this->executeFunction))) &&
+            !(this->executeFunction->GetHasFinally() && (PHASE_OFF((Js::JITLoopBodyInTryFinallyPhase), this->executeFunction))) &&
             (this->executeFunction->ForceJITLoopBody() || this->executeFunction->IsJitLoopBodyPhaseEnabled()) &&
             !this->executeFunction->IsInDebugMode();
 #endif
@@ -1220,10 +1243,20 @@ namespace Js
             // In the debug mode zero out the local slot, so this could prevent locals being uninitialized in the case of setNextStatement.
             memset(newInstance->m_localSlots, 0, sizeof(Js::Var) * localCount);
         }
-        // Zero out only the return slot. This is not a user local, so the byte code will not initialize
-        // it to "undefined". And it's not an expression temp, so, for instance, a jitted loop body may expect
-        // it to be valid on entry to the loop, where "valid" means either a var or null.
-        newInstance->SetNonVarReg(0, NULL);
+        else 
+        {
+            Js::RegSlot varCount = function->GetFunctionBody()->GetVarCount();
+            if (varCount)
+            {
+                // Zero out the non-constant var slots.
+                Js::RegSlot constantCount = function->GetFunctionBody()->GetConstantCount();
+                memset(newInstance->m_localSlots + constantCount, 0, varCount * sizeof(Js::Var));
+            }
+            // Zero out the return slot. This is not a user local, so the byte code will not initialize
+            // it to "undefined". And it's not an expression temp, so, for instance, a jitted loop body may expect
+            // it to be valid on entry to the loop, where "valid" means either a var or null.
+            newInstance->SetNonVarReg(0, NULL);
+        }
 #endif
         // Wasm doesn't use const table
         if (!executeFunction->IsWasmFunction())
@@ -3377,7 +3410,7 @@ namespace Js
         PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
         Var aValue;
         if (obj &&
-            CacheOperators::TryGetProperty<true, true, false, false, false, false, true, false, false>(
+            CacheOperators::TryGetProperty<true, true, false, false, false, false, true, false, false, false>(
                 obj, false, obj, propertyId, &aValue, GetScriptContext(), nullptr, &info))
         {
             SetReg(playout->Value, aValue);
@@ -3423,7 +3456,7 @@ namespace Js
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
         Var aValue;
-        if (CacheOperators::TryGetProperty<true, true, false, false, false, false, true, false, false>(
+        if (CacheOperators::TryGetProperty<true, true, false, false, false, false, true, false, false, false>(
                 obj, true, obj, propertyId, &aValue, GetScriptContext(), nullptr, &info))
         {
             SetReg(playout->Value, aValue);
@@ -3481,7 +3514,7 @@ namespace Js
         PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
         Var aValue;
         if (obj &&
-            CacheOperators::TryGetProperty<true, true, false, false, false, false, true, false, false>(
+            CacheOperators::TryGetProperty<true, true, false, false, false, false, true, false, false, false>(
                 obj, false, obj, propertyId, &aValue, GetScriptContext(), nullptr, &info))
         {
             threadContext->CheckAndResetImplicitCallAccessorFlag();
@@ -3810,7 +3843,7 @@ namespace Js
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
         Var value;
-        if(CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false>(
+        if(CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false, false>(
                 obj, true, obj, propertyId, &value, GetScriptContext(), nullptr, &info))
         {
             SetReg(playout->Value, value);
@@ -4011,7 +4044,7 @@ namespace Js
             PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
 
             Var value;
-            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false>(
+            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false, false>(
                     obj, false, obj, propertyId, &value, GetScriptContext(), nullptr, &info))
             {
                 SetReg(playout->Value, value);
@@ -4037,7 +4070,7 @@ namespace Js
             PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->PropertyIdIndex, true);
 
             Var value;
-            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false>(
+            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false, false>(
                 thisObj, false, superObj, propertyId, &value, GetScriptContext(), nullptr, &info))
             {
                 SetReg(playout->Value, value);
@@ -4158,7 +4191,7 @@ namespace Js
             PropertyValueInfo info;
             PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
             Var value;
-            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false>(
+            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false, false>(
                     obj, false, obj, propertyId, &value, scriptContext, nullptr, &info))
             {
                 threadContext->CheckAndResetImplicitCallAccessorFlag();
@@ -4195,7 +4228,7 @@ namespace Js
             PropertyValueInfo info;
             PropertyValueInfo::SetCacheInfo(&info, GetFunctionBody(), inlineCache, playout->inlineCacheIndex, true);
             Var value;
-            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false>(
+            if (CacheOperators::TryGetProperty<true, false, false, false, false, false, true, false, false, false>(
                 obj, false, obj, propertyId, &value, scriptContext, nullptr, &info))
             {
                 threadContext->CheckAndResetImplicitCallAccessorFlag();
@@ -5753,6 +5786,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 
         Js::LoopHeader *loopHeader = fn->GetLoopHeader(loopNumber);
         loopHeader->isInTry = this->TestFlags(Js::InterpreterStackFrameFlags_WithinTryBlock);
+        loopHeader->isInTryFinally = this->TestFlags(Js::InterpreterStackFrameFlags_WithinTryFinallyBlock);
 
         Js::LoopEntryPointInfo * entryPointInfo = loopHeader->GetCurrentEntryPointInfo();
 
@@ -5789,7 +5823,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 #endif
 
             entryPointInfo->EnsureIsReadyToCall();
-            entryPointInfo->nativeEntryPointProcessed = true;
+            entryPointInfo->SetNativeEntryPointProcessed();
 
             RegSlot envReg = this->m_functionBody->GetEnvRegister();
             if (envReg != Constants::NoRegister)
@@ -6537,6 +6571,11 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
                 // mark the stackFrame as 'in try block'
                 this->OrFlags(InterpreterStackFrameFlags_WithinTryBlock);
 
+                if (finallyOffset != 0)
+                {
+                    this->OrFlags(InterpreterStackFrameFlags_WithinTryFinallyBlock);
+                }
+
                 if (tryNestingDepth != 0)
                 {
                     this->ProcessTryHandlerBailout(ehBailoutData->child, --tryNestingDepth);
@@ -6637,7 +6676,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
         if (--this->nestedTryDepth == -1)
         {
             // unmark the stackFrame as 'in try block'
-            this->ClearFlags(InterpreterStackFrameFlags_WithinTryBlock);
+            this->ClearFlags(InterpreterStackFrameFlags_WithinTryBlock | InterpreterStackFrameFlags_WithinTryFinallyBlock);
         }
 
         // Now that the stack is unwound, let's run the catch block.
@@ -6843,7 +6882,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 
             this->nestedTryDepth++;
             // mark the stackFrame as 'in try block'
-            this->OrFlags(InterpreterStackFrameFlags_WithinTryBlock);
+            this->OrFlags(InterpreterStackFrameFlags_WithinTryBlock | InterpreterStackFrameFlags_WithinTryFinallyBlock);
 
             if (shouldCacheSP)
             {
@@ -6886,7 +6925,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
         if (--this->nestedTryDepth == -1)
         {
             // unmark the stackFrame as 'in try block'
-            this->ClearFlags(InterpreterStackFrameFlags_WithinTryBlock);
+            this->ClearFlags(InterpreterStackFrameFlags_WithinTryBlock | InterpreterStackFrameFlags_WithinTryFinallyBlock);
         }
 
         shouldCacheSP = !skipFinallyBlock;
@@ -7879,7 +7918,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
         const uint64 index = ((uint64)(uint32)GetRegRawInt(playout->SlotIndex) + playout->Offset /* WASM only */) & (int64)(int)ArrayBufferView::ViewMask[playout->ViewType];
 
-        JavascriptArrayBuffer* arr =
+        ArrayBufferBase* arr =
 #ifdef ENABLE_WASM_SIMD
             (m_functionBody->IsWasmFunction()) ?
                 m_wasmMemory->GetBuffer() :
@@ -7927,7 +7966,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
         const uint64 index = ((uint64)(uint32)GetRegRawInt(playout->SlotIndex) + playout->Offset /* WASM only */) & (int64)(int)ArrayBufferView::ViewMask[playout->ViewType];
 
-        JavascriptArrayBuffer* arr =
+        ArrayBufferBase* arr =
 #ifdef ENABLE_WASM_SIMD
             (m_functionBody->IsWasmFunction()) ?
                 m_wasmMemory->GetBuffer() :
@@ -8196,7 +8235,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 
     Var InterpreterStackFrame::GetRootObject() const
     {
-        Assert(!this->GetFunctionBody()->IsJsBuiltInInitCode());
+        Assert(!this->GetFunctionBody()->IsJsBuiltInCode());
         Var rootObject = GetReg(Js::FunctionBody::RootObjectRegSlot);
         Assert(rootObject == this->GetFunctionBody()->LoadRootObject());
         return rootObject;
@@ -8214,13 +8253,10 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
         FunctionBody* functionBody = this->m_functionBody;
         DynamicProfileInfo * dynamicProfileInfo = functionBody->GetDynamicProfileInfo();
 
-        Assert(playout->Reg > FunctionBody::FirstRegSlot && playout->Reg < functionBody->GetConstantCount());
+        Assert(playout->Reg > FunctionBody::FirstRegSlot);
         Var value = GetReg(playout->Reg);
-        if (value != nullptr && TaggedInt::Is(value))
-        {
-            dynamicProfileInfo->RecordConstParameterAtCallSite(playout->profileId, playout->Arg);
-        }
-        SetOut(playout->Arg, GetReg(playout->Reg));
+        dynamicProfileInfo->RecordParameterAtCallSite(functionBody, playout->profileId, value, playout->Arg, playout->Reg);
+        SetOut(playout->Arg, value);
     }
 #endif
 
@@ -8336,13 +8372,14 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 
         LdLenInfo ldLenInfo;
         ldLenInfo.arrayType = ValueType::Uninitialized.Merge(instance);
-        profileData->RecordLengthLoad(functionBody, playout->profileId, ldLenInfo);
 
         if (this->TestFlags(InterpreterStackFrameFlags_ProcessingBailOutOnArraySpecialization))
         {
             ldLenInfo.disableAggressiveSpecialization = true;
             this->ClearFlags(InterpreterStackFrameFlags_ProcessingBailOutOnArraySpecialization);
         }
+
+        profileData->RecordLengthLoad(functionBody, playout->profileId, ldLenInfo);
 
         ThreadContext* threadContext = this->GetScriptContext()->GetThreadContext();
         ImplicitCallFlags savedImplicitCallFlags = threadContext->GetImplicitCallFlags();
@@ -8362,6 +8399,41 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
         threadContext->CheckAndResetImplicitCallAccessorFlag();
         threadContext->AddImplicitCallFlags(savedImplicitCallFlags);
     }
+#endif
+
+#if ENABLE_PROFILE_INFO
+
+    template <bool doProfile>
+    Var InterpreterStackFrame::ProfiledIsIn(Var argProperty, Var instance, ScriptContext* scriptContext, ProfileId profileId)
+    {
+        if (doProfile)
+        {
+            DynamicProfileInfo * profileData = m_functionBody->GetDynamicProfileInfo();
+
+            LdElemInfo ldElemInfo;
+            ldElemInfo.arrayType = ValueType::Uninitialized.Merge(instance);
+
+            if (this->TestFlags(InterpreterStackFrameFlags_ProcessingBailOutOnArraySpecialization))
+            {
+                ldElemInfo.disableAggressiveSpecialization = true;
+            }
+            this->ClearFlags(InterpreterStackFrameFlags_ProcessingBailOutOnArraySpecialization);
+
+            profileData->RecordElementLoad(m_functionBody, profileId, ldElemInfo);
+        }
+
+        return JavascriptOperators::IsIn(argProperty, instance, scriptContext);
+    }
+
+#else
+
+    template <bool doProfile>
+    Var InterpreterStackFrame::ProfiledIsIn(Var argProperty, Var instance, ScriptContext* scriptContext, ProfileId profileId)
+    {
+        Assert(!doProfile);
+        return JavascriptOperators::IsIn(argProperty, instance, scriptContext);
+    }
+
 #endif
 
     JavascriptFunction* InterpreterStackFrame::GetFunctionExpression()
@@ -8602,7 +8674,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 #ifdef ENABLE_WASM
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
         const uint64 index = playout->Offset + (uint64)(uint32)GetRegRawInt(playout->SlotIndex);
-        WebAssemblyArrayBuffer* arr = GetWebAssemblyMemory()->GetBuffer();
+        ArrayBufferBase* arr = GetWebAssemblyMemory()->GetBuffer();
 
         uint32 byteLength = arr->GetByteLength();
         BYTE* buffer = arr->GetBuffer();
@@ -8625,10 +8697,10 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
     void InterpreterStackFrame::OP_LdArrAtomic(const unaligned T* playout)
     {
 #ifdef ENABLE_WASM
-        Assert(CONFIG_FLAG(WasmThreads));
+        Assert(Wasm::Threads::IsEnabled());
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
         const uint64 index = playout->Offset + (uint64)(uint32)GetRegRawInt(playout->SlotIndex);
-        WebAssemblyArrayBuffer* arr = GetWebAssemblyMemory()->GetBuffer();
+        ArrayBufferBase* arr = GetWebAssemblyMemory()->GetBuffer();
 
         uint32 byteLength = arr->GetByteLength();
         BYTE* buffer = arr->GetBuffer();
@@ -8653,10 +8725,10 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
     void InterpreterStackFrame::OP_StArrAtomic(const unaligned T* playout)
     {
 #ifdef ENABLE_WASM
-        Assert(CONFIG_FLAG(WasmThreads));
+        Assert(Wasm::Threads::IsEnabled());
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
         const uint64 index = playout->Offset + (uint64)(uint32)GetRegRawInt(playout->SlotIndex);
-        WebAssemblyArrayBuffer* arr = GetWebAssemblyMemory()->GetBuffer();
+        ArrayBufferBase* arr = GetWebAssemblyMemory()->GetBuffer();
 
         uint32 byteLength = arr->GetByteLength();
         BYTE* buffer = arr->GetBuffer();
@@ -8711,7 +8783,7 @@ const byte * InterpreterStackFrame::OP_ProfiledLoopBodyStart(uint loopId)
 #ifdef ENABLE_WASM
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
         const uint64 index = playout->Offset + (uint64)(uint32)GetRegRawInt(playout->SlotIndex);
-        WebAssemblyArrayBuffer* arr = GetWebAssemblyMemory()->GetBuffer();
+        ArrayBufferBase* arr = GetWebAssemblyMemory()->GetBuffer();
 
         uint32 byteLength = arr->GetByteLength();
         BYTE* buffer = arr->GetBuffer();

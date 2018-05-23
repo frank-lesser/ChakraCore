@@ -48,7 +48,7 @@ namespace Js
         ScriptContext* scriptContext = function->GetScriptContext();
 
         AssertMsg(args.Info.Count > 0, "Should always have implicit 'this'");
-        CHAKRATEL_LANGSTATS_INC_DATACOUNT(ES6_Proxy);
+        CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(ES6, Proxy, scriptContext);
 
         if (!(args.Info.Flags & CallFlags_New))
         {
@@ -130,7 +130,7 @@ namespace Js
 
         JavascriptProxy* proxy = JavascriptProxy::Create(scriptContext, args);
         JavascriptLibrary* library = scriptContext->GetLibrary();
-        DynamicType* type = library->CreateFunctionWithLengthType(&EntryInfo::Revoke);
+        DynamicType* type = library->CreateFunctionWithConfigurableLengthType(&EntryInfo::Revoke);
         RuntimeFunction* revoker = RecyclerNewEnumClass(scriptContext->GetRecycler(),
             JavascriptLibrary::EnumFunctionClass, RuntimeFunction,
             type, &EntryInfo::Revoke);
@@ -463,8 +463,14 @@ namespace Js
         return hasProperty;
     }
 
-    PropertyQueryFlags JavascriptProxy::HasPropertyQuery(PropertyId propertyId)
+    PropertyQueryFlags JavascriptProxy::HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info)
     {
+        if (info)
+        {
+            // Prevent caching. See comment in GetPropertyQuery for more detail.
+            PropertyValueInfo::SetNoCache(info, this);
+            PropertyValueInfo::DisablePrototypeCache(info, this);
+        }
         auto fn = [&](RecyclableObject* object)->BOOL {
             return JavascriptOperators::HasProperty(object, propertyId);
         };
@@ -527,6 +533,7 @@ namespace Js
     {
         // We can't cache the property at this time. both target and handler can be changed outside of the proxy, so the inline cache needs to be
         // invalidate when target, handler, or handler prototype has changed. We don't have a way to achieve this yet.
+        // Also, Get and Has operations share a cache, so a trap on either should prevent caching on both.
         PropertyValueInfo::SetNoCache(info, this);
         PropertyValueInfo::DisablePrototypeCache(info, this); // We can't cache prototype property either
         auto fn = [&](RecyclableObject* object)-> BOOL {
@@ -553,7 +560,7 @@ namespace Js
         PropertyValueInfo::SetNoCache(info, this);
         PropertyValueInfo::DisablePrototypeCache(info, this); // We can't cache prototype property either
         auto fn = [&](RecyclableObject* object)-> BOOL {
-            return JavascriptOperators::GetPropertyWPCache(originalInstance, object, propertyNameString, value, requestContext, info);
+            return JavascriptOperators::GetPropertyWPCache<false /* OutputExistence */>(originalInstance, object, propertyNameString, value, requestContext, info);
         };
         auto getPropertyId = [&]()->PropertyId{
             const PropertyRecord* propertyRecord;
@@ -951,7 +958,7 @@ namespace Js
     }
 
     // No change to foreign enumerator, just forward
-    BOOL JavascriptProxy::GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, ForInCache * forInCache)
+    BOOL JavascriptProxy::GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, EnumeratorCache * enumeratorCache)
     {
         // Reject implicit call
         ThreadContext* threadContext = requestContext->GetThreadContext();
@@ -1037,7 +1044,7 @@ namespace Js
         JavascriptArray* trapResult = JavascriptOperators::GetOwnPropertyNames(this, requestContext);
         ProxyOwnkeysEnumerator* ownKeysEnum = RecyclerNew(requestContext->GetRecycler(), ProxyOwnkeysEnumerator, requestContext, this, trapResult);
 
-        return enumerator->Initialize(ownKeysEnum, nullptr, nullptr, flags, requestContext, forInCache);
+        return enumerator->Initialize(ownKeysEnum, nullptr, nullptr, flags, requestContext, enumeratorCache);
     }
 
     BOOL JavascriptProxy::SetAccessors(PropertyId propertyId, Var getter, Var setter, PropertyOperationFlags flags)
@@ -2129,8 +2136,17 @@ namespace Js
                 {
                     JavascriptError::ThrowTypeError(scriptContext, JSERR_This_NeedFunction, _u("construct"));
                 }
-                newThisObject = JavascriptOperators::NewScObjectNoCtor(targetObj, scriptContext);
-                args.Values[0] = newThisObject;
+
+                // args.Values[0] will be null in the case where NewTarget is initially provided by proxy.
+                if (!isCtorSuperCall || !args.Values[0])
+                {
+                    newThisObject = JavascriptOperators::NewScObjectNoCtor(targetObj, scriptContext);
+                    args.Values[0] = newThisObject;
+                }
+                else
+                {
+                    newThisObject = args.Values[0];
+                }
             }
 
             ushort newCount = (ushort)args.Info.Count;

@@ -5,6 +5,7 @@
 
 #include "RuntimePlatformAgnosticPch.h"
 #include "UnicodeText.h"
+#include "UnicodeTextInternal.h"
 #include "ChakraICU.h"
 
 namespace PlatformAgnostic
@@ -22,18 +23,18 @@ namespace PlatformAgnostic
         static const UNormalizer2 *StaticUNormalizerFactory(NormalizationForm nf)
         {
             static_assert(
-                NormalizationForm::C == UNORM2_COMPOSE &&
-                NormalizationForm::D == UNORM2_DECOMPOSE &&
+                static_cast<int>(NormalizationForm::C) == static_cast<int>(UNORM2_COMPOSE) &&
+                static_cast<int>(NormalizationForm::D) == static_cast<int>(UNORM2_DECOMPOSE) &&
                 // Deciding between ICU_NORMALIZATION_NFC and ICU_NORMALIZATION_NFKC
                 // Depends on ::KC and ::KD being INT_MIN + their non-K forms
                 // We can't just make them negative of their non-K forms because UNORM2_COMPOSE == 0
-                NormalizationForm::KC == INT_MIN + UNORM2_COMPOSE &&
-                NormalizationForm::KD == INT_MIN + UNORM2_DECOMPOSE &&
+                static_cast<int>(NormalizationForm::KC) == INT_MIN + static_cast<int>(UNORM2_COMPOSE) &&
+                static_cast<int>(NormalizationForm::KD) == INT_MIN + static_cast<int>(UNORM2_DECOMPOSE) &&
                 (
-                    NormalizationForm::Other != NormalizationForm::C &&
-                    NormalizationForm::Other != NormalizationForm::D &&
-                    NormalizationForm::Other != NormalizationForm::KC &&
-                    NormalizationForm::Other != NormalizationForm::KD
+                    static_cast<int>(NormalizationForm::Other) != static_cast<int>(NormalizationForm::C) &&
+                    static_cast<int>(NormalizationForm::Other) != static_cast<int>(NormalizationForm::D) &&
+                    static_cast<int>(NormalizationForm::Other) != static_cast<int>(NormalizationForm::KC) &&
+                    static_cast<int>(NormalizationForm::Other) != static_cast<int>(NormalizationForm::KD)
                 ),
                 "Invalid NormalizationForm enum configuration"
             );
@@ -107,17 +108,23 @@ namespace PlatformAgnostic
         {
             switch (icuError)
             {
-                case U_BUFFER_OVERFLOW_ERROR:
-                    return ApiError::InsufficientBuffer;
-                case U_ILLEGAL_ARGUMENT_ERROR:
-                case U_UNSUPPORTED_ERROR:
-                    return ApiError::InvalidParameter;
-                case U_INVALID_CHAR_FOUND:
-                case U_TRUNCATED_CHAR_FOUND:
-                case U_ILLEGAL_CHAR_FOUND:
-                    return ApiError::InvalidUnicodeText;
-                default:
-                    return ApiError::UntranslatedError;
+            case U_ZERO_ERROR:
+                return ApiError::NoError;
+            case U_BUFFER_OVERFLOW_ERROR:
+            case U_STRING_NOT_TERMINATED_WARNING:
+                return ApiError::InsufficientBuffer;
+            case U_ILLEGAL_ARGUMENT_ERROR:
+            case U_UNSUPPORTED_ERROR:
+                return ApiError::InvalidParameter;
+            case U_INVALID_CHAR_FOUND:
+            case U_TRUNCATED_CHAR_FOUND:
+            case U_ILLEGAL_CHAR_FOUND:
+                return ApiError::InvalidUnicodeText;
+            case U_INDEX_OUTOFBOUNDS_ERROR: // this is int32 overflow for u_strToCase
+            case U_MEMORY_ALLOCATION_ERROR:
+                return ApiError::OutOfMemory;
+            default:
+                return ApiError::UntranslatedError;
             }
         }
 
@@ -184,11 +191,7 @@ namespace PlatformAgnostic
 
             UErrorCode status = U_ZERO_ERROR;
             int required = unorm2_normalize(normalizer, reinterpret_cast<const UChar *>(sourceString), sourceLength, reinterpret_cast<UChar *>(destString), destLength, &status);
-
-            if (U_FAILURE(status))
-            {
-                *pErrorOut = ApiError::InsufficientBuffer;
-            }
+            *pErrorOut = TranslateUErrorCode(status);
 
             return required;
         }
@@ -221,68 +224,46 @@ namespace PlatformAgnostic
 
         bool IsWhitespace(codepoint_t ch)
         {
-            return u_isUWhiteSpace(ch) == 1;
+            return u_hasBinaryProperty(ch, UCHAR_WHITE_SPACE);
         }
 
-        int32 ChangeStringLinguisticCase(CaseFlags caseFlags, const char16* sourceString, uint32 sourceLength, char16* destString, uint32 destLength, ApiError* pErrorOut)
+        template<bool toUpper, bool useInvariant>
+        charcount_t ChangeStringLinguisticCase(const char16* sourceString, charcount_t sourceLength, char16* destString, charcount_t destLength, ApiError* pErrorOut)
         {
+            Assert(sourceString != nullptr && sourceLength > 0);
+            Assert(destString != nullptr || destLength == 0);
+
             int32_t resultStringLength = 0;
             UErrorCode errorCode = U_ZERO_ERROR;
+            *pErrorOut = ApiError::NoError;
 
-            if (caseFlags == CaseFlagsUpper)
+            // u_strTo treats nullptr as the system default locale and "" as root
+            const char* locale = useInvariant ? "" : nullptr;
+
+            if (toUpper)
             {
                 resultStringLength = u_strToUpper((UChar*) destString, destLength,
-                    (UChar*) sourceString, sourceLength, NULL, &errorCode);
-            }
-            else if (caseFlags == CaseFlagsLower)
-            {
-                resultStringLength = u_strToLower((UChar*) destString, destLength,
-                    (UChar*) sourceString, sourceLength, NULL, &errorCode);
+                    (UChar*) sourceString, sourceLength, locale, &errorCode);
             }
             else
             {
-                Assert(false);
+                resultStringLength = u_strToLower((UChar*) destString, destLength,
+                    (UChar*) sourceString, sourceLength, locale, &errorCode);
             }
 
-            if (U_FAILURE(errorCode) &&
-                !(destLength == 0 && errorCode == U_BUFFER_OVERFLOW_ERROR))
-            {
-                *pErrorOut = TranslateUErrorCode(errorCode);
-                return -1;
-            }
+            *pErrorOut = TranslateUErrorCode(errorCode);
 
-            // Todo: check for resultStringLength > destLength
-            // Return insufficient buffer in that case
-            return resultStringLength;
-        }
-
-        uint32 ChangeStringCaseInPlace(CaseFlags caseFlags, char16* stringToChange, uint32 bufferLength)
-        {
-            // Assert pointers
-            Assert(stringToChange != nullptr);
-            ApiError error = NoError;
-
-            if (bufferLength == 0 || stringToChange == nullptr)
-            {
-                return 0;
-            }
-
-            int32 ret = ChangeStringLinguisticCase(caseFlags, stringToChange, bufferLength, stringToChange, bufferLength, &error);
-
-            // Callers to this function don't expect any errors
-            Assert(error == ApiError::NoError);
-            Assert(ret > 0);
-            return (uint32) ret;
+            return static_cast<charcount_t>(resultStringLength);
         }
 
         bool IsIdStart(codepoint_t ch)
         {
-            return u_isIDStart(ch);
+            return u_hasBinaryProperty(ch, UCHAR_ID_START);
         }
 
         bool IsIdContinue(codepoint_t ch)
         {
-            return u_isIDPart(ch);
+            return u_hasBinaryProperty(ch, UCHAR_ID_CONTINUE);
         }
 
         int LogicalStringCompare(const char16* string1, const char16* string2)

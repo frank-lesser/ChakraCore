@@ -37,13 +37,18 @@ public:
         _Inout_ PropertyValueInfo *const propertyValueInfo);
 
 
-    template <bool OwnPropertyOnly>
+    template <
+        bool OwnPropertyOnly,
+        bool OutputExistence /*When set, propertyValue represents whether the property exists on the instance, not its actual value*/>
     bool TryGetPropertyFromCache(
         Var const instance,
         RecyclableObject *const object,
         Var *const propertyValue,
         ScriptContext *const requestContext,
-        PropertyValueInfo *const propertyValueInfo);
+        PropertyValueInfo *const propertyValueInfo)
+    {
+        return this->propertyRecordUsageCache.TryGetPropertyFromCache<OwnPropertyOnly, OutputExistence, false /* ReturnOperationInfo */>(instance, object, propertyValue, requestContext, propertyValueInfo, this, nullptr);
+    }
 
     static PropertyString* New(StaticType* type, const Js::PropertyRecord* propertyRecord, Recycler *recycler);
 
@@ -80,17 +85,6 @@ PropertyString * PropertyString::TryFromVar(T var)
     return PropertyString::Is(var)
         ? reinterpret_cast<PropertyString*>(var)
         : nullptr;
-}
-
-template <bool OwnPropertyOnly> inline
-bool PropertyString::TryGetPropertyFromCache(
-    Var const instance,
-    RecyclableObject *const object,
-    Var *const propertyValue,
-    ScriptContext *const requestContext,
-    PropertyValueInfo *const propertyValueInfo)
-{
-    return this->propertyRecordUsageCache.TryGetPropertyFromCache<OwnPropertyOnly>(instance, object, propertyValue, requestContext, propertyValueInfo, this);
 }
 
 } // namespace Js

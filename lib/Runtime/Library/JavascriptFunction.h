@@ -41,15 +41,8 @@ namespace Js
 
         // Need a constructor cache on every function (script and native) to avoid extra checks on the fast path, if the function isn't fixed.
         Field(ConstructorCache*) constructorCache;
-
-        Field(bool) isJsBuiltInCode;
-#if DBG
-        Field(bool) isJsBuiltInInitCode;
-#endif
     protected:
-
         Field(FunctionInfo *) functionInfo;  // Underlying function
-
 
         DEFINE_VTABLE_CTOR(JavascriptFunction, DynamicObject);
         DEFINE_MARSHAL_OBJECT_TO_SCRIPT_CONTEXT(JavascriptFunction);
@@ -184,16 +177,13 @@ namespace Js
 
         BOOL IsScriptFunction() const;
         virtual Var GetSourceString() const { return nullptr; }
-        virtual Var EnsureSourceString();
+        virtual JavascriptString * EnsureSourceString();
         virtual BOOL IsExternalFunction() { return FALSE; }
         virtual BOOL IsWinRTFunction() { return FALSE; }
         BOOL IsStrictMode() const;
         BOOL IsLambda() const;
         virtual inline BOOL IsConstructor() const;
         bool HasRestrictedProperties() const;
-
-        void SetIsJsBuiltInCode();
-        bool IsJsBuiltIn();
 
         ConstructorCache* GetConstructorCache() { Assert(this->constructorCache != nullptr); return this->constructorCache; }
         ConstructorCache* EnsureValidConstructorCache();
@@ -202,7 +192,7 @@ namespace Js
 
         virtual bool HasReadOnlyPropertiesInvisibleToTypeHandler() override { return true; }
 
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId) override;
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, JavascriptString* propertyNameString, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyReferenceQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;

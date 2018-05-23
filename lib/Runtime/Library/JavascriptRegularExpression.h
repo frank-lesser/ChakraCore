@@ -82,7 +82,7 @@ namespace Js
         UnifiedRegex::RegexFlags SetRegexFlag(PropertyId propertyId, UnifiedRegex::RegexFlags flags, UnifiedRegex::RegexFlags flag, ScriptContext* scriptContext);
 
         // For boxing stack instance
-        JavascriptRegExp(JavascriptRegExp * instance);
+        JavascriptRegExp(JavascriptRegExp * instance, bool deepCopy);
 
         DEFINE_MARSHAL_OBJECT_TO_SCRIPT_CONTEXT(JavascriptRegExp);
     protected:
@@ -181,7 +181,7 @@ namespace Js
 
         virtual bool HasReadOnlyPropertiesInvisibleToTypeHandler() override { return true; }
 
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId) override;
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, JavascriptString* propertyNameString, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyReferenceQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
@@ -201,7 +201,7 @@ namespace Js
         virtual uint GetSpecialPropertyCount() const override;
         virtual PropertyId const * GetSpecialPropertyIds() const override;
 
-        static Js::JavascriptRegExp * BoxStackInstance(Js::JavascriptRegExp * instance);
+        static Js::JavascriptRegExp * BoxStackInstance(Js::JavascriptRegExp * instance, bool deepCopy);
 
 #if ENABLE_TTD
     public:

@@ -38,7 +38,7 @@
 #define HAVE_STRCASECMP 0
 
 /* Whether ENABLE_VIRTUAL_TERMINAL_PROCESSING is defined by windows.h */
-#define HAVE_WIN32_VT100 1
+#define HAVE_WIN32_VT100 0
 
 #define COMPILER_IS_CLANG 0
 #define COMPILER_IS_GNU 0
@@ -101,7 +101,7 @@
 #include <intrin.h>
 
 #define WABT_UNUSED
-#define WABT_WARN_UNUSED _Check_return_
+#define WABT_WARN_UNUSED
 #define WABT_INLINE __inline
 #define WABT_STATIC_ASSERT(x) _STATIC_ASSERT(x)
 #define WABT_UNLIKELY(x) (x)

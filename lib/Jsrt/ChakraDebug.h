@@ -154,7 +154,7 @@ typedef unsigned __int32 uint32_t;
     CHAKRA_API
         JsDiagStopDebugging(
             _In_ JsRuntimeHandle runtimeHandle,
-            _Out_ void** callbackState);
+            _Out_opt_ void** callbackState);
 
     /// <summary>
     ///     Request the runtime to break on next JavaScript statement.
@@ -1013,6 +1013,17 @@ typedef unsigned __int32 uint32_t;
         JsTTDReplayExecution(
             _Inout_ JsTTDMoveMode* moveMode,
             _Out_ int64_t* rootEventTime);
+
+    /// <summary>
+    ///     TTD API -- may change in future versions:
+    ///     Enable or disable autotrace ability from JsRT.
+    /// </summary>
+    /// <param name="status">True to enable autotracing false to disable it.</param>
+    /// <returns>The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.</returns>
+    CHAKRA_API
+        JsTTDDiagSetAutoTraceStatus(
+            _In_ bool status
+        );
 
     /// <summary>
     ///     TTD API -- may change in future versions:

@@ -382,18 +382,6 @@ public:
 
     virtual bool IsNumericProperty(Js::PropertyId propertyId) override;
 
-#ifdef ENABLE_BASIC_TELEMETRY
-    Js::LanguageStats* GetLanguageStats()
-    {
-        return langTel.GetLanguageStats();
-    }
-
-    void ResetLangStats()
-    {
-        this->langTel.Reset();
-    }
-#endif
-    
 #ifdef ENABLE_WASM_SIMD
 #if _M_IX86 || _M_AMD64
     // auxiliary SIMD values in memory to help JIT'ed code. E.g. used for Int8x16 shuffle.
@@ -423,8 +411,6 @@ public:
 
 private:
     const Js::PropertyRecord * emptyStringPropertyRecord;
-
-    Js::JavascriptExceptionObject * pendingFinallyException;
     bool noScriptScope;
 
 #ifdef ENABLE_SCRIPT_DEBUGGING
@@ -441,10 +427,6 @@ private:
 
     // The current heap enumeration object being used during enumeration.
     IActiveScriptProfilerHeapEnum* heapEnum;
-
-#ifdef ENABLE_BASIC_TELEMETRY
-    Js::LanguageTelemetry langTel;
-#endif
 
     struct PropertyGuardEntry
     {
@@ -539,6 +521,8 @@ private:
         Field(Js::TempArenaAllocatorObject *) temporaryArenaAllocators[MaxTemporaryArenaAllocators];
         Field(Js::TempGuestArenaAllocatorObject *) temporaryGuestArenaAllocators[MaxTemporaryArenaAllocators];
 
+        Field(Js::JavascriptExceptionObject *) pendingFinallyException;
+
         Field(Js::JavascriptExceptionObject *) exceptionObject;
         Field(bool) propagateException;
 
@@ -627,7 +611,9 @@ private:
     AllocationPolicyManager * allocationPolicyManager;
 
     JsUtil::ThreadService threadService;
+#if ENABLE_NATIVE_CODEGEN
     PreReservedVirtualAllocWrapper preReservedVirtualAllocator;
+#endif
 
     uint callRootLevel;
 
@@ -749,8 +735,8 @@ private:
 
     Js::IsConcatSpreadableCache isConcatSpreadableCache;
 
-    ArenaAllocator prototypeChainEnsuredToHaveOnlyWritableDataPropertiesAllocator;
-    DListBase<Js::ScriptContext *> prototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext;
+    Js::NoSpecialPropertyThreadRegistry noSpecialPropertyRegistry;
+    Js::OnlyWritablePropertyThreadRegistry onlyWritablePropertyRegistry;
 
     DListBase<CollectCallBack> collectCallBackList;
     CriticalSection csCollectionCallBack;
@@ -899,11 +885,15 @@ public:
 
 #ifdef ENABLE_BASIC_TELEMETRY
     GUID activityId;
+    LPFILETIME GetLastScriptExecutionEndTime() const;
 #endif
     void *tridentLoadAddress;
 
     void* GetTridentLoadAddress() const { return tridentLoadAddress;  }
     void SetTridentLoadAddress(void *loadAddress) { tridentLoadAddress = loadAddress; }
+
+    Js::NoSpecialPropertyThreadRegistry* GetNoSpecialPropertyRegistry() { return &this->noSpecialPropertyRegistry; }
+    Js::OnlyWritablePropertyThreadRegistry* GetOnlyWritablePropertyRegistry() { return &this->onlyWritablePropertyRegistry; }
 
 #ifdef ENABLE_DIRECTCALL_TELEMETRY
     DirectCallTelemetry directCallTelemetry;
@@ -1115,7 +1105,7 @@ private:
     template <bool locked> Js::PropertyRecord const * GetPropertyNameImpl(Js::PropertyId propertyId);
 public:
     void FindPropertyRecord(Js::JavascriptString *pstName, Js::PropertyRecord const ** propertyRecord);
-    void FindPropertyRecord(__in LPCWSTR propertyName, __in int propertyNameLength, Js::PropertyRecord const ** propertyRecord);
+    void FindPropertyRecord(__in LPCWCH propertyName, __in int propertyNameLength, Js::PropertyRecord const ** propertyRecord);
     const Js::PropertyRecord * FindPropertyRecord(const char16 * propertyName, int propertyNameLength);
 
     JsUtil::List<const RecyclerWeakReference<Js::PropertyRecord const>*>* FindPropertyIdNoCase(Js::ScriptContext * scriptContext, LPCWSTR propertyName, int propertyNameLength);
@@ -1279,12 +1269,12 @@ public:
 
     void SetPendingFinallyException(Js::JavascriptExceptionObject * exceptionObj)
     {
-        pendingFinallyException = exceptionObj;
+        recyclableData->pendingFinallyException = exceptionObj;
     }
 
     Js::JavascriptExceptionObject * GetPendingFinallyException()
     {
-        return pendingFinallyException;
+        return recyclableData->pendingFinallyException;
     }
 
     Js::EntryPointInfo ** RegisterEquivalentTypeCacheEntryPoint(Js::EntryPointInfo * entryPoint);
@@ -1396,7 +1386,7 @@ public:
     void ClearInvalidatedUniqueGuards();
     void ClearInlineCaches();
     void ClearIsInstInlineCaches();
-    void ClearForInCaches();
+    void ClearEnumeratorCaches();
     void ClearEquivalentTypeCaches();
     void ClearScriptContextCaches();
 
@@ -1404,10 +1394,6 @@ public:
     void InvalidateProtoTypePropertyCaches(const Js::PropertyId propertyId);
     void InternalInvalidateProtoTypePropertyCaches(const Js::PropertyId propertyId);
     void InvalidateAllProtoTypePropertyCaches();
-
-    Js::ScriptContext ** RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(Js::ScriptContext * scriptContext);
-    void UnregisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(Js::ScriptContext ** scriptContext);
-    void ClearPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesCaches();
 
     BOOL HasUnhandledException() const { return hasUnhandledException; }
     void SetHasUnhandledException() {hasUnhandledException = TRUE; }
@@ -1661,6 +1647,7 @@ public:
     // DefaultCollectWrapper
     virtual void PreCollectionCallBack(CollectionFlags flags) override;
     virtual void PreSweepCallback() override;
+    virtual void PreRescanMarkCallback() override;
     virtual void WaitCollectionCallBack() override;
     virtual void PostCollectionCallBack() override;
     virtual BOOL ExecuteRecyclerCollectionFunction(Recycler * recycler, CollectionFunction function, CollectionFlags flags) override;
@@ -1669,6 +1656,8 @@ public:
 #endif
     virtual void DisposeObjects(Recycler * recycler) override;
     virtual void PreDisposeObjectsCallBack() override;
+
+    void DoExpirableCollectModeStackWalk();
 
     typedef DList<ExpirableObject*, ArenaAllocator> ExpirableObjectList;
     ExpirableObjectList* expirableObjectList;
@@ -1838,6 +1827,27 @@ private:
 
     DWORD threadId;
 #endif
+
+private:
+    class ThreadContextRecyclerTelemetryHostInterface : public RecyclerTelemetryHostInterface
+    {
+    public:
+        ThreadContextRecyclerTelemetryHostInterface(ThreadContext* tc) :
+            tc(tc)
+        {
+        }
+
+        virtual LPFILETIME GetLastScriptExecutionEndTime() const;
+        virtual bool TransmitTelemetry(RecyclerTelemetryInfo& rti);
+        virtual bool TransmitTelemetryError(const RecyclerTelemetryInfo& rti, const char * msg);
+        virtual bool ThreadContextRecyclerTelemetryHostInterface::IsThreadBound() const;
+        virtual DWORD ThreadContextRecyclerTelemetryHostInterface::GetCurrentScriptThreadID() const;
+        virtual bool IsTelemetryProviderEnabled() const;
+
+    private:
+        ThreadContext * tc;
+    };
+    ThreadContextRecyclerTelemetryHostInterface recyclerTelemetryHostInterface;
 };
 
 extern void(*InitializeAdditionalProperties)(ThreadContext *threadContext);

@@ -34,6 +34,7 @@
 #define FALSE 0
 #endif
 #else
+#define U_USING_ICU_NAMESPACE 0
 #include <unicode/umachine.h>
 #endif
 
@@ -50,14 +51,3 @@ public:
 
 #include <Core/Assertions.h>
 #endif
-
-namespace PlatformAgnostic
-{
-    namespace UnicodeText
-    {
-         namespace Internal
-         {
-             int LogicalStringCompareImpl(const char16* p1, const char16* p2);
-         }
-    }
-}

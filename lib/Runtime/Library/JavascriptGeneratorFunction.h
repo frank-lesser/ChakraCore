@@ -40,6 +40,7 @@ namespace Js
         }
 
         static JavascriptGeneratorFunction* OP_NewScGenFunc(FrameDisplay* environment, FunctionInfoPtrPtr infoRef);
+        static JavascriptGeneratorFunction* OP_NewScGenFuncHomeObj(FrameDisplay* environment, FunctionInfoPtrPtr infoRef, Var homeObj);
         static Var EntryGeneratorFunctionImplementation(RecyclableObject* function, CallInfo callInfo, ...);
         static Var EntryAsyncFunctionImplementation(RecyclableObject* function, CallInfo callInfo, ...);
         static DWORD GetOffsetOfScriptFunction() { return offsetof(JavascriptGeneratorFunction, scriptFunction); }
@@ -55,9 +56,9 @@ namespace Js
         virtual bool IsAnonymousFunction() const override;
 
         virtual Var GetSourceString() const;
-        virtual Var EnsureSourceString();
+        virtual JavascriptString * EnsureSourceString();
 
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId) override;
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, JavascriptString* propertyNameString, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyReferenceQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
@@ -146,6 +147,9 @@ namespace Js
 
         Field(JavascriptGeneratorFunction*) realFunction;
 
+    protected:
+        DEFINE_VTABLE_CTOR(GeneratorVirtualScriptFunction, ScriptFunction);
+ 
     public:
         GeneratorVirtualScriptFunction(FunctionProxy* proxy, ScriptFunctionType* deferredPrototypeType) : ScriptFunction(proxy, deferredPrototypeType) { }
 
@@ -160,4 +164,6 @@ namespace Js
         virtual void ExtractSnapObjectDataInto(TTD::NSSnapObjects::SnapObject* objData, TTD::SlabAllocator& alloc) override;
 #endif
     };
+
+    typedef FunctionWithComputedName<GeneratorVirtualScriptFunction> GeneratorVirtualScriptFunctionWithComputedName;
 }

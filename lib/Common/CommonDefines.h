@@ -181,6 +181,7 @@
 #define RECYCLER_PAGE_HEAP                          // PageHeap support, on by default, off in ChakraCore release build
 #endif
 
+#define USE_FEWER_PAGES_PER_BLOCK 1
 
 #ifndef ENABLE_VALGRIND
 #define ENABLE_CONCURRENT_GC 1
@@ -261,6 +262,9 @@
 #if defined(_WIN32) && !GLOBAL_ENABLE_WRITE_BARRIER
 #define RECYCLER_VISITED_HOST
 #endif
+
+
+#define ENABLE_WEAK_REFERENCE_REGIONS 1
 
 // JIT features
 
@@ -354,42 +358,17 @@
 // Telemetry features (non-DEBUG related)
 #ifdef ENABLE_BASIC_TELEMETRY
 
-    // These defines can be "overridden" in other headers (e.g. ESBuiltInsTelemetryProvider.h) in case a specific telemetry provider wants to change an option for performance.
-    #define TELEMETRY_OPCODE_OFFSET_ENABLED true              // If the BytecodeOffset and FunctionId are logged.
-    #define TELEMETRY_PROPERTY_OPCODE_FILTER(propertyId) true // Any filter to apply on a per propertyId basis in the opcode handler for GetProperty/TypeofProperty/GetMethodProperty/etc.
-    #define TELEMETRY_OPCODE_GET_PROPERTY_VALUES true         // If no telemetry providers need the values of properties then this option skips getting the value in the TypeofProperty opcode handler.
-
 //    #define TELEMETRY_PROFILED    // If telemetry should capture "Profiled*" operations
-//    #define TELEMETRY_CACHEHIT    // If telemetry should capture data that was gotten with a Cache Hit
+
 //    #define TELEMETRY_JSO         // If telemetry should capture JavascriptOperators (expensive, as it happens during JITed code too, not just interpreted mode)
     #define TELEMETRY_AddToCache    // If telemetry should capture property-gets only when the propertyId is added to the cache (generally this means only the first usage of any feature is logged)
 //    #define TELEMETRY_INTERPRETER // If telemetry should capture more interpreter events compared to just TELEMETRY_AddToCache
 
-
-    #define TELEMETRY_TRACELOGGING   // Telemetry output using TraceLogging
-//    #define TELEMETRY_OUTPUTPRINT    // Telemetry output using Output::Print
-
-    // Enable/disable specific telemetry providers:
-    #define TELEMETRY_ESB  // Telemetry of ECMAScript Built-Ins usage or detection.
-//    #define TELEMETRY_ARRAY_USAGE // Telemetry of Array usage statistics
-    #define TELEMETRY_DateParse // Telemetry of `Date.parse`
-
-    #ifdef TELEMETRY_ESB
-        // Because ESB telemetry is in-production and has major performance implications, this redefines some of the #defines above to disable non-critical functionality to get more performance.
-        #undef TELEMETRY_OPCODE_OFFSET_ENABLED // Disable the FunctionId+Offset tracker.
-        #define TELEMETRY_OPCODE_OFFSET_ENABLED false
-        #undef TELEMETRY_PROPERTY_OPCODE_FILTER // Redefine the Property Opcode filter to ignore non-built-in properties.
-        #define TELEMETRY_PROPERTY_OPCODE_FILTER(propertyId) (propertyId < Js::PropertyIds::_countJSOnlyProperty)
-        #undef TELEMETRY_OPCODE_GET_PROPERTY_VALUES
-        #define TELEMETRY_OPCODE_GET_PROPERTY_VALUES false
-
-        //#define TELEMETRY_ESB_GetConstructorPropertyPolyfillDetection // Whether telemetry will inspect the `.constructor` property of every Object instance to determine if it's a polyfill of a known ES built-in.
-    #endif
+     #define TELEMETRY_PROPERTY_OPCODE_FILTER(propertyId) (propertyId < Js::PropertyIds::_countJSOnlyProperty)
 
     #define REJIT_STATS
 #else
 
-    #define TELEMETRY_OPCODE_OFFSET_ENABLED false
     #define TELEMETRY_OPCODE_FILTER(propertyId) false
 
 #endif
@@ -469,7 +448,7 @@
 #endif
 
 #if ENABLE_TTD
-#define TTDAssert(C, M) { if(!(C)) TTDAbort_fatal_error(M); }
+#define TTDAssert(C, M) { if(!(C)) TTDAbort_unrecoverable_error(M); }
 #else
 #define TTDAssert(C, M)
 #endif
@@ -548,6 +527,7 @@
 
 #ifdef DBG
 #define VALIDATE_ARRAY
+#define ENABLE_ENTRYPOINT_CLEANUP_TRACE 1
 
 // xplat-todo: Do we need dump generation for non-Win32 platforms?
 #ifdef _WIN32
@@ -687,6 +667,7 @@
 
 #if defined(ENABLE_JS_ETW) || defined(DUMP_FRAGMENTATION_STATS)
 #define ENABLE_MEM_STATS 1
+#define POLY_INLINE_CACHE_SIZE_STATS
 #endif
 
 #define NO_SANITIZE_ADDRESS
@@ -736,6 +717,7 @@
 
 #if defined(ASMJS_PLAT)
 #define ENABLE_WASM
+#define ENABLE_WASM_THREADS
 #define ENABLE_WASM_SIMD
 
 #ifdef CAN_BUILD_WABT

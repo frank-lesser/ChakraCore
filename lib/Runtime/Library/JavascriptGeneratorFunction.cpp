@@ -105,11 +105,8 @@ namespace Js
         FunctionProxy* functionProxy = (*infoRef)->GetFunctionProxy();
         ScriptContext* scriptContext = functionProxy->GetScriptContext();
 
-        bool hasSuperReference = functionProxy->HasSuperReference();
-
         GeneratorVirtualScriptFunction* scriptFunction = scriptContext->GetLibrary()->CreateGeneratorVirtualScriptFunction(functionProxy);
         scriptFunction->SetEnvironment(environment);
-        scriptFunction->SetHasSuperReference(hasSuperReference);
 
         JS_ETW(EventWriteJSCRIPT_RECYCLER_ALLOCATE_FUNCTION(scriptFunction, EtwTrace::GetFunctionId(functionProxy)));
 
@@ -119,6 +116,16 @@ namespace Js
             : scriptContext->GetLibrary()->CreateGeneratorFunction(functionInfo.GetOriginalEntryPoint(), scriptFunction);
 
         scriptFunction->SetRealGeneratorFunction(genFunc);
+
+        return genFunc;
+    }
+
+    JavascriptGeneratorFunction * JavascriptGeneratorFunction::OP_NewScGenFuncHomeObj(FrameDisplay *environment, FunctionInfoPtrPtr infoRef, Var homeObj)
+    {
+        Assert(homeObj != nullptr);
+        JavascriptGeneratorFunction* genFunc = JavascriptGeneratorFunction::OP_NewScGenFunc(environment, infoRef);
+
+        genFunc->SetHomeObj(homeObj);
 
         return genFunc;
     }
@@ -251,12 +258,12 @@ namespace Js
         return scriptFunction->GetSourceString();
     }
 
-    Var JavascriptGeneratorFunction::EnsureSourceString()
+    JavascriptString * JavascriptGeneratorFunction::EnsureSourceString()
     {
         return scriptFunction->EnsureSourceString();
     }
 
-    PropertyQueryFlags JavascriptGeneratorFunction::HasPropertyQuery(PropertyId propertyId)
+    PropertyQueryFlags JavascriptGeneratorFunction::HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info)
     {
         if (propertyId == PropertyIds::length)
         {
@@ -266,10 +273,10 @@ namespace Js
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
-            return DynamicObject::HasPropertyQuery(propertyId);
+            return DynamicObject::HasPropertyQuery(propertyId, info);
         }
 
-        return JavascriptFunction::HasPropertyQuery(propertyId);
+        return JavascriptFunction::HasPropertyQuery(propertyId, info);
     }
 
     PropertyQueryFlags JavascriptGeneratorFunction::GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext)

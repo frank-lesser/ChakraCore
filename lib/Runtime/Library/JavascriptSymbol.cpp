@@ -38,7 +38,7 @@ namespace Js
         ScriptContext* scriptContext = function->GetScriptContext();
 
         AssertMsg(args.Info.Count > 0, "Should always have implicit 'this'");
-        CHAKRATEL_LANGSTATS_INC_DATACOUNT(ES6_Symbol);
+        CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(ES6, Symbol, scriptContext);
 
         // SkipDefaultNewObject function flag should have prevented the default object from
         // being created, except when call true a host dispatch.
@@ -259,17 +259,19 @@ namespace Js
         TypeId typeId = JavascriptOperators::GetTypeId(right);
         if (typeId != TypeIds_Symbol && typeId != TypeIds_SymbolObject)
         {
-            right = JavascriptConversion::ToPrimitive(right, JavascriptHint::None, requestContext);
+            right = JavascriptConversion::ToPrimitive<JavascriptHint::None>(right, requestContext);
             typeId = JavascriptOperators::GetTypeId(right);
         }
 
         switch (typeId)
         {
         case TypeIds_Symbol:
-            *value = left->GetValue() == JavascriptSymbol::FromVar(right)->GetValue();
+            *value = left == JavascriptSymbol::UnsafeFromVar(right);
+            Assert((left->GetValue() == JavascriptSymbol::UnsafeFromVar(right)->GetValue()) == *value);
             break;
         case TypeIds_SymbolObject:
-            *value = left->GetValue() == JavascriptSymbolObject::FromVar(right)->GetValue();
+            *value = left == JavascriptSymbol::UnsafeFromVar(JavascriptSymbolObject::UnsafeFromVar(right)->Unwrap());
+            Assert((left->GetValue() == JavascriptSymbolObject::UnsafeFromVar(right)->GetValue()) == *value);
             break;
         default:
             *value = FALSE;
@@ -310,7 +312,7 @@ namespace Js
     {
         if (requestContext->GetThreadContext()->RecordImplicitException())
         {
-            JavascriptError::ThrowTypeError(requestContext, VBSERR_OLENoPropOrMethod, _u("ToString"));
+            JavascriptError::ThrowTypeError(requestContext, JSERR_ImplicitStrConv, _u("Symbol"));
         }
 
         return requestContext->GetLibrary()->GetEmptyString();

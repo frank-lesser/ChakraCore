@@ -35,7 +35,8 @@
 
 #ifdef ENABLE_BASIC_TELEMETRY
 #include "Telemetry.h"
-#endif
+#include "Recycler/RecyclerTelemetryTransmitter.h"
+#endif // ENABLE_BASIC_TELEMETRY
 
 const int TotalNumberOfBuiltInProperties = Js::PropertyIds::_countJSOnlyProperty;
 
@@ -69,6 +70,7 @@ const Js::PropertyRecord * const ThreadContext::builtInPropertyRecords[] =
 };
 
 ThreadContext::RecyclableData::RecyclableData(Recycler *const recycler) :
+    pendingFinallyException(nullptr),
     soErrorObject(nullptr, nullptr, nullptr, true),
     oomErrorObject(nullptr, nullptr, nullptr, true),
     terminatedErrorObject(nullptr, nullptr, nullptr),
@@ -91,7 +93,6 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
     isThreadBound(false),
     hasThrownPendingException(false),
     hasBailedOutBitPtr(nullptr),
-    pendingFinallyException(nullptr),
     noScriptScope(false),
     heapEnum(nullptr),
     threadContextFlags(ThreadContextFlagNoFlag),
@@ -100,7 +101,7 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
     threadService(threadServiceCallback),
     isOptimizedForManyInstances(Js::Configuration::Global.flags.OptimizeForManyInstances),
     bgJit(Js::Configuration::Global.flags.BgJit),
-    pageAllocator(allocationPolicyManager, PageAllocatorType_Thread, Js::Configuration::Global.flags, 0, PageAllocator::DefaultMaxFreePageCount,
+    pageAllocator(allocationPolicyManager, PageAllocatorType_Thread, Js::Configuration::Global.flags, 0, RecyclerHeuristic::Instance.DefaultMaxFreePageCount,
         false
 #if ENABLE_BACKGROUND_PAGE_FREEING
         , &backgroundPageQueue
@@ -144,13 +145,13 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
     inlineCacheThreadInfoAllocator(_u("TC-InlineCacheInfo"), GetPageAllocator(), Js::Throw::OutOfMemory),
     isInstInlineCacheThreadInfoAllocator(_u("TC-IsInstInlineCacheInfo"), GetPageAllocator(), Js::Throw::OutOfMemory),
     equivalentTypeCacheInfoAllocator(_u("TC-EquivalentTypeCacheInfo"), GetPageAllocator(), Js::Throw::OutOfMemory),
-    preReservedVirtualAllocator(),
     protoInlineCacheByPropId(&inlineCacheThreadInfoAllocator, 521),
     storeFieldInlineCacheByPropId(&inlineCacheThreadInfoAllocator, 293),
     isInstInlineCacheByFunction(&isInstInlineCacheThreadInfoAllocator, 131),
     registeredInlineCacheCount(0),
     unregisteredInlineCacheCount(0),
-    prototypeChainEnsuredToHaveOnlyWritableDataPropertiesAllocator(_u("TC-ProtoWritableProp"), GetPageAllocator(), Js::Throw::OutOfMemory),
+    noSpecialPropertyRegistry(this->GetPageAllocator()),
+    onlyWritablePropertyRegistry(this->GetPageAllocator()),
     standardUTF8Chars(0),
     standardUnicodeChars(0),
     hasUnhandledException(FALSE),
@@ -160,6 +161,7 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
     caseInvariantPropertySet(nullptr),
     entryPointToBuiltInOperationIdCache(&threadAlloc, 0),
 #if ENABLE_NATIVE_CODEGEN
+    preReservedVirtualAllocator(),
 #if !FLOATVAR
     codeGenNumberThreadAllocator(nullptr),
     xProcNumberPageSegmentManager(nullptr),
@@ -207,6 +209,7 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
     , noJsReentrancy(false)
 #endif
     , emptyStringPropertyRecord(nullptr)
+    , recyclerTelemetryHostInterface(this)
 {
     pendingProjectionContextCloseList = JsUtil::List<IProjectionContext*, ArenaAllocator>::New(GetThreadAlloc());
     hostScriptContextStack = Anew(GetThreadAlloc(), JsUtil::Stack<HostScriptContext*>, GetThreadAlloc());
@@ -550,7 +553,8 @@ ThreadContext::~ThreadContext()
     this->storeFieldInlineCacheByPropId.Reset();
     this->isInstInlineCacheByFunction.Reset();
     this->equivalentTypeCacheEntryPoints.Reset();
-    this->prototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext.Reset();
+    this->noSpecialPropertyRegistry.Reset();
+    this->onlyWritablePropertyRegistry.Reset();
 
     this->registeredInlineCacheCount = 0;
     this->unregisteredInlineCacheCount = 0;
@@ -660,11 +664,59 @@ public:
     }
 };
 
+LPFILETIME ThreadContext::ThreadContextRecyclerTelemetryHostInterface::GetLastScriptExecutionEndTime() const
+{
+#if defined(ENABLE_BASIC_TELEMETRY) && defined(NTBUILD)
+    return &(tc->telemetryBlock->lastScriptEndTime);
+#else
+    return nullptr;
+#endif
+}
+
+bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::TransmitTelemetry(RecyclerTelemetryInfo& rti)
+{
+#if defined(ENABLE_BASIC_TELEMETRY) && defined(NTBUILD)
+    return Js::TransmitRecyclerTelemetry(rti);
+#else
+    return false;
+#endif
+}
+
+
+bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::IsTelemetryProviderEnabled() const
+{
+#if defined(ENABLE_BASIC_TELEMETRY) && defined(NTBUILD)
+    return Js::IsTelemetryProviderEnabled();
+#else
+    return false;
+#endif
+}
+
+bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::TransmitTelemetryError(const RecyclerTelemetryInfo& rti, const char * msg)
+{
+#if defined(ENABLE_BASIC_TELEMETRY) && defined(NTBUILD)
+    return Js::TransmitRecyclerTelemetryError(rti, msg);
+#else
+    return false;
+#endif
+}
+
+bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::IsThreadBound() const
+{
+    return this->tc->IsThreadBound(); 
+}
+
+
+DWORD ThreadContext::ThreadContextRecyclerTelemetryHostInterface::GetCurrentScriptThreadID() const
+{
+    return this->tc->GetCurrentThreadId();
+}
+
 Recycler* ThreadContext::EnsureRecycler()
 {
     if (recycler == NULL)
     {
-        AutoRecyclerPtr newRecycler(HeapNew(Recycler, GetAllocationPolicyManager(), &pageAllocator, Js::Throw::OutOfMemory, Js::Configuration::Global.flags));
+        AutoRecyclerPtr newRecycler(HeapNew(Recycler, GetAllocationPolicyManager(), &pageAllocator, Js::Throw::OutOfMemory, Js::Configuration::Global.flags, &recyclerTelemetryHostInterface));
         newRecycler->Initialize(isOptimizedForManyInstances, &threadService); // use in-thread GC when optimizing for many instances
         newRecycler->SetCollectionWrapper(this);
 
@@ -796,12 +848,18 @@ ThreadContext::FindPropertyRecord(Js::JavascriptString *pstName, Js::PropertyRec
         return;
     }
 
-    LPCWSTR psz = pstName->GetSz();
-    FindPropertyRecord(psz, pstName->GetLength(), propertyRecord);
+    // GetString is not guaranteed to be null-terminated, but we explicitly pass length to the next step
+    LPCWCH propertyName = pstName->GetString();
+    FindPropertyRecord(propertyName, pstName->GetLength(), propertyRecord);
+
+    if (*propertyRecord)
+    {
+        pstName->CachePropertyRecord(*propertyRecord);
+    }
 }
 
 void
-ThreadContext::FindPropertyRecord(__in LPCWSTR propertyName, __in int propertyNameLength, Js::PropertyRecord const ** propertyRecord)
+ThreadContext::FindPropertyRecord(__in LPCWCH propertyName, __in int propertyNameLength, Js::PropertyRecord const ** propertyRecord)
 {
     EnterPinnedScope((volatile void **)propertyRecord);
     *propertyRecord = FindPropertyRecord(propertyName, propertyNameLength);
@@ -2083,7 +2141,7 @@ ThreadContext::DisposeObjects(Recycler * recycler)
     // Callers of DisposeObjects should ensure !IsNoScriptScope() before calling DisposeObjects.
     if (this->IsNoScriptScope())
     {
-        FromDOM_NoScriptScope_fatal_error();
+        FromDOM_NoScriptScope_unrecoverable_error();
     }
 
     if (!this->IsScriptActive())
@@ -2129,7 +2187,7 @@ ThreadContext::PushEntryExitRecord(Js::ScriptEntryExitRecord * record)
                 && !IS_ASAN_FAKE_STACK_ADDR(record)
                 && !IS_ASAN_FAKE_STACK_ADDR(lastRecord)))
         {
-            EntryExitRecord_Corrupted_fatal_error();
+            EntryExitRecord_Corrupted_unrecoverable_error();
         }
     }
 
@@ -2151,7 +2209,7 @@ void ThreadContext::PopEntryExitRecord(Js::ScriptEntryExitRecord * record)
             && !IS_ASAN_FAKE_STACK_ADDR(this->entryExitRecord)
             && !IS_ASAN_FAKE_STACK_ADDR(next))))
     {
-        EntryExitRecord_Corrupted_fatal_error();
+        EntryExitRecord_Corrupted_unrecoverable_error();
     }
 
     this->entryExitRecord = next;
@@ -2484,8 +2542,9 @@ ThreadContext::PreCollectionCallBack(CollectionFlags flags)
     // script contexts with inline caches
     this->ClearScriptContextCaches();
 
-    // Clear up references to types to avoid keep them alive
-    this->ClearPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesCaches();
+    // Clear up references to types to avoid keeping them alive
+    this->noSpecialPropertyRegistry.Clear();
+    this->onlyWritablePropertyRegistry.Clear();
 
     // Clean up unused memory before we start collecting
     this->CleanNoCasePropertyMap();
@@ -2529,9 +2588,47 @@ ThreadContext::PreSweepCallback()
 
     ClearEquivalentTypeCaches();
 
-    ClearForInCaches();
+    ClearEnumeratorCaches();
 
     this->dynamicObjectEnumeratorCacheMap.Clear();
+}
+
+void
+ThreadContext::PreRescanMarkCallback()
+{
+    // If this feature is turned off or if we're already in profile collection mode, do nothing
+    // We also do nothing if expiration is explicitly disabled by someone lower down the stack
+    if (!PHASE_OFF1(Js::ExpirableCollectPhase) && InExpirableCollectMode() && !this->disableExpiration)
+    {
+        this->DoExpirableCollectModeStackWalk();
+    }
+}
+
+void
+ThreadContext::DoExpirableCollectModeStackWalk()
+{
+    if (this->entryExitRecord != nullptr)
+    {
+        // If we're in script, we will do a stack walk, find the JavascriptFunction's on the stack
+        // and mark their entry points as being used so that we don't prematurely expire them
+
+        Js::ScriptContext* topScriptContext = this->entryExitRecord->scriptContext;
+        Js::JavascriptStackWalker walker(topScriptContext, TRUE);
+
+        Js::JavascriptFunction* javascriptFunction = nullptr;
+        while (walker.GetCallerWithoutInlinedFrames(&javascriptFunction))
+        {
+            if (javascriptFunction != nullptr && Js::ScriptFunction::Test(javascriptFunction))
+            {
+                Js::ScriptFunction* scriptFunction = (Js::ScriptFunction*) javascriptFunction;
+                Js::FunctionEntryPointInfo* entryPointInfo =  scriptFunction->GetFunctionEntryPointInfo();
+                entryPointInfo->SetIsObjectUsed();
+                scriptFunction->GetFunctionBody()->MapEntryPoints([](int index, Js::FunctionEntryPointInfo* entryPoint){
+                    entryPoint->SetIsObjectUsed();
+                });
+            }
+        }
+    }
 }
 
 void
@@ -2928,30 +3025,6 @@ ThreadContext::TryEnterExpirableCollectMode()
             Assert(object);
             object->EnterExpirableCollectMode();
         }
-
-        if (this->entryExitRecord != nullptr)
-        {
-            // If we're in script, we will do a stack walk, find the JavascriptFunction's on the stack
-            // and mark their entry points as being used so that we don't prematurely expire them
-
-            Js::ScriptContext* topScriptContext = this->entryExitRecord->scriptContext;
-            Js::JavascriptStackWalker walker(topScriptContext, TRUE);
-
-            Js::JavascriptFunction* javascriptFunction = nullptr;
-            while (walker.GetCallerWithoutInlinedFrames(&javascriptFunction))
-            {
-                if (javascriptFunction != nullptr && Js::ScriptFunction::Test(javascriptFunction))
-                {
-                    Js::ScriptFunction* scriptFunction = (Js::ScriptFunction*) javascriptFunction;
-                    Js::FunctionEntryPointInfo* entryPointInfo =  scriptFunction->GetFunctionEntryPointInfo();
-                    entryPointInfo->SetIsObjectUsed();
-                    scriptFunction->GetFunctionBody()->MapEntryPoints([](int index, Js::FunctionEntryPointInfo* entryPoint){
-                        entryPoint->SetIsObjectUsed();
-                    });
-                }
-            }
-
-        }
     }
 }
 
@@ -2959,11 +3032,11 @@ void
 ThreadContext::RegisterExpirableObject(ExpirableObject* object)
 {
     Assert(this->expirableObjectList);
-    Assert(object->registrationHandle == nullptr);
+    Assert(object->GetRegistrationHandle() == nullptr);
 
     ExpirableObject** registrationData = this->expirableObjectList->PrependNode();
     (*registrationData) = object;
-    object->registrationHandle = (void*) registrationData;
+    object->SetRegistrationHandle((void*) registrationData);
     OUTPUT_VERBOSE_TRACE(Js::ExpirableCollectPhase, _u("Registered 0x%p\n"), object);
 
     numExpirableObjects++;
@@ -2973,13 +3046,13 @@ void
 ThreadContext::UnregisterExpirableObject(ExpirableObject* object)
 {
     Assert(this->expirableObjectList);
-    Assert(object->registrationHandle != nullptr);
+    Assert(object->GetRegistrationHandle() != nullptr);
 
-    ExpirableObject** registrationData = (ExpirableObject**)PointerValue(object->registrationHandle);
+    ExpirableObject** registrationData = (ExpirableObject**)PointerValue(object->GetRegistrationHandle());
     Assert(*registrationData == object);
 
     this->expirableObjectList->MoveElementTo(registrationData, this->expirableObjectDisposeList);
-    object->registrationHandle = nullptr;
+    object->ClearRegistrationHandle();
     OUTPUT_VERBOSE_TRACE(Js::ExpirableCollectPhase, _u("Unregistered 0x%p\n"), object);
     numExpirableObjects--;
 }
@@ -2999,31 +3072,42 @@ ThreadContext::ClearScriptContextCaches()
 void
 ThreadContext::ClearInlineCachesWithDeadWeakRefs()
 {
+#if ENABLE_DEBUG_CONFIG_OPTIONS || defined(ENABLE_JS_ETW)
+    size_t allocatedSize = 0;
+    size_t preClearFreeListSize = 0;
+    size_t freeListSize = 0;
+    size_t polyInlineCacheSize = 0;
+    uint scriptContextCount = 0;
+
+    // Note: this event is not meaningful for MemGC, only Chakra
+    JS_ETW(EventWriteJSCRIPT_GC_CLEAR_INLINECACHE_START());
+#endif
+
     for (Js::ScriptContext *scriptContext = scriptContextList; scriptContext != nullptr; scriptContext = scriptContext->next)
     {
+#if ENABLE_DEBUG_CONFIG_OPTIONS || defined(ENABLE_JS_ETW)
+        scriptContextCount++;
+        allocatedSize += scriptContext->GetInlineCacheAllocator()->AllocatedSize();
+        preClearFreeListSize += scriptContext->GetInlineCacheAllocator()->FreeListSize();
+#endif
+
         scriptContext->ClearInlineCachesWithDeadWeakRefs();
+
+#if ENABLE_DEBUG_CONFIG_OPTIONS || defined(ENABLE_JS_ETW)
+        freeListSize += scriptContext->GetInlineCacheAllocator()->FreeListSize();;
+        polyInlineCacheSize += scriptContext->GetInlineCacheAllocator()->GetPolyInlineCacheSize();
+#endif
     }
 
+    JS_ETW(EventWriteJSCRIPT_GC_CLEAR_INLINECACHE_STOP(this, scriptContextCount, (uint) allocatedSize, (uint) preClearFreeListSize, (uint) freeListSize, (uint) polyInlineCacheSize));
+
+#if ENABLE_DEBUG_CONFIG_OPTIONS
     if (PHASE_TRACE1(Js::InlineCachePhase))
     {
-        size_t size = 0;
-        size_t freeListSize = 0;
-        size_t polyInlineCacheSize = 0;
-        uint scriptContextCount = 0;
-        for (Js::ScriptContext *scriptContext = scriptContextList;
-            scriptContext;
-            scriptContext = scriptContext->next)
-        {
-            scriptContextCount++;
-            size += scriptContext->GetInlineCacheAllocator()->AllocatedSize();
-            freeListSize += scriptContext->GetInlineCacheAllocator()->FreeListSize();
-#ifdef POLY_INLINE_CACHE_SIZE_STATS
-            polyInlineCacheSize += scriptContext->GetInlineCacheAllocator()->GetPolyInlineCacheSize();
-#endif
-        };
         Output::Print(_u("Inline cache arena: total = %5I64u KB, free list = %5I64u KB, poly caches = %5I64u KB, script contexts = %u\n"),
-            static_cast<uint64>(size / 1024), static_cast<uint64>(freeListSize / 1024), static_cast<uint64>(polyInlineCacheSize / 1024), scriptContextCount);
+            static_cast<uint64>(allocatedSize / 1024), static_cast<uint64>(freeListSize / 1024), static_cast<uint64>(polyInlineCacheSize / 1024), scriptContextCount);
     }
+#endif
 }
 
 #if ENABLE_NATIVE_CODEGEN
@@ -3116,12 +3200,12 @@ ThreadContext::ClearIsInstInlineCaches()
 }
 
 void
-ThreadContext::ClearForInCaches()
+ThreadContext::ClearEnumeratorCaches()
 {
     Js::ScriptContext *scriptContext = this->scriptContextList;
     while (scriptContext != nullptr)
     {
-        scriptContext->ClearForInCaches();
+        scriptContext->ClearEnumeratorCaches();
         scriptContext = scriptContext->next;
     }
 }
@@ -3917,38 +4001,6 @@ void ThreadContext::DoInvalidateProtoTypePropertyCaches(const Js::PropertyId pro
         {
             type->GetPropertyCache()->ClearIfPropertyIsOnAPrototype(propertyId);
         });
-}
-
-Js::ScriptContext **
-ThreadContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(Js::ScriptContext * scriptContext)
-{
-    return prototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext.PrependNode(&prototypeChainEnsuredToHaveOnlyWritableDataPropertiesAllocator, scriptContext);
-}
-
-void
-ThreadContext::UnregisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(Js::ScriptContext ** scriptContext)
-{
-    prototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext.RemoveElement(&prototypeChainEnsuredToHaveOnlyWritableDataPropertiesAllocator, scriptContext);
-}
-
-void
-ThreadContext::ClearPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesCaches()
-{
-    bool hasItem = false;
-    FOREACH_DLISTBASE_ENTRY(Js::ScriptContext *, scriptContext, &prototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext)
-    {
-        scriptContext->ClearPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesCaches();
-        hasItem = true;
-    }
-    NEXT_DLISTBASE_ENTRY;
-
-    if (!hasItem)
-    {
-        return;
-    }
-
-    prototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext.Reset();
-    prototypeChainEnsuredToHaveOnlyWritableDataPropertiesAllocator.Reset();
 }
 
 BOOL ThreadContext::HasPreviousHostScriptContext()

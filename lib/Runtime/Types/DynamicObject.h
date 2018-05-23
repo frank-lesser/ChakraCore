@@ -78,10 +78,26 @@ namespace Js
 #endif
 
     private:
+        // Memory layout of DynamicObject can be one of the following:
+        //        (#1)                (#2)                (#3)
+        //  +--------------+    +--------------+    +--------------+
+        //  | vtable, etc. |    | vtable, etc. |    | vtable, etc. |
+        //  |--------------|    |--------------|    |--------------|
+        //  | auxSlots     |    | auxSlots     |    | inline slots |
+        //  | union        |    | union        |    |              |
+        //  +--------------+    |--------------|    |              |
+        //                      | inline slots |    |              |
+        //                      +--------------+    +--------------+
+        // The allocation size of inline slots is variable and dependent on profile data for the
+        // object. The offset of the inline slots is managed by DynamicTypeHandler.
+        // More details for the layout scenarios below.
+
         Field(Field(Var)*) auxSlots;
-        // The objectArrayOrFlags field can store one of two things:
-        //   a) a pointer to the object array holding numeric properties of this object, or
-        //   b) a bitfield of flags.
+
+        // The objectArrayOrFlags field can store one of three things:
+        //   a) a pointer to the object array holding numeric properties of this object (#1, #2), or
+        //   b) a bitfield of flags (#1, #2), or
+        //   c) inline slot data (#3)
         // Because object arrays are not commonly used, the storage space can be reused to carry information that
         // can improve performance for typical objects. To indicate the bitfield usage we set the least significant bit to 1.
         // Object array pointer always trumps the flags, such that when the first numeric property is added to an
@@ -89,10 +105,13 @@ namespace Js
         // For functional correctness, some other fallback mechanism must exist to convey the information contained in flags.
         // This fields always starts off initialized to null.  Currently, only JavascriptArray overrides it to store flags, the
         // bits it uses are DynamicObjectFlags::AllArrayFlags.
+        // Regarding c) above, inline slots can be stored within the allocation of sizeof(DynamicObject) (#3) or after
+        // sizeof(DynamicObject) (#2). This is indicated by GetTypeHandler()->IsObjectHeaderInlinedTypeHandler(); when true, the
+        // inline slots are within the object, and thus the union members *and* auxSlots actually contain inline slot data.
 
         union
         {
-            Field(ArrayObject *) objectArray;          // Only if !IsAnyArray
+            Field(ArrayObject *) objectArray;       // Only if !IsAnyArray
             struct                                  // Only if IsAnyArray
             {
                 Field(DynamicObjectFlags) arrayFlags;
@@ -106,6 +125,8 @@ namespace Js
         void InitSlots(DynamicObject * instance, ScriptContext * scriptContext);
         void SetTypeHandler(DynamicTypeHandler * typeHandler, bool hasChanged);
 
+        Field(Var)* GetInlineSlots() const;
+
     protected:
         DEFINE_VTABLE_CTOR(DynamicObject, RecyclableObject);
         DEFINE_MARSHAL_OBJECT_TO_SCRIPT_CONTEXT(DynamicObject);
@@ -114,7 +135,7 @@ namespace Js
         DynamicObject(DynamicType * type, ScriptContext * scriptContext);
 
         // For boxing stack instance
-        DynamicObject(DynamicObject * instance);
+        DynamicObject(DynamicObject * instance, bool deepCopy);
 
         uint16 GetOffsetOfInlineSlots() const;
 
@@ -138,7 +159,6 @@ namespace Js
         Var GetSlot(int index);
         Var GetInlineSlot(int index);
         Var GetAuxSlot(int index);
-
 #if DBG
         void SetSlot(PropertyId propertyId, bool allowLetConst, int index, Var value);
         void SetInlineSlot(PropertyId propertyId, bool allowLetConst, int index, Var value);
@@ -150,6 +170,8 @@ namespace Js
 #endif
 
     private:
+        bool IsCompatibleForCopy(DynamicObject* from) const;
+
         bool IsObjectHeaderInlinedTypeHandlerUnchecked() const;
     public:
         bool IsObjectHeaderInlinedTypeHandler() const;
@@ -204,6 +226,8 @@ namespace Js
         void InvalidateHasOnlyWritableDataPropertiesInPrototypeChainCacheIfPrototype();
         void ResetObject(DynamicType* type, BOOL keepProperties);
 
+        bool TryCopy(DynamicObject* from);
+
         virtual void SetIsPrototype();
 
         bool HasLockedType() const;
@@ -222,7 +246,7 @@ namespace Js
         virtual PropertyId GetPropertyId(PropertyIndex index) override;
         virtual PropertyId GetPropertyId(BigPropertyIndex index) override;
         PropertyIndex GetPropertyIndex(PropertyId propertyId) sealed;
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId) override;
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info) override;
         virtual BOOL HasOwnProperty(PropertyId propertyId) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, JavascriptString* propertyNameString, Var* value, PropertyValueInfo* info, ScriptContext* requestContext) override;
@@ -248,7 +272,7 @@ namespace Js
         virtual BOOL SetItem(uint32 index, Var value, PropertyOperationFlags flags) override;
         virtual BOOL DeleteItem(uint32 index, PropertyOperationFlags flags) override;
         virtual BOOL ToPrimitive(JavascriptHint hint, Var* result, ScriptContext * requestContext) override;
-        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext * scriptContext, ForInCache * forInCache = nullptr) override;
+        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext * scriptContext, EnumeratorCache * enumeratorCache = nullptr) override;
         virtual BOOL SetAccessors(PropertyId propertyId, Var getter, Var setter, PropertyOperationFlags flags = PropertyOperation_None) override;
         virtual BOOL GetAccessors(PropertyId propertyId, Var *getter, Var *setter, ScriptContext * requestContext) override;
         virtual BOOL IsWritable(PropertyId propertyId) override;
@@ -301,7 +325,7 @@ namespace Js
 
         void SetObjectArray(ArrayObject* objectArray);
     protected:
-        BOOL GetEnumeratorWithPrefix(JavascriptEnumerator * prefixEnumerator, JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext * scriptContext, ForInCache * forInCache);
+        BOOL GetEnumeratorWithPrefix(JavascriptEnumerator * prefixEnumerator, JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext * scriptContext, EnumeratorCache * enumeratorCache);
 
         // These are only call for arrays
         void InitArrayFlags(DynamicObjectFlags flags);
@@ -312,7 +336,7 @@ namespace Js
         ProfileId GetArrayCallSiteIndex() const;
         void SetArrayCallSiteIndex(ProfileId profileId);
 
-        static DynamicObject * BoxStackInstance(DynamicObject * instance);
+        static DynamicObject * BoxStackInstance(DynamicObject * instance, bool deepCopy);
         
     private:
         ArrayObject* EnsureObjectArray();
@@ -338,7 +362,7 @@ namespace Js
         virtual TTD::NSSnapObjects::SnapObjectType GetSnapTag_TTD() const override;
         virtual void ExtractSnapObjectDataInto(TTD::NSSnapObjects::SnapObject* objData, TTD::SlabAllocator& alloc) override;
 
-        Js::Var const* GetInlineSlots_TTD() const;
+        Field(Js::Var) const* GetInlineSlots_TTD() const;
         Js::Var const* GetAuxSlots_TTD() const;
 
 #if ENABLE_OBJECT_SOURCE_TRACKING

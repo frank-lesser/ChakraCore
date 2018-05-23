@@ -50,14 +50,15 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)Platform\Windows\Thread.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)Platform\Windows\PerfTrace.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)Platform\Common\UnicodeText.Common.cpp" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)Platform\Common\UnicodeText.ICU.cpp" Condition="'$(UseICU)'=='true'" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)Platform\Common\UnicodeText.ICU.cpp" Condition="'$(ChakraICU)'!='false'" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ChakraPlatform.h" />
     <ClInclude Include="PerfTrace.h" />
     <ClInclude Include="RuntimePlatformAgnosticPch.h" />
     <ClInclude Include="UnicodeText.h" />
-    <ClInclude Include="ChakraICU.h" Condition="'$(UseICU)'=='true'" />
+    <ClInclude Include="ChakraICU.h" />
+    <ClInclude Include="UnicodeTextInternal.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\JITIDL\Chakra.JITIDL.vcxproj">

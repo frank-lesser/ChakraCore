@@ -155,6 +155,7 @@ namespace Js
             DetermineInlineHeadSegmentPointer<T, InlinePropertySlots, false>(array);
         if(wasZeroAllocated)
         {
+            AssertOrFailFast(size <= SparseArraySegmentBase::INLINE_CHUNK_SIZE);
             if(length != 0)
             {
                 head->length = length;
@@ -238,6 +239,14 @@ namespace Js
                 DetermineAllocationSize<className, inlineSlots>(length, &allocationPlusSize, &alignedInlineElementSlots);
             }
 
+            // alignedInlineElementSlots is actually the 'size' of the segment. The size of the segment should not be greater than InlineHead segment limit, otherwise the inline
+            // segment may not be interpreted as inline segment if the length extends to the size.
+            // the size could increase because of allignment.
+            // Update the size so that it does not exceed SparseArraySegmentBase::INLINE_CHUNK_SIZE.
+
+            uint inlineChunkSize = SparseArraySegmentBase::INLINE_CHUNK_SIZE;
+            uint size = min(alignedInlineElementSlots, inlineChunkSize);
+
             array = RecyclerNewPlusZ(recycler, allocationPlusSize, className, length, arrayType);
 
             // An new array's head segment length is initialized to zero despite the array length being nonzero because the segment
@@ -250,9 +259,9 @@ namespace Js
             // a variable until it is fully initialized, there is no way for script code to use the array while it still has missing
             // values.
             SparseArraySegment<unitType> *head =
-                InitArrayAndHeadSegment<className, inlineSlots>(array, length, alignedInlineElementSlots, true);
+                InitArrayAndHeadSegment<className, inlineSlots>(array, length, size, true);
 
-            head->FillSegmentBuffer(length, alignedInlineElementSlots);
+            head->FillSegmentBuffer(length, size);
 
             Assert(array->HasNoMissingValues());
             return array;
@@ -965,12 +974,12 @@ SECOND_PASS:
                             LinkSegments((Js::SparseArraySegment<T>*)startPrev, current);
                             current->length = startOffset + length + growby;
                             current->CheckLengthvsSize();
-                        }
-                        if (current == head && HasNoMissingValues())
-                        {
-                            if (ScanForMissingValues<T>(startOffset + length, current->length))
+                            if (current == head && HasNoMissingValues())
                             {
-                                SetHasNoMissingValues(false);
+                                if (ScanForMissingValues<T>(startOffset + length, current->length))
+                                {
+                                    SetHasNoMissingValues(false);
+                                }
                             }
                         }
                     }
@@ -1066,7 +1075,7 @@ SECOND_PASS:
 
         const auto isSegmentValid = [length](Js::SparseArraySegment<T>* segment, uint32 startIndex) {
             uint32 end, segmentEnd;
-            // Check the segment is int32 enough
+            // Check the segment is big enough
             return (
                 segment &&
                 !UInt32Math::Add(startIndex, length, &end) &&
@@ -1076,8 +1085,8 @@ SECOND_PASS:
                 segmentEnd >= end
             );
         };
-        //Find the segment where itemIndex is present or is at the boundary
-        Js::SparseArraySegment<T>* fromSegment = (Js::SparseArraySegment<T>*)fromArray->GetBeginLookupSegment(fromStartIndex, false);
+        // Check if the head segment of the fromArray has everything we need to copy
+        Js::SparseArraySegment<T>* fromSegment = (Js::SparseArraySegment<T>*)fromArray->GetHead();
         if (!isSegmentValid(fromSegment, fromStartIndex))
         {
             return false;

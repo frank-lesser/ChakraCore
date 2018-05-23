@@ -51,9 +51,15 @@ namespace Js
         char16 GetItem(charcount_t index);
 
         virtual void GetPropertyRecord(_Out_ PropertyRecord const** propertyRecord, bool dontLookupFromDictionary = false);
+        virtual void CachePropertyRecord(_In_ PropertyRecord const* propertyRecord);
 
         _Ret_range_(m_charLength, m_charLength) charcount_t GetLength() const;
+
+        // Non-finalized strings haven't allocated buffers yet, but
+        // it always makes sense to talk about string's size in bytes.
+        charcount_t GetSizeInBytes() const { return GetLength() * sizeof(char16); };
         virtual size_t GetAllocatedByteCount() const;
+
         virtual bool IsSubstring() const;
         int GetLengthAsSignedInt() const;
         const char16* UnsafeGetBuffer() const;
@@ -68,7 +74,7 @@ namespace Js
 
         static const char16* GetSzHelper(JavascriptString *str) { return str->GetSz(); }
         virtual const char16* GetSz();     // Get string, NULL terminated
-        virtual void const * GetOriginalStringReference();  // Get the original full string (Same as GetString() unless it is a SubString);
+        virtual void const * GetOriginalStringReference();  // Get the allocated object that owns the original full string buffer
 
 #if ENABLE_TTD
         //Get the associated property id for this string if there is on (e.g. it is a propertystring otherwise return Js::PropertyIds::_none)
@@ -105,8 +111,8 @@ namespace Js
         virtual PropertyQueryFlags HasItemQuery(uint32 index) override sealed;
         virtual PropertyQueryFlags GetItemQuery(Var originalInstance, uint32 index, Var* value, ScriptContext * requestContext) override;
         virtual PropertyQueryFlags GetItemReferenceQuery(Var originalInstance, uint32 index, Var* value, ScriptContext * requestContext) override;
-        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, ForInCache * forInCache = nullptr) override;
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId) override;
+        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, EnumeratorCache * enumeratorCache = nullptr) override;
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info) override;
         virtual BOOL IsEnumerable(PropertyId propertyId) override;
         virtual BOOL DeleteProperty(PropertyId propertyId, PropertyOperationFlags propertyOperationFlags) override;
         virtual BOOL DeleteProperty(JavascriptString *propertyNameString, PropertyOperationFlags propertyOperationFlags) override;
@@ -127,7 +133,7 @@ namespace Js
         static bool Is(Var aValue);
         static JavascriptString* FromVar(Var aValue);
         static JavascriptString* UnsafeFromVar(Var aValue);
-        static bool Equals(Var aLeft, Var aRight);
+        static bool Equals(JavascriptString* aLeft, JavascriptString* aRight);
         static bool LessThan(Var aLeft, Var aRight);
         static bool IsNegZero(JavascriptString *string);
 
@@ -135,13 +141,10 @@ namespace Js
         static int strcmp(JavascriptString *string1, JavascriptString *string2);
 
     private:
-        enum ToCase{
-            ToLower,
-            ToUpper
-        };
         char16* GetSzCopy();   // get a copy of the inner string without compacting the chunks
 
-        static Var ToCaseCore(JavascriptString* pThis, ToCase toCase);
+        template<bool toUpper, bool useInvariant>
+        static JavascriptString* ToCaseCore(JavascriptString* pThis);
         static int IndexOfUsingJmpTable(JmpTable jmpTable, const char16* inputStr, charcount_t len, const char16* searchStr, int searchLen, int position);
         static int LastIndexOfUsingJmpTable(JmpTable jmpTable, const char16* inputStr, charcount_t len, const char16* searchStr, charcount_t searchLen, charcount_t position);
 
@@ -331,7 +334,8 @@ namespace Js
         static void SearchValueHelper(ScriptContext* scriptContext, Var aValue, JavascriptRegExp ** ppSearchRegEx, JavascriptString ** ppSearchString);
         static void ReplaceValueHelper(ScriptContext* scriptContext, Var aValue, JavascriptFunction ** ppReplaceFn, JavascriptString ** ppReplaceString);
 
-        static Var ToLocaleCaseHelper(Var thisObj, bool toUpper, ScriptContext *scriptContext);
+        template<bool toUpper>
+        static JavascriptString* ToLocaleCaseHelper(JavascriptString* thisObj);
 
         static void InstantiateForceInlinedMembers();
 
@@ -396,7 +400,7 @@ namespace Js
     class JavascriptStringHelpers
     {
     public:
-        static bool Equals(Var aLeft, Var aRight);
+        static bool Equals(T* aLeft, T* aRight);
     };
 }
 

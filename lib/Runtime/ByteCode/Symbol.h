@@ -32,7 +32,6 @@ private:
     BYTE isBlockVar : 1;
     BYTE isConst : 1;
     BYTE isGlobal : 1;
-    BYTE isEval : 1;
     BYTE hasNonLocalReference : 1;  // if true, then this symbol needs to be heap-allocated
     BYTE isFuncExpr : 1;              // if true, then this symbol is allocated on it's on activation object
     BYTE isCatch : 1;               // if true then this a catch identifier
@@ -76,7 +75,6 @@ public:
         isBlockVar(false),
         isConst(false),
         isGlobal(false),
-        isEval(false), // will get properly set in constructor body
         hasNonLocalReference(false),
         isFuncExpr(false),
         isCatch(false),
@@ -102,19 +100,11 @@ public:
     {
         SetSymbolType(symbolType);
 
-        // Set it so we don't have to check it explicitly
-        isEval = MatchName(_u("eval"), 4);
-
         if (PHASE_TESTTRACE1(Js::StackFuncPhase) && hasFuncAssignment)
         {
             Output::Print(_u("HasFuncDecl: %s\n"), this->GetName().GetBuffer());
             Output::Flush();
         }
-    }
-
-    bool MatchName(const char16 *key, int length)
-    {
-        return name == SymbolName(key, length);
     }
 
     void SetScope(Scope *scope)
@@ -305,11 +295,6 @@ public:
         return symbolType == STFormal;
     }
 
-    bool GetIsEval() const
-    {
-        return isEval;
-    }
-
     bool GetIsCatch() const
     {
         return isCatch;
@@ -480,9 +465,9 @@ public:
         return this->name;
     }
 
-    Js::PropertyId EnsureScopeSlot(FuncInfo *funcInfo);
-    bool IsInSlot(FuncInfo *funcInfo, bool ensureSlotAlloc = false);
-    bool NeedsSlotAlloc(FuncInfo *funcInfo);
+    Js::PropertyId EnsureScopeSlot(ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo);
+    bool IsInSlot(ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo, bool ensureSlotAlloc = false);
+    bool NeedsSlotAlloc(ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo);
 
     static void SaveToPropIdArray(Symbol *sym, Js::PropertyIdArray *propIds, ByteCodeGenerator *byteCodeGenerator, Js::PropertyId *pFirstSlot = nullptr);
 

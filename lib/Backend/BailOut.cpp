@@ -370,6 +370,11 @@ const char16 * const falseString = _u("false");
         if (Js::Configuration::Global.flags.BailoutTraceFilter.Empty() || Js::Configuration::Global.flags.BailoutTraceFilter.Contains(bailOutKind)) \
         { \
             Output::Print(__VA_ARGS__); \
+            if (bailOutKind != IR::BailOutInvalid) \
+            { \
+                Output::Print(_u(" Kind: %S"), ::GetBailOutKindName(bailOutKind)); \
+            } \
+            Output::Print(_u("\n")); \
         } \
     }
 
@@ -1125,7 +1130,7 @@ BailOutRecord::BailOutInlinedHelper(Js::JavascriptCallStackLayout * layout, Bail
             // While bailing out, RestoreFrames should box all Vars on the stack. If there are multiple Vars pointing to the same
             // object, the cached version (that was previously boxed) will be reused to maintain pointer identity and correctness
             // after the transition to the interpreter.
-            InlinedFrameLayout* outerMostFrame = (InlinedFrameLayout *)(((uint8 *)Js::JavascriptCallStackLayout::ToFramePointer(layout)) - entryPointInfo->frameHeight);
+            InlinedFrameLayout* outerMostFrame = (InlinedFrameLayout *)(((uint8 *)Js::JavascriptCallStackLayout::ToFramePointer(layout)) - entryPointInfo->GetFrameHeight());
             inlineeFrameRecord->RestoreFrames(functionBody, outerMostFrame, layout, true /* boxArgs */);
         }
     }
@@ -1196,8 +1201,8 @@ BailOutRecord::BailOutFromLoopBodyHelper(Js::JavascriptCallStackLayout * layout,
         executeFunction->GetDisplayName(), executeFunction->GetDebugNumberSet(debugStringBuffer), interpreterFrame->GetCurrentLoopNum(),
         bailOutOffset, Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode));
 
-    BAILOUT_TESTTRACE(executeFunction, bailOutKind, _u("BailOut: function: %s (%s) Loop: %d Opcode: %s\n"), executeFunction->GetDisplayName(),
-        executeFunction->GetDebugNumberSet(debugStringBuffer), interpreterFrame->GetCurrentLoopNum(), Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode));
+    BAILOUT_TESTTRACE(executeFunction, bailOutKind, _u("BailOut: function %s, Loop: %d Opcode: %s"), executeFunction->GetDisplayName(),
+        interpreterFrame->GetCurrentLoopNum(), Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode));
 
     // Restore bailout values
     bailOutRecord->RestoreValues(bailOutKind, layout, interpreterFrame, functionScriptContext, true, registerSaves, bailOutReturnValue, layout->GetArgumentsObjectLocation(), branchValue);
@@ -1212,7 +1217,7 @@ BailOutRecord::BailOutFromLoopBodyHelper(Js::JavascriptCallStackLayout * layout,
 
 void BailOutRecord::UpdatePolymorphicFieldAccess(Js::JavascriptFunction * function, BailOutRecord const * bailOutRecord)
 {
-    Js::FunctionBody * executeFunction = bailOutRecord->type == Shared ? ((SharedBailOutRecord*)bailOutRecord)->functionBody : function->GetFunctionBody();
+    Js::FunctionBody * executeFunction = bailOutRecord->IsShared() ? ((SharedBailOutRecord*)bailOutRecord)->functionBody : function->GetFunctionBody();
     Js::DynamicProfileInfo *dynamicProfileInfo = nullptr;
     if (executeFunction->HasDynamicProfileInfo())
     {
@@ -1299,6 +1304,8 @@ BailOutRecord::BailOutHelper(Js::JavascriptCallStackLayout * layout, Js::ScriptF
                         char16 debugStringBuffer[MAX_FUNCTION_BODY_DEBUG_STRING_SIZE];
                         BAILOUT_KIND_TRACE(executeFunction, bailOutKind, _u("BailOut: changing due to ignore exception: function: %s (%s) offset: #%04x -> #%04x Opcode: %s Treating as: %S"), executeFunction->GetDisplayName(),
                             executeFunction->GetDebugNumberSet(debugStringBuffer), bailOutOffset, byteCodeOffsetAfterEx, Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode), ::GetBailOutKindName(IR::BailOutIgnoreException));
+                        BAILOUT_TESTTRACE(executeFunction, bailOutKind, _u("BailOut: changing due to ignore exception: function %s, Opcode: %s, Treating as: %S"), executeFunction->GetDisplayName(),
+                            Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode), ::GetBailOutKindName(IR::BailOutIgnoreException));
                     }
 #endif
 
@@ -1330,8 +1337,7 @@ BailOutRecord::BailOutHelper(Js::JavascriptCallStackLayout * layout, Js::ScriptF
 #endif
     BAILOUT_KIND_TRACE(executeFunction, bailOutKind, _u("BailOut: function: %s (%s) offset: #%04x Opcode: %s"), executeFunction->GetDisplayName(),
         executeFunction->GetDebugNumberSet(debugStringBuffer), bailOutOffset, Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode));
-    BAILOUT_TESTTRACE(executeFunction, bailOutKind, _u("BailOut: function: %s (%s) Opcode: %s\n"), executeFunction->GetDisplayName(),
-        executeFunction->GetDebugNumberSet(debugStringBuffer), Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode));
+    BAILOUT_TESTTRACE(executeFunction, bailOutKind, _u("BailOut: function %s, Opcode: %s"), executeFunction->GetDisplayName(), Js::OpCodeUtil::GetOpCodeName(bailOutRecord->bailOutOpcode));
 
     if (isInlinee && args.Info.Count != 0)
     {
@@ -1708,11 +1714,10 @@ void BailOutRecord::ScheduleFunctionCodeGen(Js::ScriptFunction * function, Js::S
 
     Assert(bailOutKind != IR::BailOutInvalid);
 
-    if ((executeFunction->HasDynamicProfileInfo() && callsCount == 0) ||
+    Js::DynamicProfileInfo * profileInfo = executeFunction->HasDynamicProfileInfo() ? executeFunction->GetAnyDynamicProfileInfo() : nullptr;
+    if ((profileInfo && callsCount == 0) ||
         PHASE_FORCE(Js::ReJITPhase, executeFunction))
     {
-        Js::DynamicProfileInfo * profileInfo = executeFunction->GetAnyDynamicProfileInfo();
-
         if ((bailOutKind & (IR::BailOutOnResultConditions | IR::BailOutOnDivSrcConditions)) || bailOutKind == IR::BailOutIntOnly || bailOutKind == IR::BailOnIntMin || bailOutKind == IR::BailOnDivResultNotInt)
         {
             // Note WRT BailOnIntMin: it wouldn't make sense to re-jit without changing anything here, as interpreter will not change the (int) type,
@@ -2155,7 +2160,6 @@ void BailOutRecord::ScheduleFunctionCodeGen(Js::ScriptFunction * function, Js::S
 
     if (!reThunk && rejitReason != RejitReason::None)
     {
-        Js::DynamicProfileInfo * profileInfo = executeFunction->GetAnyDynamicProfileInfo();
         // REVIEW: Temporary fix for RS1.  Disable Rejiting if it looks like it is not fixing the problem.
         //         For RS2, turn the rejitCount check into an assert and let's fix all these issues.
         if (profileInfo->GetRejitCount() >= 100 ||
@@ -2181,6 +2185,10 @@ void BailOutRecord::ScheduleFunctionCodeGen(Js::ScriptFunction * function, Js::S
     REJIT_KIND_TESTTRACE(bailOutKind, _u("Bailout from function: function: %s, bailOutKindName: (%S), bailOutCount: %d, callCount: %d, reJitReason: %S, reThunk: %s\r\n"),
         function->GetFunctionBody()->GetDisplayName(), ::GetBailOutKindName(bailOutKind), bailOutRecord->bailOutCount, callsCount,
         GetRejitReasonName(rejitReason), reThunk ? trueString : falseString);
+
+    JS_ETW(EventWriteJSCRIPT_BACKEND_BAILOUT(function->GetFunctionBody()->GetLocalFunctionId(),
+        function->GetFunctionBody()->GetSourceContextId(), function->GetFunctionBody()->GetDisplayName(), bailOutKind, bailOutRecord->bailOutCount, callsCount,
+        GetRejitReasonName(rejitReason), reThunk));
 
 #ifdef REJIT_STATS
     executeFunction->GetScriptContext()->LogBailout(executeFunction, bailOutKind);
@@ -2219,6 +2227,14 @@ void BailOutRecord::ScheduleFunctionCodeGen(Js::ScriptFunction * function, Js::S
     }
     else if (rejitReason != RejitReason::None)
     {
+        if (bailOutRecord->IsForLoopTop() && IR::IsTypeCheckBailOutKind(bailOutRecord->bailOutKind))
+        {
+            // Disable FieldPRE if we're triggering a type check rejit due to a bailout at the loop top.
+            // Most likely this was caused by a CheckFixedFld that was hoisted from a branch block where 
+            // only certain types flowed, to the loop top, where more types (different or non-equivalent)
+            // were flowing in.
+            profileInfo->DisableFieldPRE();
+        }
 #ifdef REJIT_STATS
         executeFunction->GetScriptContext()->LogRejit(executeFunction, rejitReason);
 #endif
@@ -2539,6 +2555,11 @@ void BailOutRecord::ScheduleLoopBodyCodeGen(Js::ScriptFunction * function, Js::S
     REJIT_KIND_TESTTRACE(bailOutKind, _u("Bailout from loop: function: %s, loopNumber: %d, bailOutKindName: (%S), reJitReason: %S\r\n"),
         function->GetFunctionBody()->GetDisplayName(), executeFunction->GetLoopNumber(loopHeader),
         ::GetBailOutKindName(bailOutKind), GetRejitReasonName(rejitReason));
+
+    JS_ETW(EventWriteJSCRIPT_BACKEND_BAILOUT_FROM_LOOP_BODY(
+        function->GetFunctionBody()->GetLocalFunctionId(), function->GetFunctionBody()->GetSourceContextId(),
+        function->GetFunctionBody()->GetDisplayName(), executeFunction->GetLoopNumber(loopHeader),
+        bailOutKind, GetRejitReasonName(rejitReason)));
 
 #ifdef REJIT_STATS
     executeFunction->GetScriptContext()->LogBailout(executeFunction, bailOutKind);

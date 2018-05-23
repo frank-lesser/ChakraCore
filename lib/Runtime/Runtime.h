@@ -83,7 +83,7 @@ namespace Js
     struct ByteCodeReader;
     struct ByteCodeWriter;
     enum class EnumeratorFlags : byte;
-    struct ForInCache;
+    struct EnumeratorCache;
     class JavascriptStaticEnumerator;
     class ForInObjectEnumerator;
     class JavascriptConversion;
@@ -134,7 +134,7 @@ namespace Js
     class DeferredTypeHandlerBase;
     template <bool IsPrototype> class NullTypeHandler;
     template<size_t size> class SimpleTypeHandler;
-    class PathTypeHandler;
+    class PathTypeHandlerBase;
     class IndexPropertyDescriptor;
     class DynamicObject;
     class ArrayObject;
@@ -227,7 +227,7 @@ namespace Js
     class EntryPointInfo;
     struct LoopHeader;
     class InternalString;
-    /* enum */ struct JavascriptHint;
+    enum class JavascriptHint;
     /* enum */ struct BuiltinFunction;
     class EnterScriptObject;
     class PropertyRecord;
@@ -280,7 +280,11 @@ namespace Js
     class AsmJSByteCodeGenerator;
     enum AsmJSMathBuiltinFunction: int;
     //////////////////////////////////////////////////////////////////////////
+#if ENABLE_WEAK_REFERENCE_REGIONS
+    template <typename T> using WeakPropertyIdMap = JsUtil::WeakReferenceRegionDictionary<PropertyId, T*, PrimeSizePolicy>;
+#else
     template <typename T> using WeakPropertyIdMap = JsUtil::WeakReferenceDictionary<PropertyId, T, PrimeSizePolicy>;
+#endif
     typedef WeakPropertyIdMap<PropertyString> PropertyStringCacheMap;
     typedef WeakPropertyIdMap<JavascriptSymbol> SymbolCacheMap;
 
@@ -371,8 +375,9 @@ enum tagDEBUG_EVENT_INFO_TYPE
 #include "Types/TypeId.h"
 
 #include "Base/Constants.h"
-#include "Language/ConstructorCache.h"
 #include "BackendApi.h"
+#include "Language/PropertyGuard.h"
+#include "Language/ConstructorCache.h"
 #include "ByteCode/OpLayoutsCommon.h"
 #include "ByteCode/OpLayouts.h"
 #include "ByteCode/OpLayoutsAsmJs.h"
@@ -425,6 +430,7 @@ enum tagDEBUG_EVENT_INFO_TYPE
 
 #include "Base/CharStringCache.h"
 
+#include "Language/PrototypeChainCache.h"
 #include "Library/JavascriptObject.h"
 #include "Library/BuiltInFlags.h"
 #include "Types/DynamicObjectPropertyEnumerator.h"
@@ -460,11 +466,10 @@ enum tagDEBUG_EVENT_INFO_TYPE
 #include "Base/Entropy.h"
 #ifdef ENABLE_BASIC_TELEMETRY
 #include "DirectCall.h"
-#include "LanguageTelemetry.h"
+#include "ScriptContext/ScriptContextTelemetry.h"
 #else
 #define CHAKRATEL_LANGSTATS_INC_BUILTINCOUNT(builtin)
-#define CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(feature, m_scriptContext)
-#define CHAKRATEL_LANGSTATS_INC_DATACOUNT(feature)
+#define CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(esVersion, feature, m_scriptContext)
 #endif
 #include "Base/ThreadContext.h"
 

@@ -33,9 +33,6 @@ namespace Js
         : DynamicObject(type), functionInfo(nullptr), constructorCache(&ConstructorCache::DefaultInstance)
     {
         Assert(this->constructorCache != nullptr);
-#if DBG
-        isJsBuiltInInitCode = false;
-#endif
     }
 
 
@@ -50,11 +47,8 @@ namespace Js
             // an object that is already a prototype. If it becomes a prototype and then we attempt to add a property to an object derived from this
             // object, then we will check if this property is writable, and only if it is will we do the fast path for add property.
             // GetScriptContext()->InvalidateStoreFieldCaches(PropertyIds::length);
-            GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+            GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
         }
-#if DBG
-        isJsBuiltInInitCode = false;
-#endif
     }
 
     JavascriptFunction::JavascriptFunction(DynamicType * type, FunctionInfo * functionInfo, ConstructorCache* cache)
@@ -68,11 +62,8 @@ namespace Js
             // an object that is already a prototype. If it becomes a prototype and then we attempt to add a property to an object derived from this
             // object, then we will check if this property is writable, and only if it is will we do the fast path for add property.
             // GetScriptContext()->InvalidateStoreFieldCaches(PropertyIds::length);
-            GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+            GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
         }
-#if DBG
-        isJsBuiltInInitCode = false;
-#endif
     }
 
     FunctionProxy *JavascriptFunction::GetFunctionProxy() const
@@ -653,7 +644,7 @@ namespace Js
         ///
         /// Call the [[Call]] method on the function object
         ///
-        return JavascriptFunction::CallFunction<true>(pFunc, pFunc->GetEntryPoint(), args);
+        return JavascriptFunction::CallFunction<true>(pFunc, pFunc->GetEntryPoint(), args, true /*useLargeArgCount*/);
     }
 
     Var JavascriptFunction::CallRootFunctionInScript(JavascriptFunction* func, Arguments args)
@@ -939,7 +930,7 @@ namespace Js
         }
         else
         {
-            functionResult = CallFunction<true>(functionObj, functionObj->GetEntryPoint(), newArgs);
+            functionResult = CallFunction<true>(functionObj, functionObj->GetEntryPoint(), newArgs, true /*useLargeArgCount*/);
         }
 
         return
@@ -1601,16 +1592,8 @@ LABEL1:
 
         Assert(functionInfo);
 
-        ScriptFunctionWithInlineCache * funcObjectWithInlineCache = ScriptFunctionWithInlineCache::Is(*functionRef) ? ScriptFunctionWithInlineCache::FromVar(*functionRef) : nullptr;
         if (functionInfo->IsDeferredParseFunction())
         {
-            if (funcObjectWithInlineCache)
-            {
-                // If inline caches were populated from a function body that has been redeferred, the caches have been cleaned up,
-                // so clear the pointers. REVIEW: Is this a perf loss in some cases?
-                funcObjectWithInlineCache->ClearBorrowedInlineCacheOnFunctionObject();
-            }
-
             funcBody = functionInfo->Parse(functionRef);
             fParsed = funcBody->IsFunctionParsed() ? TRUE : FALSE;
 
@@ -1635,18 +1618,6 @@ LABEL1:
 #endif
 
         JavascriptMethod thunkEntryPoint = (*functionRef)->UpdateUndeferredBody(funcBody);
-
-        if (funcObjectWithInlineCache && !funcObjectWithInlineCache->GetHasOwnInlineCaches())
-        {
-            // If the function object needs to use the inline caches from the function body, point them to the
-            // function body's caches. This is required in two redeferral cases:
-            //
-            // 1. We might have cleared the caches on the function object (ClearBorrowedInlineCacheOnFunctionObject)
-            //    above if the function body was redeferred.
-            // 2. Another function object could have been called before and undeferred the function body, thereby creating
-            //    new inline caches. This function object would still be pointing to the old ones and needs updating.
-            funcObjectWithInlineCache->SetInlineCachesFromFunctionBody();
-        }
 
         return thunkEntryPoint;
     }
@@ -1799,7 +1770,7 @@ LABEL1:
         this->GetDynamicType()->SetEntryPoint(method);
     }
 
-    Var JavascriptFunction::EnsureSourceString()
+    JavascriptString * JavascriptFunction::EnsureSourceString()
     {
         return this->GetLibrary()->GetFunctionDisplayString();
     }
@@ -2287,7 +2258,7 @@ LABEL1:
                 return false;
             }
 
-            ArrayBuffer* arrayBuffer = nullptr;
+            ArrayBufferBase* arrayBuffer = nullptr;
             size_t reservationSize = 0;
 #ifdef ENABLE_WASM
             if (isWasmOnly)
@@ -2312,7 +2283,7 @@ LABEL1:
 
             uint bufferLength = arrayBuffer->GetByteLength();
 
-            if (!isWasmOnly && !arrayBuffer->IsValidAsmJsBufferLength(bufferLength))
+            if (!isWasmOnly && !((ArrayBuffer*)arrayBuffer)->IsValidAsmJsBufferLength(bufferLength))
             {
                 return false;
             }
@@ -2478,17 +2449,7 @@ LABEL1:
             );
     }
 
-    void JavascriptFunction::SetIsJsBuiltInCode()
-    {
-        isJsBuiltInCode = true;
-    }
-
-    bool JavascriptFunction::IsJsBuiltIn()
-    {
-        return isJsBuiltInCode;
-    }
-
-    PropertyQueryFlags JavascriptFunction::HasPropertyQuery(PropertyId propertyId)
+    PropertyQueryFlags JavascriptFunction::HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info)
     {
         switch (propertyId)
         {
@@ -2506,7 +2467,7 @@ LABEL1:
             }
             break;
         }
-        return DynamicObject::HasPropertyQuery(propertyId);
+        return DynamicObject::HasPropertyQuery(propertyId, info);
     }
 
     BOOL JavascriptFunction::GetAccessors(PropertyId propertyId, Var *getter, Var *setter, ScriptContext * requestContext)
@@ -3494,6 +3455,24 @@ LABEL1:
         HRESULT hr = JitFromEncodedWorkItem(scriptContext->GetNativeCodeGenerator(), buffer, size);
         if (FAILED(hr))
         {
+#ifdef _WIN32
+            char16* lpMsgBuf = nullptr;
+            DWORD bufLen = FormatMessageW(
+                FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                FORMAT_MESSAGE_FROM_SYSTEM |
+                FORMAT_MESSAGE_IGNORE_INSERTS,
+                NULL,
+                hr,
+                MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                (LPTSTR)&lpMsgBuf,
+                0, NULL);
+            if (bufLen)
+            {
+                JavascriptString* string = JavascriptString::NewCopyBuffer(lpMsgBuf, bufLen, scriptContext);
+                LocalFree(lpMsgBuf);
+                JavascriptExceptionOperators::OP_Throw(string, scriptContext);
+            }
+#endif
             JavascriptExceptionOperators::OP_Throw(JavascriptNumber::New(hr, scriptContext), scriptContext);
         }
         return scriptContext->GetLibrary()->GetUndefined();

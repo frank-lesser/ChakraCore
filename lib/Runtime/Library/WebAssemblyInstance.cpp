@@ -121,7 +121,7 @@ WebAssemblyInstance::GetterExports(RecyclableObject* function, CallInfo callInfo
         Assert(UNREACHED);
         exports = scriptContext->GetLibrary()->GetUndefined();
     }
-    return exports;
+    return CrossSite::MarshalVar(scriptContext, exports);
 }
 
 WebAssemblyInstance *
@@ -195,7 +195,7 @@ void WebAssemblyInstance::CreateWasmFunctions(WebAssemblyModule * wasmModule, Sc
 
         env->SetWasmFunction(i, funcObj);
 
-        if (!PHASE_OFF(WasmDeferredPhase, body))
+        if (PHASE_ENABLED(WasmDeferredPhase, body))
         {
             // if we still have WasmReaderInfo we haven't yet parsed
             if (body->GetAsmJsFunctionInfo()->GetWasmReaderInfo())
@@ -220,7 +220,7 @@ void WebAssemblyInstance::InitializeDataSegs(WebAssemblyModule * wasmModule, Scr
 {
     WebAssemblyMemory* mem = env->GetMemory(0);
     Assert(mem);
-    ArrayBuffer* buffer = mem->GetBuffer();
+    ArrayBufferBase* buffer = mem->GetBuffer();
 
     for (uint32 iSeg = 0; iSeg < wasmModule->GetDataSegCount(); ++iSeg)
     {
@@ -362,6 +362,14 @@ void WebAssemblyInstance::LoadImports(
                 {
                     JavascriptError::ThrowWebAssemblyLinkErrorVar(ctx, WASMERR_InvalidMaximumSize, _u("WebAssembly.Memory"), mem->GetMaximumLength(), wasmModule->GetMemoryMaxSize());
                 }
+#ifdef ENABLE_WASM_THREADS
+                if (mem->IsSharedMemory() != wasmModule->IsSharedMemory())
+                {
+                    const char16* memType = mem->IsSharedMemory() ? _u("shared") : _u("unshared");
+                    const char16* modType = wasmModule->IsSharedMemory() ? _u("shared") : _u("unshared");
+                    JavascriptError::ThrowWebAssemblyLinkErrorVar(ctx, WASMERR_InvalidMemoryType, _u("WebAssembly.Memory"), memType, modType);
+                }
+#endif
                 env->SetMemory(counter, mem);
             }
             break;
@@ -512,7 +520,7 @@ void WebAssemblyInstance::ValidateTableAndMemory(WebAssemblyModule * wasmModule,
         }
         env->SetMemory(0, mem);
     }
-    ArrayBuffer * buffer = mem->GetBuffer();
+    ArrayBufferBase * buffer = mem->GetBuffer();
     if (buffer->IsDetached())
     {
         JavascriptError::ThrowTypeError(wasmModule->GetScriptContext(), JSERR_DetachedTypedArray);

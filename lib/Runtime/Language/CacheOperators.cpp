@@ -71,7 +71,7 @@ namespace Js
         {
             if (TELEMETRY_PROPERTY_OPCODE_FILTER(propertyId))
             {
-                requestContext->GetTelemetry().GetOpcodeTelemetry().GetProperty(objectWithProperty, propertyId, nullptr, !isMissing);
+                requestContext->GetTelemetry().GetOpcodeTelemetry().GetProperty(objectWithProperty, propertyId, nullptr);
             }
         }
 #endif
@@ -108,12 +108,12 @@ namespace Js
         PropertyId propertyId,
         ScriptContext* requestContext)
     {
-        if (!info || !CacheOperators::CanCachePropertyRead(info, info->GetInstance(), requestContext))
+        RecyclableObject* originalObj = JavascriptOperators::TryFromVar<RecyclableObject>(originalInstance);
+        if (!info || !originalObj || !CacheOperators::CanCachePropertyRead(info, info->GetInstance(), requestContext))
         {
             return;
         }
 
-        Assert(RecyclableObject::Is(originalInstance));
         Assert(DynamicType::Is(info->GetInstance()->GetTypeId()));
 
         DynamicObject * dynamicInstance = DynamicObject::FromVar(info->GetInstance());
@@ -122,11 +122,7 @@ namespace Js
         dynamicInstance->GetDynamicType()->GetTypeHandler()->PropertyIndexToInlineOrAuxSlotIndex(info->GetPropertyIndex(), &slotIndex, &isInlineSlot);
 
         const bool isProto = info->GetInstance() != originalInstance;
-        if(isProto &&
-            (
-                !RecyclableObject::Is(originalInstance) ||
-                RecyclableObject::FromVar(originalInstance)->GetScriptContext() != requestContext
-            ))
+        if (isProto && originalObj->GetScriptContext() != requestContext)
         {
             // Don't need to cache if the beginning property is number etc.
             return;
@@ -137,7 +133,7 @@ namespace Js
         {
             if (TELEMETRY_PROPERTY_OPCODE_FILTER(propertyId))
             {
-                requestContext->GetTelemetry().GetOpcodeTelemetry().GetProperty(info->GetInstance(), propertyId, nullptr, true /* true, because if a getter is being evaluated then the property does exist. */);
+                requestContext->GetTelemetry().GetOpcodeTelemetry().GetProperty(info->GetInstance(), propertyId, nullptr);
             }
         }
 #endif
@@ -147,7 +143,7 @@ namespace Js
             isProto,
             dynamicInstance,
             false,
-            RecyclableObject::FromVar(originalInstance)->GetType(),
+            originalObj->GetType(),
             nullptr,
             propertyId,
             slotIndex,
@@ -234,8 +230,11 @@ namespace Js
                 DynamicTypeHandler* oldTypeHandler = oldType->GetTypeHandler();
                 DynamicTypeHandler* newTypeHandler = newType->GetTypeHandler();
 
-                // the newType is a path-type so the old one should be too:
-                Assert(oldTypeHandler->IsPathTypeHandler());
+                // This may be the transition from deferred type handler to path type handler. Don't try to cache now.
+                if (!oldTypeHandler->IsPathTypeHandler())
+                {
+                    return;
+                }
 
                 int oldCapacity = oldTypeHandler->GetSlotCapacity();
                 int newCapacity = newTypeHandler->GetSlotCapacity();

@@ -16,6 +16,21 @@ namespace Wasm
         bool IsEnabled();
     }
 
+    namespace Threads
+    {
+        bool IsEnabled();
+    };
+
+    namespace WasmNontrapping
+    {
+        bool IsEnabled();
+    };
+
+    namespace SignExtends
+    {
+        bool IsEnabled();
+    };
+
     namespace WasmTypes
     {
         enum WasmType

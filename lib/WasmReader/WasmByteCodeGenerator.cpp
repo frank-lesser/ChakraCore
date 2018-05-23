@@ -409,7 +409,6 @@ void WasmModuleGenerator::GenerateFunctionHeader(uint32 index)
         m_sourceInfo,
         m_sourceInfo->GetSrcInfo()->sourceContextInfo->sourceContextId,
         wasmInfo->GetNumber(),
-        nullptr,
         Js::FunctionInfo::Attributes::ErrorOnNew,
         Js::FunctionBody::Flags_None
 #ifdef PERF_COUNTERS
@@ -1351,11 +1350,7 @@ PolymorphicEmitInfo WasmBytecodeGenerator::EmitCall()
     }
     AdeleteArray(&m_alloc, nArgs, argsList);
 
-    if (isImportCall && (m_module->HasMemory() || m_module->HasMemoryImport()))
-    {
-        m_writer->EmptyAsm(Js::OpCodeAsmJs::CheckHeap);
-        SetUsesMemory(0);
-    }
+    // WebAssemblyArrayBuffer is not detachable, no need to check for detached state here
 
     // track stack requirements for out params
 
@@ -1667,7 +1662,7 @@ EmitInfo WasmBytecodeGenerator::EmitSimdMemAccess(Js::OpCodeAsmJs op, const Wasm
 template<bool isStore, bool isAtomic>
 EmitInfo WasmBytecodeGenerator::EmitMemAccess(WasmOp wasmOp, const WasmTypes::WasmType* signature, Js::ArrayBufferView::ViewType viewType)
 {
-    Assert(!isAtomic || CONFIG_FLAG(WasmThreads));
+    Assert(!isAtomic || Wasm::Threads::IsEnabled());
     WasmTypes::WasmType type = signature[0];
     SetUsesMemory(0);
 

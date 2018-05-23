@@ -29,6 +29,7 @@ namespace Js
         InterpreterStackFrameFlags_ProcessingBailOutFromEHCode = 0x20,
         InterpreterStackFrameFlags_FromBailOutInInlinee = 0x40,
         InterpreterStackFrameFlags_ProcessingBailOutOnArraySpecialization = 0x80,
+        InterpreterStackFrameFlags_WithinTryFinallyBlock = 0x100,
         InterpreterStackFrameFlags_All = 0xFFFF,
     };
 
@@ -613,6 +614,8 @@ namespace Js
 
         template<class T> void OP_LdLen(const unaligned T *const playout);
         template<class T> void OP_ProfiledLdLen(const unaligned OpLayoutDynamicProfile<T> *const playout);
+
+        template <bool doProfile> Var ProfiledIsIn(Var argProperty, Var instance, ScriptContext* scriptContext, ProfileId profileId);
 
         Var OP_ProfiledLdThis(Var thisVar, int moduleID, ScriptContext* scriptContext);
         Var OP_ProfiledStrictLdThis(Var thisVar, ScriptContext* scriptContext);

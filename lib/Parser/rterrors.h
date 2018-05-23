@@ -260,7 +260,7 @@ RT_ERROR_MSG(JSERR_IntlNotImplemented, 5126, "", "Intl operation '%s' is not imp
 
 RT_ERROR_MSG(JSERR_ArgumentOutOfRange, 5130, "%s: argument out of range", "argument out of range", kjstRangeError, 0)
 RT_ERROR_MSG(JSERR_ErrorOnNew, 5131, "", "Function is not a constructor", kjstTypeError, 0)
-RT_ERROR_MSG(JSERR_This_NeedArrayIterator, 5132, "%s: 'this' is not an Array Iterator object", "Array Iterator expected", kjstTypeError, 0) // {Locked="\'this\'"}
+RT_ERROR_MSG(JSERR_This_NeedArrayIterator, 5132, "%s: 'this' is not a Array Iterator object", "Array Iterator expected", kjstTypeError, 0) // {Locked="\'this\'"}
 RT_ERROR_MSG(JSERR_This_NeedMapIterator, 5133, "%s: 'this' is not a Map Iterator object", "Map Iterator expected", kjstTypeError, 0) // {Locked="\'this\'"}
 RT_ERROR_MSG(JSERR_This_NeedSetIterator, 5134, "%s: 'this' is not a Set Iterator object", "Set Iterator expected", kjstTypeError, 0) // {Locked="\'this\'"}
 RT_ERROR_MSG(JSERR_This_NeedStringIterator, 5135, "%s: 'this' is not a String Iterator object", "String Iterator expected", kjstTypeError, 0) // {Locked="\'this\'"}
@@ -403,8 +403,13 @@ RT_ERROR_MSG(WASMERR_NeedInstanceObject, 7025, "%s is not a WebAssembly.Instance
 RT_ERROR_MSG(WASMERR_InvalidImportModule, 7026, "Import module '%s' is invalid", "Import module is invalid", kjstTypeError, 0)
 RT_ERROR_MSG(WASMERR_InvalidImport, 7027, "Import '%s.%s' is invalid. Expected type %s", "Import is invalid", kjstTypeError, 0)
 RT_ERROR_MSG(WASMERR_InvalidInitialSize, 7028, "Imported %s initial size (%u) is smaller than declared (%u)", "Invalid initial size", kjstWebAssemblyLinkError, 0)
-RT_ERROR_MSG(WASMERR_InvalidMaximumSize, 7029, "Imported %s maximum size (%u) is larger than declared (%u)", "Invalid initial size", kjstWebAssemblyLinkError, 0)
-RT_ERROR_MSG(WASMERR_UnalignedAtomicAccess, 7030, "", "Atomic memory access is unaligned", kjstWebAssemblyRuntimeError, 0)
+RT_ERROR_MSG(WASMERR_InvalidMaximumSize, 7029, "Imported %s maximum size (%u) is larger than declared (%u)", "Invalid maximum size", kjstWebAssemblyLinkError, 0)
+RT_ERROR_MSG(WASMERR_InvalidMemoryType, 7030, "Imported %s type is %s, expected %s", "Invalid memory type", kjstWebAssemblyLinkError, 0)
+RT_ERROR_MSG(WASMERR_UnalignedAtomicAccess, 7031, "", "Atomic memory access is unaligned", kjstWebAssemblyRuntimeError, 0)
+RT_ERROR_MSG(WASMERR_SharedNoMaximum, 7032, "", "Shared memory must have a maximum size", kjstTypeError, 0)
 
 // Wabt Errors
 RT_ERROR_MSG(WABTERR_WabtError, 7200, "%s", "Wabt Error.", kjstTypeError, 0)
+
+// Implicit Conversion Errors
+RT_ERROR_MSG(JSERR_ImplicitStrConv, 7300, "No implicit conversion of %s to String", "Cannot implicitly convert to String", kjstTypeError, 0)

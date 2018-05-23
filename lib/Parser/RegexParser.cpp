@@ -118,7 +118,7 @@ namespace UnifiedRegex
         , ArenaAllocator* ctAllocator
         , StandardChars<EncodedChar>* standardEncodedChars
         , StandardChars<Char>* standardChars
-        , bool isFromExternalSource
+        , bool isUtf8
 #if ENABLE_REGEX_CONFIG_OPTIONS
         , DebugWriter* w
 #endif
@@ -151,8 +151,7 @@ namespace UnifiedRegex
         , deferredIfNotUnicodeError(nullptr)
         , deferredIfUnicodeError(nullptr)
     {
-        if (isFromExternalSource)
-            this->FromExternalSource();
+        this->SetIsUtf8(isUtf8);
     }
 
     //
@@ -2715,7 +2714,7 @@ namespace UnifiedRegex
                     }
                     flags = (RegexFlags)(flags | UnicodeRegexFlag);
                     // For telemetry
-                    CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(UnicodeRegexFlag, scriptContext);
+                    CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(ES6, UnicodeRegexFlag, scriptContext);
 
                     break;
                 }
@@ -2728,7 +2727,7 @@ namespace UnifiedRegex
                     }
                     flags = (RegexFlags)(flags | StickyRegexFlag);
                     // For telemetry
-                    CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(StickyRegexFlag, scriptContext);
+                    CHAKRATEL_LANGSTATS_INC_LANGFEATURECOUNT(ES6, StickyRegexFlag, scriptContext);
 
                     break;
                 }

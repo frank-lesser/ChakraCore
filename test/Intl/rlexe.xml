@@ -3,12 +3,6 @@
   <test>
     <default>
       <files>Collator.js</files>
-      <tags>Intl</tags>
-    </default>
-  </test>
-  <test>
-    <default>
-      <files>CollatorOptions.js</files>
       <compile-flags>-args summary -endargs</compile-flags>
       <tags>Intl</tags>
     </default>
@@ -29,7 +23,6 @@
   <test>
     <default>
       <files>NumberFormat.js</files>
-      <compile-flags>-args summary -endargs</compile-flags>
       <tags>Intl,exclude_drt</tags>
     </default>
   </test>
@@ -110,6 +103,19 @@
       <baseline>IntlInternalsHiddenFromFirstChanceExceptionStackTest.baseline</baseline>
       <compile-flags>-ExtendedErrorStackForTestHost-</compile-flags>
       <tags>Intl</tags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>IntlPlatform.js</files>
+      <compile-flags>-IntlPlatform</compile-flags>
+      <tags>Intl,exclude_windows</tags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>PluralRules.js</files>
+      <tags>Intl,exclude_windows</tags>
     </default>
   </test>
 

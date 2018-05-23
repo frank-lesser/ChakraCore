@@ -64,9 +64,21 @@ namespace ChakraWabt
 Features GetWabtFeatures(const ChakraContext& ctx)
 {
     Features features;
-    if (ctx.features.sign_extends || ctx.features.threads)
+    if (ctx.features.sign_extends)
+    {
+        features.enable_sign_extension();
+    }
+    if (ctx.features.threads)
     {
         features.enable_threads();
+    }
+    if (ctx.features.simd)
+    {
+        features.enable_simd();
+    }
+    if (ctx.features.sat_float_to_int)
+    {
+        features.enable_sat_float_to_int();
     }
     return features;
 }

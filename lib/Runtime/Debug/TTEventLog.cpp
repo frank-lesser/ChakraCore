@@ -508,6 +508,7 @@ namespace TTD
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(ExternalCallTag, None, ExternalCallEventLogEntry, nullptr, NSLogEvents::ExternalCallEventLogEntry_UnloadEventMemory, NSLogEvents::ExternalCallEventLogEntry_Emit, NSLogEvents::ExternalCallEventLogEntry_Parse);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(ExplicitLogWriteTag, None, ExplicitLogWriteEventLogEntry, nullptr, nullptr, NSLogEvents::ExplicitLogWriteEntry_Emit, NSLogEvents::ExplicitLogWriteEntry_Parse);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(TTDInnerLoopLogWriteTag, None, TTDInnerLoopLogWriteEventLogEntry, nullptr, nullptr, NSLogEvents::TTDInnerLoopLogWriteEventLogEntry_Emit, NSLogEvents::TTDInnerLoopLogWriteEventLogEntry_Parse);
+        TTD_CREATE_EVENTLIST_VTABLE_ENTRY(TTDFetchAutoTraceStatusTag, None, TTDFetchAutoTraceStatusEventLogEntry, nullptr, nullptr, NSLogEvents::TTDFetchAutoTraceStatusEventLogEntry_Emit, NSLogEvents::TTDFetchAutoTraceStatusEventLogEntry_Parse);
 
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY(CreateScriptContextActionTag, GlobalAPIWrapper, JsRTCreateScriptContextAction, NSLogEvents::CreateScriptContext_Execute, NSLogEvents::CreateScriptContext_UnloadEventMemory, NSLogEvents::CreateScriptContext_Emit, NSLogEvents::CreateScriptContext_Parse);
         TTD_CREATE_EVENTLIST_VTABLE_ENTRY_COMMON(SetActiveScriptContextActionTag, GlobalAPIWrapper, JsRTSingleVarArgumentAction, SetActiveScriptContext_Execute);
@@ -586,7 +587,7 @@ namespace TTD
         : m_threadContext(threadContext), m_eventSlabAllocator(TTD_SLAB_BLOCK_ALLOCATION_SIZE_MID), m_miscSlabAllocator(TTD_SLAB_BLOCK_ALLOCATION_SIZE_SMALL),
         m_eventTimeCtr(0), m_timer(), m_topLevelCallbackEventTime(-1),
         m_eventListVTable(nullptr), m_eventList(&this->m_eventSlabAllocator), m_currentReplayEventIterator(),
-        m_modeStack(), m_currentMode(TTDMode::Invalid),
+        m_modeStack(), m_currentMode(TTDMode::Invalid), m_autoTracesEnabled(true),
         m_snapExtractor(), m_elapsedExecutionTimeSinceSnapshot(0.0),
         m_lastInflateSnapshotTime(-1), m_lastInflateMap(nullptr), m_propertyRecordList(&this->m_miscSlabAllocator),
         m_sourceInfoCount(0), m_loadedTopLevelScripts(&this->m_miscSlabAllocator), m_newFunctionTopLevelScripts(&this->m_miscSlabAllocator), m_evalTopLevelScripts(&this->m_miscSlabAllocator)
@@ -877,6 +878,18 @@ namespace TTD
         {
             this->AbortReplayReturnToHost();
         }
+    }
+
+    void EventLog::RecordTTDFetchAutoTraceStatusEvent(bool status)
+    {
+        NSLogEvents::TTDFetchAutoTraceStatusEventLogEntry* atfEvent = this->RecordGetInitializedEvent_DataOnly<NSLogEvents::TTDFetchAutoTraceStatusEventLogEntry, NSLogEvents::EventKind::TTDFetchAutoTraceStatusTag>();
+        atfEvent->IsEnabled = status;
+    }
+
+    bool EventLog::ReplayTTDFetchAutoTraceStatusLogEvent()
+    {
+        const NSLogEvents::TTDFetchAutoTraceStatusEventLogEntry* atfEvent = this->ReplayGetReplayEvent_Helper<NSLogEvents::TTDFetchAutoTraceStatusEventLogEntry, NSLogEvents::EventKind::TTDFetchAutoTraceStatusTag>();
+        return atfEvent->IsEnabled;
     }
 
     void EventLog::RecordDateTimeEvent(double time)
@@ -2526,8 +2539,14 @@ namespace TTD
 
     void EventLog::InnerLoopEmitLog(const TTDebuggerSourceLocation& writeLocation, const char* emitUri, size_t emitUriLength)
     {
-        NSLogEvents::TTDInnerLoopLogWriteEventLogEntry* evt = nullptr;
-        this->RecordGetInitializedEvent<NSLogEvents::TTDInnerLoopLogWriteEventLogEntry, NSLogEvents::EventKind::TTDInnerLoopLogWriteTag>(&evt);
+        //Events are slab allocated with header immediately followed by payload -- we need to replicate this layout here so we allocate an array and explicitly layout.
+        //See definition of GetNextAvailableEntry and GetInlineEventDataAs for more detail.
+        byte buff[TTD_EVENT_PLUS_DATA_SIZE(NSLogEvents::TTDInnerLoopLogWriteEventLogEntry)];
+
+        NSLogEvents::EventLogEntry* entry = reinterpret_cast<NSLogEvents::EventLogEntry*>(buff);
+        NSLogEvents::EventLogEntry_Initialize<NSLogEvents::EventKind::TTDInnerLoopLogWriteTag>(entry, this->m_eventTimeCtr);
+
+        NSLogEvents::TTDInnerLoopLogWriteEventLogEntry* evt = NSLogEvents::GetInlineEventDataAs<NSLogEvents::TTDInnerLoopLogWriteEventLogEntry, NSLogEvents::EventKind::TTDInnerLoopLogWriteTag>(entry);
 
         evt->SourceScriptLogId = writeLocation.GetScriptLogTagId();
         evt->EventTime = writeLocation.GetRootEventTime();
@@ -2541,10 +2560,28 @@ namespace TTD
         evt->Line = writeLocation.GetSourceLine();
         evt->Column = writeLocation.GetSourceColumn();
 
-        this->EmitLog(emitUri, emitUriLength);
+        this->EmitLog(emitUri, emitUriLength, entry);
     }
 
-    void EventLog::EmitLog(const char* emitUri, size_t emitUriLength)
+    bool EventLog::CanWriteInnerLoopTrace() const
+    {
+        bool isInnerLoop = (this->m_currentMode & (TTDMode::RecordDebuggerMode)) == TTDMode::RecordDebuggerMode;
+        bool isEnabled = (this->m_currentMode & (TTDMode::CurrentlyEnabled)) == TTDMode::CurrentlyEnabled;
+
+        return isInnerLoop & isEnabled;
+    }
+
+    void EventLog::SetAutoTraceEnabled(bool enabled)
+    {
+        this->m_autoTracesEnabled = enabled;
+    }
+
+    bool EventLog::GetAutoTraceEnabled() const
+    {
+        return this->m_autoTracesEnabled;
+    }
+
+    void EventLog::EmitLog(const char* emitUri, size_t emitUriLength, NSLogEvents::EventLogEntry* optInnerLoopEvent)
     {
 #if ENABLE_BASIC_TRACE || ENABLE_FULL_BC_TRACE
         this->m_threadContext->TTDExecutionInfo->GetTraceLogger()->ForceFlush();
@@ -2604,7 +2641,7 @@ namespace TTD
         writer.WriteUInt64(NSTokens::Key::usedMemory, usedSpace, NSTokens::Separator::CommaSeparator);
         writer.WriteUInt64(NSTokens::Key::reservedMemory, reservedSpace, NSTokens::Separator::CommaSeparator);
 
-        uint32 ecount = this->m_eventList.Count();
+        uint32 ecount = this->m_eventList.Count() + (optInnerLoopEvent != nullptr ? 1 : 0);
         writer.WriteLengthValue(ecount, NSTokens::Separator::CommaAndBigSpaceSeparator);
 
 #if ENABLE_TTD_INTERNAL_DIAGNOSTICS
@@ -2677,6 +2714,13 @@ namespace TTD
             }
 #endif
         }
+
+        if (optInnerLoopEvent != nullptr)
+        {
+            //Emit the special event that indicates we want to break at the end of the log (with a known breakpoint time)
+            NSLogEvents::EventLogEntry_Emit(optInnerLoopEvent, this->m_eventListVTable, &writer, this->m_threadContext, NSTokens::Separator::BigSpaceSeparator);
+        }
+
         writer.AdjustIndent(-1);
         writer.WriteSequenceEnd(NSTokens::Separator::BigSpaceSeparator);
 

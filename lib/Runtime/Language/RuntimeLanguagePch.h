@@ -26,6 +26,7 @@
 #include "Language/DynamicProfileStorage.h"
 #endif
 #include "Language/SourceDynamicProfileManager.h"
+#include "Language/SimpleDataCacheWrapper.h"
 
 #include "Base/EtwTrace.h"
 
@@ -55,10 +56,6 @@
 #include "Debug/DebugManager.h"
 #include "Debug/ProbeContainer.h"
 #include "Debug/DebugContext.h"
-#endif
-
-#ifdef ENABLE_BASIC_TELEMETRY
-#include "ScriptContextTelemetry.h"
 #endif
 
 // .inl files

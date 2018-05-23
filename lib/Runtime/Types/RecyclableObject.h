@@ -270,6 +270,8 @@ namespace Js {
         // (i.e. no accessors or non-writable properties)?
         bool HasOnlyWritableDataProperties();
 
+        bool HasAnySpecialProperties();
+
         void ClearWritableDataOnlyDetectionBit();
         bool IsWritableDataOnlyDetectionBitSet();
 
@@ -292,7 +294,7 @@ namespace Js {
         virtual PropertyId GetPropertyId(BigPropertyIndex index) { return Constants::NoProperty; }
         virtual PropertyIndex GetPropertyIndex(PropertyId propertyId) { return Constants::NoSlot; }
         virtual int GetPropertyCount() { return 0; }
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId);
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info);
         virtual BOOL HasOwnProperty( PropertyId propertyId);
         virtual BOOL HasOwnPropertyNoHostObject( PropertyId propertyId);
         virtual BOOL HasOwnPropertyCheckNoRedecl( PropertyId propertyId) { Assert(FALSE); return FALSE; }
@@ -326,7 +328,7 @@ namespace Js {
         virtual DescriptorFlags GetItemSetter(uint32 index, Var* setterValue, ScriptContext* requestContext) { return None; }
         virtual BOOL SetItem(uint32 index, Var value, PropertyOperationFlags flags);
         virtual BOOL DeleteItem(uint32 index, PropertyOperationFlags flags);
-        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, ForInCache * forInCache = nullptr);
+        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, EnumeratorCache * enumeratorCache = nullptr);
         virtual BOOL ToPrimitive(JavascriptHint hint, Var* value, ScriptContext * requestContext);
         virtual BOOL SetAccessors(PropertyId propertyId, Var getter, Var setter, PropertyOperationFlags flags = PropertyOperation_None);
         virtual BOOL Equals(__in Var other, __out BOOL* value, ScriptContext* requestContext);

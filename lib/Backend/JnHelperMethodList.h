@@ -21,7 +21,9 @@
 HELPERCALL(Invalid, nullptr, 0)
 
 HELPERCALL(ScrFunc_OP_NewScFunc, Js::ScriptFunction::OP_NewScFunc, 0)
+HELPERCALL(ScrFunc_OP_NewScFuncHomeObj, Js::ScriptFunction::OP_NewScFuncHomeObj, 0)
 HELPERCALL(ScrFunc_OP_NewScGenFunc, Js::JavascriptGeneratorFunction::OP_NewScGenFunc, 0)
+HELPERCALL(ScrFunc_OP_NewScGenFuncHomeObj, Js::JavascriptGeneratorFunction::OP_NewScGenFuncHomeObj, 0)
 HELPERCALL(ScrFunc_CheckAlignment, Js::JavascriptFunction::CheckAlignment, 0)
 HELPERCALL(ScrObj_LdHandlerScope, Js::JavascriptOperators::OP_LdHandlerScope, 0)
 HELPERCALL(ScrObj_LdFrameDisplay, Js::JavascriptOperators::OP_LdFrameDisplay, 0)
@@ -252,6 +254,8 @@ HELPERCALL(Op_ScopedGetMethodPolymorphic, ((Js::Var (*)(Js::FunctionBody *const,
 
 HELPERCALL(CheckIfTypeIsEquivalent, Js::JavascriptNativeOperators::CheckIfTypeIsEquivalent, 0)
 HELPERCALL(CheckIfTypeIsEquivalentForFixedField, Js::JavascriptNativeOperators::CheckIfTypeIsEquivalentForFixedField, 0)
+HELPERCALL(CheckIfPolyTypeIsEquivalent, Js::JavascriptNativeOperators::CheckIfPolyTypeIsEquivalent, 0)
+HELPERCALL(CheckIfPolyTypeIsEquivalentForFixedField, Js::JavascriptNativeOperators::CheckIfPolyTypeIsEquivalentForFixedField, 0)
 
 HELPERCALL(Op_Delete, Js::JavascriptOperators::Delete, AttrCanThrow)
 HELPERCALL(OP_InitSetter, Js::JavascriptOperators::OP_InitSetter, AttrCanThrow)
@@ -313,7 +317,6 @@ HELPERCALL(EnsureObjectLiteralType, Js::JavascriptOperators::EnsureObjectLiteral
 
 HELPERCALL(OP_InitClass, Js::JavascriptOperators::OP_InitClass, AttrCanThrow)
 
-HELPERCALL(OP_Freeze, Js::JavascriptOperators::OP_Freeze, AttrCanThrow)
 HELPERCALL(OP_ClearAttributes, Js::JavascriptOperators::OP_ClearAttributes, AttrCanThrow)
 
 HELPERCALL(OP_CmEq_A, Js::JavascriptOperators::OP_CmEq_A, 0)
@@ -356,7 +359,7 @@ HELPERCALL(Simd128ConvertUD2, (void(*)(SIMDValue*, SIMDValue*))&Js::SIMDFloat64x
 
 HELPERCALL(Op_TryCatch, nullptr, 0)
 HELPERCALL(Op_TryFinally, nullptr, AttrCanThrow)
-HELPERCALL(Op_TryFinallySimpleJit, nullptr, AttrCanThrow)
+HELPERCALL(Op_TryFinallyNoOpt, nullptr, AttrCanThrow)
 #if _M_X64
 HELPERCALL(Op_ReturnFromCallWithFakeFrame, amd64_ReturnFromCallWithFakeFrame, 0)
 #endif
@@ -376,7 +379,7 @@ HELPERCALL(ProbeCurrentStack2, ThreadContext::ProbeCurrentStack2, 0)
 
 HELPERCALL(AdjustSlots, Js::DynamicTypeHandler::AdjustSlots_Jit, 0)
 HELPERCALL(InvalidateProtoCaches, Js::JavascriptOperators::OP_InvalidateProtoCaches, 0)
-HELPERCALL(CheckProtoHasNonWritable, Js::JavascriptOperators::DoCheckIfPrototypeChainHasOnlyWritableDataProperties, 0)
+HELPERCALL(CheckProtoHasNonWritable, Js::JavascriptOperators::CheckIfPrototypeChainHasOnlyWritableDataProperties, 0)
 
 HELPERCALL(GetStringForChar, (Js::JavascriptString * (*)(Js::CharStringCache *, char16))&Js::CharStringCache::GetStringForChar, 0)
 HELPERCALL(GetStringForCharCodePoint, (Js::JavascriptString * (*)(Js::CharStringCache *, codepoint_t))&Js::CharStringCache::GetStringForCharCodePoint, 0)
@@ -505,7 +508,6 @@ HELPERCALL(SpreadCall, Js::JavascriptFunction::EntrySpreadCall, 0)
 
 HELPERCALL(LdHomeObj,           Js::JavascriptOperators::OP_LdHomeObj,          0)
 HELPERCALL(LdFuncObj,           Js::JavascriptOperators::OP_LdFuncObj,          0)
-HELPERCALL(SetHomeObj,          Js::JavascriptOperators::OP_SetHomeObj,         0)
 HELPERCALL(LdHomeObjProto,      Js::JavascriptOperators::OP_LdHomeObjProto,     0)
 HELPERCALL(LdFuncObjProto,      Js::JavascriptOperators::OP_LdFuncObjProto,     0)
 
@@ -548,12 +550,15 @@ HELPERCALL(DirectMath_NearestFlt, (float(*)(float)) Wasm::WasmMath::Nearest<floa
 HELPERCALL(PopCnt32, Math::PopCnt32, 0)
 HELPERCALL(PopCnt64, (int64(*)(int64)) Wasm::WasmMath::PopCnt<int64>, 0)
 
-#define CONVERSION_HELPER(HELPER_TYPE) HELPERCALL(HELPER_TYPE, Js::JavascriptConversion::##HELPER_TYPE, AttrCanThrow)
-CONVERSION_HELPER(F32TOI64)
-CONVERSION_HELPER(F32TOU64)
-CONVERSION_HELPER(F64TOI64)
-CONVERSION_HELPER(F64TOU64)
-#undef CONVERSION_HELPER
+HELPERCALL(F32ToI64, (int64(*)(float, Js::ScriptContext*)) Wasm::WasmMath::F32ToI64<false /* saturating */>, AttrCanThrow)
+HELPERCALL(F32ToU64, (uint64(*)(float, Js::ScriptContext*)) Wasm::WasmMath::F32ToU64<false /* saturating */>, AttrCanThrow)
+HELPERCALL(F64ToI64, (int64(*)(double, Js::ScriptContext*)) Wasm::WasmMath::F64ToI64<false /* saturating */>, AttrCanThrow)
+HELPERCALL(F64ToU64, (uint64(*)(double, Js::ScriptContext*)) Wasm::WasmMath::F64ToU64<false /* saturating */>, AttrCanThrow)
+
+HELPERCALL(F32ToI64Sat, (int64(*)(float, Js::ScriptContext*)) Wasm::WasmMath::F32ToI64<true /* saturating */>, AttrCanThrow)
+HELPERCALL(F32ToU64Sat, (uint64(*)(float, Js::ScriptContext*)) Wasm::WasmMath::F32ToU64<true /* saturating */>, AttrCanThrow)
+HELPERCALL(F64ToI64Sat, (int64(*)(double, Js::ScriptContext*)) Wasm::WasmMath::F64ToI64<true /* saturating */>, AttrCanThrow)
+HELPERCALL(F64ToU64Sat, (uint64(*)(double, Js::ScriptContext*)) Wasm::WasmMath::F64ToU64<true /* saturating */>, AttrCanThrow)
 
 HELPERCALL(I64TOF64,        Js::JavascriptConversion::LongToDouble,        0)
 HELPERCALL(UI64TOF64,       Js::JavascriptConversion::ULongToDouble,       0)

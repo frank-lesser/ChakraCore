@@ -129,6 +129,8 @@ private:
     IR::Instr *     LowerScopedDelFld(IR::Instr *instr, IR::JnHelperMethod helperMethod, bool withInlineCache, bool strictMode);
     IR::Instr *     LowerNewScFunc(IR::Instr *instr);
     IR::Instr *     LowerNewScGenFunc(IR::Instr *instr);
+    IR::Instr *     LowerNewScFuncHomeObj(IR::Instr *instr);
+    IR::Instr *     LowerNewScGenFuncHomeObj(IR::Instr *instr);
     IR::Instr*      GenerateCompleteStFld(IR::Instr* instr, bool emitFastPath, IR::JnHelperMethod monoHelperAfterFastPath, IR::JnHelperMethod polyHelperAfterFastPath,
                         IR::JnHelperMethod monoHelperWithoutFastPath, IR::JnHelperMethod polyHelperWithoutFastPath, bool withPutFlags, Js::PropertyOperationFlags flags);
     bool            GenerateStFldWithCachedType(IR::Instr * instrStFld, bool* continueAsHelperOut, IR::LabelInstr** labelHelperOut, IR::RegOpnd** typeOpndOut);
@@ -136,9 +138,12 @@ private:
     IR::RegOpnd *   GenerateCachedTypeCheck(IR::Instr *instrInsert, IR::PropertySymOpnd *propertySymOpnd,
                         IR::LabelInstr* labelObjCheckFailed, IR::LabelInstr *labelTypeCheckFailed, IR::LabelInstr *labelSecondChance = nullptr);
     void            GenerateCachedTypeWithoutPropertyCheck(IR::Instr *instrInsert, IR::PropertySymOpnd *propertySymOpnd, IR::Opnd *typeOpnd, IR::LabelInstr *labelTypeCheckFailed);
+    IR::RegOpnd *   GeneratePolymorphicTypeIndex(IR::RegOpnd * typeOpnd, Js::PropertyGuard * typeCheckGuard, IR::Instr * instrInsert);
+    void            GenerateLeaOfOOPData(IR::RegOpnd * regOpnd, void * address, int32 offset, IR::Instr * instrInsert);
+    IR::Opnd *      GenerateIndirOfOOPData(void * address, int32 offset, IR::Instr * instrInsert);
     void            GenerateFixedFieldGuardCheck(IR::Instr *insertPointInstr, IR::PropertySymOpnd *propertySymOpnd, IR::LabelInstr *labelBailOut);
     Js::JitTypePropertyGuard* CreateTypePropertyGuardForGuardedProperties(JITTypeHolder type, IR::PropertySymOpnd* propertySymOpnd);
-    Js::JitEquivalentTypeGuard* CreateEquivalentTypeGuardAndLinkToGuardedProperties(JITTypeHolder type, IR::PropertySymOpnd* propertySymOpnd);
+    Js::JitEquivalentTypeGuard* CreateEquivalentTypeGuardAndLinkToGuardedProperties(IR::PropertySymOpnd* propertySymOpnd);
     bool            LinkCtorCacheToGuardedProperties(JITTimeConstructorCache* cache);
     template<typename LinkFunc>
     bool            LinkGuardToGuardedProperties(const BVSparse<JitArenaAllocator>* guardedPropOps, LinkFunc link);
@@ -156,7 +161,8 @@ private:
     bool            GenerateLdThisCheck(IR::Instr * instr);
     bool            GenerateLdThisStrict(IR::Instr * instr);
     bool            GenerateFastIsInst(IR::Instr * instr);
-    void            GenerateFastInlineIsIn(IR::Instr * instr);
+    void            GenerateFastArrayIsIn(IR::Instr * instr);
+    void            GenerateFastObjectIsIn(IR::Instr * instr);
 
     void GenerateProtoLdFldFromFlagInlineCache(
         IR::Instr * insertBeforeInstr,
@@ -339,9 +345,11 @@ private:
     void            GenerateIsEnabledFloatArraySetElementFastPathCheck(IR::LabelInstr * isDisabledLabel, IR::Instr * const insertBeforeInstr);
     void            GenerateStringTest(IR::RegOpnd *srcReg, IR::Instr *instrInsert, IR::LabelInstr * failLabel, IR::LabelInstr * succeedLabel = nullptr, bool generateObjectCheck = true);
     void            GenerateSymbolTest(IR::RegOpnd *srcReg, IR::Instr *instrInsert, IR::LabelInstr * failLabel, IR::LabelInstr * succeedLabel = nullptr, bool generateObjectCheck = true);
+    void            GeneratePropertyStringTest(IR::RegOpnd *srcReg, IR::Instr *instrInsert, IR::LabelInstr *labelHelper, bool usePoison);
     IR::RegOpnd *   GenerateUntagVar(IR::RegOpnd * opnd, IR::LabelInstr * labelFail, IR::Instr * insertBeforeInstr, bool generateTagCheck = true);
     void            GenerateNotZeroTest( IR::Opnd * opndSrc, IR::LabelInstr * labelZero, IR::Instr * instrInsert);
     IR::Opnd *      CreateOpndForSlotAccess(IR::Opnd * opnd);
+    IR::RegOpnd *   GetRegOpnd(IR::Opnd * opnd, IR::Instr * insertInstr, Func * func, IRType type);
 
     void            GenerateSwitchStringLookup(IR::Instr * instr);
     void            GenerateSingleCharStrJumpTableLookup(IR::Instr * instr);
@@ -406,23 +414,24 @@ public:
     }
 
 private:
-    IR::IndirOpnd * GenerateFastElemICommon(
-        IR::Instr * ldElem,
-        bool isStore,
-        IR::IndirOpnd * indirOpnd,
-        IR::LabelInstr * labelHelper,
-        IR::LabelInstr * labelCantUseArray,
-        IR::LabelInstr *labelFallthrough,
-        bool * pIsTypedArrayElement,
-        bool * pIsStringIndex,
-        bool *emitBailoutRef,
-        IR::Opnd** maskOpnd,
-        IR::LabelInstr **pLabelSegmentLengthIncreased = nullptr,
-        bool checkArrayLengthOverflow = true,
-        bool forceGenerateFastPath = false,
-        bool returnLength = false,
-        IR::LabelInstr *bailOutLabelInstr = nullptr,
-        bool * indirOpndOverflowed = nullptr);
+    IR::IndirOpnd* GenerateFastElemICommon(
+        _In_ IR::Instr* elemInstr,
+        _In_ bool isStore,
+        _In_ IR::IndirOpnd* indirOpnd,
+        _In_ IR::LabelInstr* labelHelper,
+        _In_ IR::LabelInstr* labelCantUseArray,
+        _In_opt_ IR::LabelInstr* labelFallthrough,
+        _Out_ bool* pIsTypedArrayElement,
+        _Out_ bool* pIsStringIndex,
+        _Out_opt_ bool* emitBailoutRef,
+        _Outptr_opt_result_maybenull_ IR::Opnd** maskOpnd,
+        _Outptr_opt_result_maybenull_ IR::LabelInstr** pLabelSegmentLengthIncreased = nullptr,
+        _In_ bool checkArrayLengthOverflow = true,
+        _In_ bool forceGenerateFastPath = false,
+        _In_ bool returnLength = false,
+        _In_opt_ IR::LabelInstr* bailOutLabelInstr = nullptr,
+        _Out_opt_ bool* indirOpndOverflowed = nullptr,
+        _In_ Js::FldInfoFlags flags = Js::FldInfo_NoInfo);
 
     IR::IndirOpnd * GenerateFastElemIIntIndexCommon(
         IR::Instr * ldElem,
@@ -441,9 +450,55 @@ private:
         IR::LabelInstr *bailOutLabelInstr = nullptr,
         bool * indirOpndOverflowed = nullptr);
 
-    IR::IndirOpnd * GenerateFastElemIStringIndexCommon(IR::Instr * ldElem, bool isStore, IR::IndirOpnd * indirOpnd, IR::LabelInstr * labelHelper);
-    IR::IndirOpnd * GenerateFastElemISymbolIndexCommon(IR::Instr * ldElem, bool isStore, IR::IndirOpnd * indirOpnd, IR::LabelInstr * labelHelper);
-    IR::IndirOpnd * GenerateFastElemISymbolOrStringIndexCommon(IR::Instr * instrInsert, IR::RegOpnd *indexOpnd, IR::RegOpnd *baseOpnd, const uint32 inlineCacheOffset, const uint32 hitRateOffset, IR::LabelInstr * labelHelper);
+    IR::IndirOpnd* GenerateFastElemIStringIndexCommon(
+        _In_ IR::Instr* elemInstr,
+        _In_ bool isStore,
+        _In_ IR::IndirOpnd* indirOpnd,
+        _In_ IR::LabelInstr* labelHelper,
+        _In_ Js::FldInfoFlags flags);
+
+    IR::IndirOpnd* GenerateFastElemISymbolIndexCommon(
+        _In_ IR::Instr* elemInstr,
+        _In_ bool isStore,
+        _In_ IR::IndirOpnd* indirOpnd,
+        _In_ IR::LabelInstr* labelHelper,
+        _In_ Js::FldInfoFlags flags);
+
+    IR::IndirOpnd* GenerateFastElemISymbolOrStringIndexCommon(
+        _In_ IR::Instr* instrInsert,
+        _In_ IR::RegOpnd* indexOpnd,
+        _In_ IR::RegOpnd* baseOpnd,
+        _In_ const uint32 inlineCacheOffset,
+        _In_ const uint32 hitRateOffset,
+        _In_ IR::LabelInstr* labelHelper,
+        _In_ Js::FldInfoFlags flags);
+
+    void GenerateLookUpInIndexCache(
+        _In_ IR::Instr* instrInsert,
+        _In_ IR::RegOpnd* indexOpnd,
+        _In_ IR::RegOpnd* baseOpnd,
+        _In_opt_ IR::RegOpnd* opndSlotArray,
+        _In_opt_ IR::RegOpnd* opndSlotIndex,
+        _In_ const uint32 inlineCacheOffset,
+        _In_ const uint32 hitRateOffset,
+        _In_ IR::LabelInstr* labelHelper,
+        _In_ Js::FldInfoFlags flags = Js::FldInfo_NoInfo);
+
+    template <bool CheckLocal, bool CheckInlineSlot, bool DoAdd>
+    void GenerateLookUpInIndexCacheHelper(
+        _In_ IR::Instr* instrInsert,
+        _In_ IR::RegOpnd* baseOpnd,
+        _In_opt_ IR::RegOpnd* opndSlotArray,
+        _In_opt_ IR::RegOpnd* opndSlotIndex,
+        _In_ IR::RegOpnd* objectTypeOpnd,
+        _In_ IR::RegOpnd* inlineCacheOpnd,
+        _In_ IR::LabelInstr* doneLabel,
+        _In_ IR::LabelInstr* helperLabel,
+        _Outptr_ IR::LabelInstr** nextLabel,
+        _Outptr_ IR::BranchInstr** branchToPatch,
+        _Inout_ IR::RegOpnd** taggedTypeOpnd);
+
+    void            GenerateFastIsInSymbolOrStringIndex(IR::Instr * instrInsert, IR::RegOpnd *indexOpnd, IR::RegOpnd *baseOpnd, IR::Opnd *dest, uint32 inlineCacheOffset, const uint32 hitRateOffset, IR::LabelInstr * labelHelper, IR::LabelInstr * labelDone);
     bool            GenerateFastLdElemI(IR::Instr *& ldElem, bool *instrIsInHelperBlockRef);
     bool            GenerateFastStElemI(IR::Instr *& StElem, bool *instrIsInHelperBlockRef);
     bool            GenerateFastLdLen(IR::Instr *ldLen, bool *instrIsInHelperBlockRef);
@@ -464,7 +519,7 @@ private:
     void            GenerateFastInlineMathClz(IR::Instr* instr);
     void            GenerateCtz(IR::Instr* instr);
     void            GeneratePopCnt(IR::Instr* instr);
-    void            GenerateTruncWithCheck(IR::Instr* instr);
+    template <bool Saturate> void GenerateTruncWithCheck(_In_ IR::Instr* instr);
     void            GenerateFastInlineMathFround(IR::Instr* instr);
     void            GenerateFastInlineRegExpExec(IR::Instr * instr);
     bool            GenerateFastPush(IR::Opnd *baseOpndParam, IR::Opnd *src, IR::Instr *callInstr, IR::Instr *insertInstr, IR::LabelInstr *labelHelper, IR::LabelInstr *doneLabel, IR::LabelInstr * bailOutLabelHelper, bool returnLength = false);
@@ -576,7 +631,6 @@ private:
     void            GenerateLdHomeObjProto(IR::Instr* instr);
     void            GenerateLdFuncObj(IR::Instr* instr);
     void            GenerateLdFuncObjProto(IR::Instr* instr);
-    void            GenerateSetHomeObj(IR::Instr* instrInsert);
     void            GenerateLoadNewTarget(IR::Instr* instrInsert);
     void            GenerateCheckForCallFlagNew(IR::Instr* instrInsert);
     void            GenerateGetCurrentFunctionObject(IR::Instr * instr);
@@ -673,7 +727,7 @@ private:
     static IR::RegOpnd *    LoadGeneratorArgsPtr(IR::Instr *instrInsert);
     static IR::Instr *      LoadGeneratorObject(IR::Instr *instrInsert);
 
-    IR::Opnd *      LoadSlotArrayWithCachedLocalType(IR::Instr * instrInsert, IR::PropertySymOpnd *propertySymOpnd);
+    IR::Opnd *      LoadSlotArrayWithCachedLocalType(IR::Instr * instrInsert, IR::PropertySymOpnd *propertySymOpnd, bool canReuseAuxSlotPtr);
     IR::Opnd *      LoadSlotArrayWithCachedProtoType(IR::Instr * instrInsert, IR::PropertySymOpnd *propertySymOpnd);
     IR::Instr *     LowerLdAsmJsEnv(IR::Instr *instr);
     IR::Instr *     LowerLdEnv(IR::Instr *instr);
@@ -683,7 +737,7 @@ private:
     IR::Instr *     LowerSlotArrayCheck(IR::Instr * instr);
     void            InsertSlotArrayCheck(IR::Instr * instr, StackSym * dstSym, uint32 slotId);
     void            InsertFrameDisplayCheck(IR::Instr * instr, StackSym * dstSym, FrameDisplayCheckRecord * record);
-    static void     InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr);
+    static void     InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr, bool isForStore);
 
     IR::RegOpnd *   LoadIndexFromLikelyFloat(IR::RegOpnd *indexOpnd, const bool skipNegativeCheck, IR::LabelInstr *const notTaggedIntLabel, IR::LabelInstr *const negativeLabel, IR::Instr *const insertBeforeInstr);
 
@@ -709,7 +763,7 @@ private:
     IR::RegOpnd *   GenerateForInEnumeratorLoad(IR::Opnd * forInEnumeratorOpnd, IR::Instr * insertBeforeInstr);
     IR::Opnd *      GetForInEnumeratorFieldOpnd(IR::Opnd * forInEnumeratorOpnd, uint fieldOffset, IRType type);
 
-    void            GenerateInitForInEnumeratorFastPath(IR::Instr * instr, Js::ForInCache * forInCache);
+    void            GenerateInitForInEnumeratorFastPath(IR::Instr * instr, Js::EnumeratorCache * forInCache);
     void            GenerateHasObjectArrayCheck(IR::RegOpnd * objectOpnd, IR::RegOpnd * typeOpnd, IR::LabelInstr * hasObjectArray, IR::Instr * insertBeforeInstr);
 
     IR::LabelInstr* InsertLoopTopLabel(IR::Instr * insertBeforeInstr);

@@ -58,11 +58,11 @@ namespace Js
             HostScriptContext * hostScriptContext = scriptContext->GetHostScriptContext();
             if (!hostScriptContext || !hostScriptContext->SetCrossSiteForFunctionType(function))
             {
-                if (function->GetDynamicType()->GetIsShared())
+                if (function->GetDynamicType()->GetIsLocked())
                 {
-                    TTD_XSITE_LOG(scriptContext, "SetCrossSiteForSharedFunctionType ", object);
+                    TTD_XSITE_LOG(scriptContext, "SetCrossSiteForLockedFunctionType ", object);
 
-                    function->GetLibrary()->SetCrossSiteForSharedFunctionType(function);
+                    function->GetLibrary()->SetCrossSiteForLockedFunctionType(function);
                 }
                 else
                 {
@@ -186,9 +186,9 @@ namespace Js
             //TODO: what happens if the gaurd in marshal (MarshalDynamicObject) isn't true?
             //
 
-            if(function->GetDynamicType()->GetIsShared())
+            if(function->GetTypeHandler()->GetIsLocked())
             {
-                function->GetLibrary()->SetCrossSiteForSharedFunctionType(function);
+                function->GetLibrary()->SetCrossSiteForLockedFunctionType(function);
             }
             else
             {
@@ -227,6 +227,9 @@ namespace Js
             return object;
         }
 #endif
+
+        // Marshaling should not cause any re-entrancy.
+        JS_REENTRANCY_LOCK(jsReentLock, scriptContext->GetThreadContext());
 
 #if ENABLE_COPYONACCESS_ARRAY
         JavascriptLibrary::CheckAndConvertCopyOnAccessNativeIntArray<Var>(object);
@@ -297,9 +300,18 @@ namespace Js
         {
             if (!dynamicObject->IsCrossSiteObject())
             {
-                TTD_XSITE_LOG(object->GetScriptContext(), "MarshalDynamicObjectAndPrototype", object);
+                if (JavascriptProxy::Is(dynamicObject))
+                {
+                    // We don't need to marshal the prototype chain in the case of Proxy. Otherwise we will go to the user code.
+                    TTD_XSITE_LOG(object->GetScriptContext(), "MarshalDynamicObject", object);
+                    MarshalDynamicObject(scriptContext, dynamicObject);
+                }
+                else
+                {
+                    TTD_XSITE_LOG(object->GetScriptContext(), "MarshalDynamicObjectAndPrototype", object);
 
-                MarshalDynamicObjectAndPrototype(scriptContext, dynamicObject);
+                    MarshalDynamicObjectAndPrototype(scriptContext, dynamicObject);
+                }
             }
         }
         else
@@ -452,7 +464,7 @@ namespace Js
 
         if (callerHostScriptContext == calleeHostScriptContext || (callerHostScriptContext == nullptr && !calleeHostScriptContext->HasCaller()))
         {
-            return JavascriptFunction::CallFunction<true>(function, entryPoint, args);
+            return JavascriptFunction::CallFunction<true>(function, entryPoint, args, true /*useLargeArgCount*/);
         }
 
 #if DBG_DUMP || defined(PROFILE_EXEC) || defined(PROFILE_MEM)
@@ -524,7 +536,7 @@ namespace Js
             }
             wasDispatchExCallerPushed = TRUE;
 
-            result = JavascriptFunction::CallFunction<true>(function, entryPoint, args);
+            result = JavascriptFunction::CallFunction<true>(function, entryPoint, args, true /*useLargeArgCount*/);
             ScriptContext* callerScriptContext = callerHostScriptContext->GetScriptContext();
             result = CrossSite::MarshalVar(callerScriptContext, result);
         },

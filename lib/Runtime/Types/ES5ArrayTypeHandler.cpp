@@ -455,7 +455,7 @@ namespace Js
             this->ClearHasOnlyWritableDataProperties();
             if(this->GetFlags() & this->IsPrototypeFlag)
             {
-                instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+                instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
             }
         }
 
@@ -516,7 +516,7 @@ namespace Js
                 this->ClearHasOnlyWritableDataProperties();
                 if(this->GetFlags() & this->IsPrototypeFlag)
                 {
-                    instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+                    instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
                 }
             }
             return true;
@@ -532,7 +532,7 @@ namespace Js
                 this->ClearHasOnlyWritableDataProperties();
                 if(this->GetFlags() & this->IsPrototypeFlag)
                 {
-                    instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+                    instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
                 }
             }
             return true;
@@ -594,7 +594,7 @@ namespace Js
         this->ClearHasOnlyWritableDataProperties();
         if(this->GetFlags() & this->IsPrototypeFlag)
         {
-            instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+            instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
         }
         return true;
     }
@@ -725,7 +725,7 @@ namespace Js
     }
 
     template <class T>
-    BOOL ES5ArrayTypeHandlerBase<T>::HasProperty(DynamicObject* instance, PropertyId propertyId, bool *noRedecl)
+    BOOL ES5ArrayTypeHandlerBase<T>::HasProperty(DynamicObject* instance, PropertyId propertyId, bool *noRedecl, _Inout_opt_ PropertyValueInfo* info)
     {
         ScriptContext* scriptContext = instance->GetScriptContext();
         uint32 index;
@@ -741,7 +741,7 @@ namespace Js
             return ES5ArrayTypeHandlerBase<T>::HasItem(instance, index);
         }
 
-        return __super::HasProperty(instance, propertyId, noRedecl);
+        return __super::HasProperty(instance, propertyId, noRedecl, info);
     }
 
     template <class T>
@@ -1033,7 +1033,7 @@ namespace Js
                         this->ClearHasOnlyWritableDataProperties();
                         if(this->GetFlags() & this->IsPrototypeFlag)
                         {
-                            instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+                            instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
                         }
                     }
                 }
@@ -1063,7 +1063,7 @@ namespace Js
                         this->ClearHasOnlyWritableDataProperties();
                         if(this->GetFlags() & this->IsPrototypeFlag)
                         {
-                            instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+                            instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
                         }
                     }
                 }
@@ -1127,7 +1127,7 @@ namespace Js
             SetLengthWritable(value ? true : false);
             if(!value && this->GetFlags() & this->IsPrototypeFlag)
             {
-                instance->GetLibrary()->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+                instance->GetLibrary()->GetTypesWithOnlyWritablePropertyProtoChainCache()->Clear();
             }
             return true;
         }

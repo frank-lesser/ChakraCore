@@ -107,6 +107,13 @@
   </test>
   <test>
     <default>
+      <files>dataview2.js</files>
+      <tags>typedarray</tags>
+      <compile-flags>-args summary -endargs</compile-flags>
+    </default>
+  </test>
+  <test>
+    <default>
       <files>objectproperty.js</files>
       <baseline>objectproperty_es6.baseline</baseline>
       <tags>typedarray</tags>
@@ -175,7 +182,7 @@ Below test fails with difference in space. Investigate the cause and re-enable t
     <default>
         <files>crossthread.js</files>
         <baseline>crossthread_es6.baseline</baseline>
-        <tags>typedarray,exclude_arm,exclude_chk</tags>
+        <tags>typedarray,exclude_arm,exclude_debug</tags>
     </default>
 </test>
 -->
@@ -263,7 +270,7 @@ Below test fails with difference in space. Investigate the cause and re-enable t
   </test>
   <test>
     <default>
-      <tags>exclude_fre,exclude_dynapogo,typedarray</tags>
+      <tags>exclude_test,exclude_dynapogo,typedarray</tags>
       <compile-flags>-maxinterpretcount:1 -off:simpleJit</compile-flags>
       <files>typedArrayProfile.js</files>
     </default>
@@ -297,6 +304,13 @@ Below test fails with difference in space. Investigate the cause and re-enable t
       <files>Uint8ClampedArray.js</files>
       <baseline>Uint8ClampedArray_es6.baseline</baseline>
       <tags>typedarray</tags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>Uint8ClampedArray2.js</files>
+      <tags>typedarray</tags>
+      <compile-flags>-minInterpretCount:1 -maxInterpretCount:1 -off:simpleJit</compile-flags>
     </default>
   </test>
   <test>

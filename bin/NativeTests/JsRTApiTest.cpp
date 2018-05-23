@@ -4,6 +4,7 @@
 //-------------------------------------------------------------------------------------------------------
 #include "stdafx.h"
 #include "catch.hpp"
+#include <array>
 #include <process.h>
 
 #pragma warning(disable:4100) // unreferenced formal parameter
@@ -2663,5 +2664,158 @@ namespace JsRTApiTest
     TEST_CASE("ApiTest_JsCreateStringTest", "[ApiTest]")
     {
         JsRTApiTest::RunWithAttributes(JsRTApiTest::JsCreateStringTest);
+    }
+
+    void ApiTest_JsSerializeArrayTest(JsRuntimeAttributes /*attributes*/, JsRuntimeHandle /*runtime*/)
+    {
+        LPCSTR raw_script = "(function (){return true;})();";
+        LPCWSTR raw_wscript = L"(function (){return true;})();";
+
+        // JsSerializeScript has good test coverage and can be used as an oracle for JsSerialize
+        unsigned int bcBufferSize_Expected = 0;
+        REQUIRE(JsSerializeScript(raw_wscript, nullptr, &bcBufferSize_Expected) == JsNoError);
+        BYTE *bcBuffer_Expected = new BYTE[bcBufferSize_Expected];
+        REQUIRE(JsSerializeScript(raw_wscript, bcBuffer_Expected, &bcBufferSize_Expected) == JsNoError);
+        REQUIRE(bcBuffer_Expected != nullptr);
+
+        // JsSerialize from an external array
+        JsValueRef scriptSource = JS_INVALID_REFERENCE;
+        REQUIRE(JsCreateExternalArrayBuffer(
+            (void*)raw_script, (unsigned int)strlen(raw_script), nullptr, (void*)raw_script, &scriptSource) == JsNoError);
+
+        JsValueRef buffer = JS_INVALID_REFERENCE;
+        REQUIRE(JsSerialize(scriptSource, &buffer, JsParseScriptAttributeNone) == JsNoError);
+
+        BYTE *bcBuffer = nullptr;
+        unsigned int bcBufferSize = 0;
+        REQUIRE(JsGetArrayBufferStorage(buffer, &bcBuffer, &bcBufferSize) == JsNoError);
+
+        REQUIRE(bcBufferSize_Expected == bcBufferSize);
+        CHECK(memcmp(bcBuffer_Expected, bcBuffer, bcBufferSize_Expected) == 0);
+    }
+
+    TEST_CASE("ApiTest_JsSerialize_Array", "[ApiTest]")
+    {
+        JsRTApiTest::RunWithAttributes(JsRTApiTest::ApiTest_JsSerializeArrayTest);
+    }
+
+    void ApiTest_JsSerializeStringTest(JsRuntimeAttributes /*attributes*/, JsRuntimeHandle /*runtime*/)
+    {
+        LPCSTR raw_script = "(function (){return true;})();";
+        LPCWSTR raw_wscript = L"(function (){return true;})();";
+
+        // JsSerializeScript has good test coverage and can be used as an oracle for JsSerialize
+        unsigned int bcBufferSize_Expected = 0;
+        REQUIRE(JsSerializeScript(raw_wscript, nullptr, &bcBufferSize_Expected) == JsNoError);
+        BYTE* bcBuffer_Expected = new BYTE[bcBufferSize_Expected];
+        REQUIRE(JsSerializeScript(raw_wscript, bcBuffer_Expected, &bcBufferSize_Expected) == JsNoError);
+        REQUIRE(bcBuffer_Expected != nullptr);
+
+        // JsSerialize from a string
+        JsValueRef script = JS_INVALID_REFERENCE;
+        REQUIRE(JsCreateString(raw_script, static_cast<size_t>(-1), &script) == JsNoError);
+
+        JsValueRef buffer = JS_INVALID_REFERENCE;
+        REQUIRE(JsSerialize(script, &buffer, JsParseScriptAttributeNone) == JsNoError);
+
+        BYTE *bcBuffer = nullptr;
+        unsigned int bcBufferSize = 0;
+        REQUIRE(JsGetArrayBufferStorage(buffer, &bcBuffer, &bcBufferSize) == JsNoError);
+
+        REQUIRE(bcBufferSize_Expected == bcBufferSize);
+        CHECK(memcmp(bcBuffer_Expected, bcBuffer, bcBufferSize_Expected) == 0);
+
+        delete[] bcBuffer_Expected;
+    }
+
+    TEST_CASE("ApiTest_JsSerialize_String", "[ApiTest]")
+    {
+        JsRTApiTest::RunWithAttributes(JsRTApiTest::ApiTest_JsSerializeStringTest);
+    }
+
+    void ApiTest_JsSerializeParseErrorTest(JsRuntimeAttributes /*attributes*/, JsRuntimeHandle /*runtime*/)
+    {
+        LPCSTR raw_script = "(function (){return true;})(;";
+
+        JsValueRef script = JS_INVALID_REFERENCE;
+        REQUIRE(JsCreateString(raw_script, static_cast<size_t>(-1), &script) == JsNoError);
+
+        JsValueRef buffer = JS_INVALID_REFERENCE;
+        CHECK(JsSerialize(script, &buffer, JsParseScriptAttributeNone) == JsErrorScriptCompile);
+    }
+
+    TEST_CASE("ApiTest_JsSerialize_FailParse", "[ApiTest]")
+    {
+        JsRTApiTest::RunWithAttributes(JsRTApiTest::ApiTest_JsSerializeParseErrorTest);
+    }
+
+    void JsCreatePromiseTest(JsRuntimeAttributes attributes, JsRuntimeHandle runtime)
+    {
+        JsValueRef result = JS_INVALID_REFERENCE;
+
+        JsValueRef promise = JS_INVALID_REFERENCE;
+        JsValueRef resolve = JS_INVALID_REFERENCE;
+        JsValueRef reject = JS_INVALID_REFERENCE;
+
+        // Create resolvable promise
+        REQUIRE(JsCreatePromise(&promise, &resolve, &reject) == JsNoError);
+
+        JsPromiseState state = JsPromiseStatePending;
+        REQUIRE(JsGetPromiseState(promise, &state) == JsNoError);
+        CHECK(state == JsPromiseStatePending);
+
+        result = JS_INVALID_REFERENCE;
+        CHECK(JsGetPromiseResult(promise, &result) == JsErrorPromisePending);
+        CHECK(result == JS_INVALID_REFERENCE);
+
+        JsValueRef num = JS_INVALID_REFERENCE;
+        REQUIRE(JsIntToNumber(42, &num) == JsNoError);
+
+        std::array<JsValueRef, 2> args{ GetUndefined(), num };
+        REQUIRE(JsCallFunction(resolve, args.data(), static_cast<unsigned short>(args.size()), &result) == JsNoError);
+
+        state = JsPromiseStatePending;
+        REQUIRE(JsGetPromiseState(promise, &state) == JsNoError);
+        CHECK(state == JsPromiseStateFulfilled);
+
+        result = JS_INVALID_REFERENCE;
+        REQUIRE(JsGetPromiseResult(promise, &result) == JsNoError);
+
+        int resultNum = 0;
+        REQUIRE(JsNumberToInt(result, &resultNum) == JsNoError);
+        CHECK(resultNum == 42);
+
+        // Create rejectable promise
+        REQUIRE(JsCreatePromise(&promise, &resolve, &reject) == JsNoError);
+
+        state = JsPromiseStatePending;
+        REQUIRE(JsGetPromiseState(promise, &state) == JsNoError);
+        CHECK(state == JsPromiseStatePending);
+
+        result = JS_INVALID_REFERENCE;
+        CHECK(JsGetPromiseResult(promise, &result) == JsErrorPromisePending);
+        CHECK(result == JS_INVALID_REFERENCE);
+
+        num = JS_INVALID_REFERENCE;
+        REQUIRE(JsIntToNumber(43, &num) == JsNoError);
+
+        args = { GetUndefined(), num };
+        REQUIRE(JsCallFunction(reject, args.data(), static_cast<unsigned short>(args.size()), &result) == JsNoError);
+
+        state = JsPromiseStatePending;
+        REQUIRE(JsGetPromiseState(promise, &state) == JsNoError);
+        CHECK(state == JsPromiseStateRejected);
+
+        result = JS_INVALID_REFERENCE;
+        REQUIRE(JsGetPromiseResult(promise, &result) == JsNoError);
+
+        resultNum = 0;
+        REQUIRE(JsNumberToInt(result, &resultNum) == JsNoError);
+        CHECK(resultNum == 43);
+    }
+
+    TEST_CASE("ApiTest_JsCreatePromiseTest", "[ApiTest]")
+    {
+        JsRTApiTest::RunWithAttributes(JsRTApiTest::JsCreatePromiseTest);
     }
 }

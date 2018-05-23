@@ -18,6 +18,7 @@ const Js::OpCode LowererMD::MDConvertFloat64ToFloat32Opcode = Js::OpCode::FCVT;
 const Js::OpCode LowererMD::MDCallOpcode = Js::OpCode::Call;
 const Js::OpCode LowererMD::MDImulOpcode = Js::OpCode::MUL;
 const Js::OpCode LowererMD::MDLea = Js::OpCode::LEA;
+const Js::OpCode LowererMD::MDSpecBlockNEOpcode = Js::OpCode::CSELNE;
 
 template<typename T>
 inline void Swap(T& x, T& y)
@@ -222,7 +223,9 @@ LowererMD::LowerCallHelper(IR::Instr *instrCall)
         IR::Instr *instrArg = regArg->m_sym->m_instrDef;
 
         Assert(instrArg->m_opcode == Js::OpCode::ArgOut_A ||
-            (helperMethod == IR::JnHelperMethod::HelperOP_InitCachedScope && instrArg->m_opcode == Js::OpCode::ExtendArg_A));
+            (helperMethod == IR::JnHelperMethod::HelperOP_InitCachedScope && instrArg->m_opcode == Js::OpCode::ExtendArg_A) ||
+            (helperMethod == IR::JnHelperMethod::HelperScrFunc_OP_NewScFuncHomeObj && instrArg->m_opcode == Js::OpCode::ExtendArg_A) ||
+            (helperMethod == IR::JnHelperMethod::HelperScrFunc_OP_NewScGenFuncHomeObj && instrArg->m_opcode == Js::OpCode::ExtendArg_A));
         prevInstr = this->LoadHelperArgument(prevInstr, instrArg->GetSrc1());
 
         argOpnd = instrArg->GetSrc2();
@@ -239,7 +242,15 @@ LowererMD::LowerCallHelper(IR::Instr *instrCall)
         }
     }
 
-    this->m_lowerer->LoadScriptContext(instrCall);
+    switch (helperMethod)
+    {
+    case IR::JnHelperMethod::HelperScrFunc_OP_NewScFuncHomeObj:
+    case IR::JnHelperMethod::HelperScrFunc_OP_NewScGenFuncHomeObj:
+        break;
+    default:
+        prevInstr = m_lowerer->LoadScriptContext(prevInstr);
+        break;
+    }
     this->FlipHelperCallArgsOrder();
     return this->ChangeToHelperCall(instrCall, helperMethod);
 }
@@ -1504,7 +1515,7 @@ LowererMD::LowerTry(IR::Instr * tryInstr, IR::JnHelperMethod helperMethod)
     // Arg 7: ScriptContext
     this->m_lowerer->LoadScriptContext(tryAddr);
 
-    if (tryInstr->m_opcode == Js::OpCode::TryCatch || this->m_func->DoOptimizeTry())
+    if (tryInstr->m_opcode == Js::OpCode::TryCatch || this->m_func->DoOptimizeTry() || (this->m_func->IsSimpleJit() && this->m_func->hasBailout))
     {
         // Arg 6 : hasBailedOutOffset
         IR::Opnd * hasBailedOutOffset = IR::IntConstOpnd::New(this->m_func->m_hasBailedOutSym->m_offset + tryInstr->m_func->GetInlineeArgumentStackSize(), TyInt32, this->m_func);
@@ -2687,11 +2698,11 @@ bool LowererMD::GenerateFastCmXxTaggedInt(IR::Instr *instr, bool isInHelper  /* 
     Assert(src1 && src2 && dst);
 
     // Not tagged ints?
-    if (src1->IsRegOpnd() && src1->AsRegOpnd()->m_sym->m_isNotInt)
+    if (src1->IsRegOpnd() && src1->AsRegOpnd()->m_sym->m_isNotNumber)
     {
         return false;
     }
-    if (src2->IsRegOpnd() && src2->AsRegOpnd()->m_sym->m_isNotInt)
+    if (src2->IsRegOpnd() && src2->AsRegOpnd()->m_sym->m_isNotNumber)
     {
         return false;
     }
@@ -3997,7 +4008,7 @@ LowererMD::GenerateFastScopedFld(IR::Instr * instrScopedFld, bool isLoad)
     // BNE $helper
 
     opndInlineCache = IR::RegOpnd::New(TyMachReg, this->m_func);
-    opndReg2->m_sym->m_isNotInt = true;
+    opndReg2->m_sym->m_isNotNumber = true;
 
     IR::RegOpnd * opndType = IR::RegOpnd::New(TyMachReg, this->m_func);
     this->m_lowerer->GenerateObjectTestAndTypeLoad(instrScopedFld, opndReg2, opndType, labelHelper);
@@ -7005,9 +7016,9 @@ LowererMD::LowerTypeof(IR::Instr* typeOfInstr)
 }
 
 void
-LowererMD::InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr)
+LowererMD::InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr, bool isForStore)
 {
-    if (CONFIG_FLAG_RELEASE(PoisonObjects))
+    if ((isForStore && CONFIG_FLAG_RELEASE(PoisonObjectsForStores)) || (!isForStore && CONFIG_FLAG_RELEASE(PoisonObjectsForLoads)))
     {
         Js::OpCode opcode;
         if (branchInstr->m_opcode == Js::OpCode::BNE)
@@ -7016,7 +7027,7 @@ LowererMD::InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchIns
         }
         else
         {
-            AssertOrFailFast(branchInstr->m_opcode == Js::OpCode::BEQ);
+            AssertOrFailFastMsg(branchInstr->m_opcode == Js::OpCode::BEQ, "Unexpected branch type in InsertObjectPoison preceeding instruction");
             opcode = Js::OpCode::CSELNE;
         }
         AssertOrFailFast(branchInstr->m_prev->m_opcode == Js::OpCode::SUBS || branchInstr->m_prev->m_opcode == Js::OpCode::ANDS);

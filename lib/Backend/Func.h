@@ -187,6 +187,7 @@ public:
     bool HasArgumentSlot() const { return this->GetInParamsCount() != 0 && !this->IsLoopBody(); }
     bool IsLoopBody() const { return m_workItem->IsLoopBody(); }
     bool IsLoopBodyInTry() const;
+    bool IsLoopBodyInTryFinally() const;
     bool CanAllocInPreReservedHeapPageSegment();
     void SetDoFastPaths();
     bool DoFastPaths() const { Assert(this->hasCalledSetDoFastPaths); return this->m_doFastPaths; }
@@ -448,8 +449,10 @@ static const unsigned __int64 c_debugFillPattern8 = 0xcececececececece;
     void EnsureSingleTypeGuards();
     Js::JitTypePropertyGuard* GetOrCreateSingleTypeGuard(intptr_t typeAddr);
 
-    void  EnsureEquivalentTypeGuards();
+    void EnsureEquivalentTypeGuards();
+    void InitializeEquivalentTypeGuard(Js::JitEquivalentTypeGuard * guard);
     Js::JitEquivalentTypeGuard * CreateEquivalentTypeGuard(JITTypeHolder type, uint32 objTypeSpecFldId);
+    Js::JitPolyEquivalentTypeGuard * CreatePolyEquivalentTypeGuard(uint32 objTypeSpecFldId);
 
     void ThrowIfScriptClosed();
     void EnsurePropertyGuardsByPropertyId();

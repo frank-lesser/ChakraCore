@@ -333,7 +333,7 @@ namespace Js
 #if DBG
         void DoTypeMutation();
 #endif
-        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId) override;
+        virtual PropertyQueryFlags HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info) override;
         virtual BOOL DeleteProperty(PropertyId propertyId, PropertyOperationFlags flags) override;
         virtual BOOL DeleteProperty(JavascriptString *propertyNameString, PropertyOperationFlags flags) override;
         virtual BOOL IsEnumerable(PropertyId propertyId) override;
@@ -361,7 +361,7 @@ namespace Js
         virtual BOOL Seal() override;
         virtual BOOL Freeze() override;
 
-        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, ForInCache * forInCache = nullptr) override;
+        virtual BOOL GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, EnumeratorCache * enumeratorCache = nullptr) override;
         virtual BOOL GetDiagValueString(StringBuilder<ArenaAllocator>* stringBuilder, ScriptContext* requestContext) override;
         virtual BOOL GetDiagTypeString(StringBuilder<ArenaAllocator>* stringBuilder, ScriptContext* requestContext) override;
         virtual BOOL GetSpecialPropertyName(uint32 index, JavascriptString ** propertyName, ScriptContext * requestContext) override;
@@ -549,6 +549,8 @@ namespace Js
         void SetHeadAndLastUsedSegment(SparseArraySegmentBase * segment);
         void SetLastUsedSegment(SparseArraySegmentBase * segment);
         bool HasSegmentMap() const;
+        template<typename T>
+        static void CopyHeadIfInlinedHeadSegment(JavascriptArray *array, Recycler *recycler);
 
     private:
         void SetSegmentMap(SegmentBTreeRoot * segmentMap);
@@ -585,8 +587,6 @@ namespace Js
 
         virtual int32 HeadSegmentIndexOfHelper(Var search, uint32 &fromIndex, uint32 toIndex, bool includesAlgorithm, ScriptContext * scriptContext);
 
-        template<typename T>
-        static void CopyHeadIfInlinedHeadSegment(JavascriptArray *array, Recycler *recycler);
         template<typename T>
         static void ReallocateNonLeafLastSegmentIfLeaf(JavascriptArray * arr, Recycler * recycler);
 
@@ -862,9 +862,11 @@ namespace Js
         static bool PromoteToBigIndex(BigIndex lhs, BigIndex rhs);
         static bool PromoteToBigIndex(BigIndex lhs, uint32 rhs);
         static JavascriptArray* ConcatFloatArgs(JavascriptNativeFloatArray* pDestArray, TypeId* remoteTypeIds, Js::Arguments& args, ScriptContext* scriptContext);
-    private:
+
         template<typename T=uint32>
         static RecyclableObject* ArraySpeciesCreate(Var pThisArray, T length, ScriptContext* scriptContext, bool *pIsIntArray = nullptr, bool *pIsFloatArray = nullptr, bool *pIsBuiltinArrayCtor = nullptr);
+        static void CreateDataPropertyOrThrow(RecyclableObject * obj, BigIndex index, Var item, ScriptContext * scriptContext);
+    private:
         template <typename T, typename R> static R ConvertToIndex(T idxDest, ScriptContext* scriptContext) { Throw::InternalError(); return 0; }
         static BOOL SetArrayLikeObjects(RecyclableObject* pDestObj, uint32 idxDest, Var aItem);
         static BOOL SetArrayLikeObjects(RecyclableObject* pDestObj, BigIndex idxDest, Var aItem);
@@ -900,10 +902,12 @@ namespace Js
         static uint32 GetSpreadArgLen(Var spreadArg, ScriptContext *scriptContext);
 
         static JavascriptArray * BoxStackInstance(JavascriptArray * instance, bool deepCopy);
+        static ArrayObject * DeepCopyInstance(ArrayObject * instance);
     protected:
         template <typename T> void InitBoxedInlineSegments(SparseArraySegment<T> * dst, SparseArraySegment<T> * src, bool deepCopy);
 
         template <typename T> static T * BoxStackInstance(T * instance, bool deepCopy);
+        template <typename T> static T * DeepCopyInstance(T * instance);
 
     public:
         template<class T, uint InlinePropertySlots> static size_t DetermineAllocationSize(const uint inlineElementSlots, size_t *const allocationPlusSizeRef = nullptr, uint *const alignedInlineElementSlotsRef = nullptr);
@@ -961,7 +965,7 @@ namespace Js
             JavascriptArray(length, type), weakRefToFuncBody(nullptr) {}
 
         // For BoxStackInstance
-        JavascriptNativeArray(JavascriptNativeArray * instance);
+        JavascriptNativeArray(JavascriptNativeArray * instance, bool deepCopy);
 
         Field(RecyclerWeakReference<FunctionBody> *) weakRefToFuncBody;
 

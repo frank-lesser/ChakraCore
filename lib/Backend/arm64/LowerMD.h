@@ -61,6 +61,7 @@ public:
     static const Js::OpCode MDCallOpcode;
     static const Js::OpCode MDImulOpcode;
     static const Js::OpCode MDLea;
+    static const Js::OpCode MDSpecBlockNEOpcode;
 
 public:
             void            Init(Lowerer *lowerer);
@@ -99,6 +100,7 @@ public:
             void            GenerateClz(IR::Instr * instr);
             void            GenerateCtz(IR::Instr * instr) { Assert(UNREACHED); }
             void            GeneratePopCnt(IR::Instr * instr) { Assert(UNREACHED); }
+            template <bool Saturate>
             void            GenerateTruncWithCheck(IR::Instr * instr) { Assert(UNREACHED); }
             void            GenerateFastDivByPow2(IR::Instr *instr);
             bool            GenerateFastDivAndRem(IR::Instr* instrDiv, IR::LabelInstr* bailOutLabel = false);
@@ -247,7 +249,8 @@ public:
 
             void                GenerateMemInit(IR::RegOpnd * opnd, int32 offset, size_t value, IR::Instr * insertBeforeInstr, bool isZeroed = false);
 
-            static void            InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr);
+            static void            InsertObjectPoison(IR::Opnd* poisonedOpnd, IR::BranchInstr* branchInstr, IR::Instr* insertInstr, bool isForStore);
+
 private:
     static  IR::Instr *     ChangeToAssign(IR::Instr * instr, IRType destType);
     void GenerateAssignForBuiltinArg(

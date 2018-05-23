@@ -62,7 +62,7 @@ parser.add_argument('--nightly', action='store_true',
                     help='run as nightly tests')
 parser.add_argument('--tag', nargs='*',
                     help='select tests with given tags')
-parser.add_argument('--not-tag', nargs='*',
+parser.add_argument('--not-tag', action='append',
                     help='exclude tests with given tags')
 parser.add_argument('--flags', default='',
                     help='global test flags to ch')
@@ -129,7 +129,7 @@ if not os.path.isfile(binary):
 
 # global tags/not_tags
 tags = set(args.tag or [])
-not_tags = set(args.not_tag or []).union(['fail', 'exclude_' + arch])
+not_tags = set(args.not_tag or []).union(['fail', 'exclude_' + arch, 'exclude_' + flavor, 'exclude_ch'])
 
 if arch_alias:
     not_tags.add('exclude_' + arch_alias)
@@ -166,6 +166,10 @@ if args.static != None:
 
 if sys.platform == 'darwin':
     not_tags.add('exclude_mac')
+
+if 'require_icu' in not_tags or 'exclude_noicu' in not_tags:
+    not_tags.add('Intl')
+
 not_compile_flags = None
 
 # use -j flag to specify number of parallel processes

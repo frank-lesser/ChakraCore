@@ -35,11 +35,11 @@
     <Link Condition="'$(ChakraICU)'=='shared'">
       <SubSystem>Console</SubSystem>
       <!-- Make Chakra.ICU.Stubdata pretend like its Chakra.ICU.Data for linking purposes -->
-      <OutputFile>$(OutDir)\Chakra.ICU.Data.dll</OutputFile>
-      <ImportLibrary>$(OutDir)\Chakra.ICU.Data.lib</ImportLibrary>
+      <OutputFile>$(OutDir)\Chakra.ICU.Stubdata\Chakra.ICU.Data.dll</OutputFile>
+      <ImportLibrary>$(OutDir)\Chakra.ICU.Stubdata\Chakra.ICU.Data.lib</ImportLibrary>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup Condition="'$(ChakraICU)'!='false'">
+  <ItemGroup Condition="'$(BuildLocalICU)'=='true'">
     <ClCompile Include="$(IcuStubdataSources)" />
     <ClInclude Include="$(IcuStubdataHeaders)" />
   </ItemGroup>

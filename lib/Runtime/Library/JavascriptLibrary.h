@@ -69,6 +69,9 @@ namespace Js
 
     struct Cache
     {
+        static const uint AssignCacheSize = 16;
+        static const uint StringifyCacheSize = 16;
+
         Field(PropertyStringMap*) propertyStrings[80];
         Field(JavascriptString *) lastNumberToStringRadix10String;
         Field(EnumeratedObjectCache) enumObjCache;
@@ -86,12 +89,14 @@ namespace Js
         Field(BuiltInLibraryFunctionMap*) builtInLibraryFunctions;
         Field(ScriptContextPolymorphicInlineCache*) toStringTagCache;
         Field(ScriptContextPolymorphicInlineCache*) toJSONCache;
+        Field(EnumeratorCache*) assignCache;
+        Field(EnumeratorCache*) stringifyCache;
 #if ENABLE_PROFILE_INFO
 #if DBG_DUMP || defined(DYNAMIC_PROFILE_STORAGE) || defined(RUNTIME_DATA_COLLECTION)
         Field(DynamicProfileInfoList*) profileInfoList;
 #endif
 #endif
-        Cache() : toStringTagCache(nullptr), toJSONCache(nullptr) { }
+        Cache() : toStringTagCache(nullptr), toJSONCache(nullptr), assignCache(nullptr), stringifyCache(nullptr) { }
     };
 
     class MissingPropertyTypeHandler;
@@ -242,7 +247,6 @@ namespace Js
         static DWORD GetRandSeed1Offset() { return offsetof(JavascriptLibrary, randSeed1); }
         static DWORD GetTypeDisplayStringsOffset() { return offsetof(JavascriptLibrary, typeDisplayStrings); }
         typedef bool (CALLBACK *PromiseContinuationCallback)(Var task, void *callbackState);
-        typedef void (CALLBACK *HostPromiseRejectionTrackerCallback)(Var promise, Var reason, bool handled, void *callbackState);
 
         Var GetUndeclBlockVar() const { return undeclBlockVarSentinel; }
         bool IsUndeclBlockVar(Var var) const { return var == undeclBlockVarSentinel; }
@@ -258,6 +262,7 @@ namespace Js
         Field(DynamicType *) generatorConstructorPrototypeObjectType;
         Field(DynamicType *) constructorPrototypeObjectType;
         Field(DynamicType *) heapArgumentsType;
+        Field(DynamicType *) strictHeapArgumentsType;
         Field(DynamicType *) activationObjectType;
         Field(DynamicType *) arrayType;
         Field(DynamicType *) nativeIntArrayType;
@@ -452,9 +457,6 @@ namespace Js
         FieldNoBarrier(PromiseContinuationCallback) nativeHostPromiseContinuationFunction;
         Field(void *) nativeHostPromiseContinuationFunctionState;
 
-        FieldNoBarrier(HostPromiseRejectionTrackerCallback) nativeHostPromiseRejectionTracker = nullptr;
-        Field(void *) nativeHostPromiseRejectionTrackerState;
-
         typedef SList<Js::FunctionProxy*, Recycler> FunctionReferenceList;
         typedef JsUtil::WeakReferenceDictionary<uintptr_t, DynamicType, DictionarySizePolicy<PowerOf2Policy, 1>> JsrtExternalTypesCache;
 
@@ -478,21 +480,8 @@ namespace Js
 
         Field(ModuleRecordList*) moduleRecordList;
 
-        // This list contains types ensured to have only writable data properties in it and all objects in its prototype chain
-        // (i.e., no readonly properties or accessors). Only prototype objects' types are stored in the list. When something
-        // in the script context adds a readonly property or accessor to an object that is used as a prototype object, this
-        // list is cleared. The list is also cleared before garbage collection so that it does not keep growing, and so, it can
-        // hold strong references to the types.
-        //
-        // The cache is used by the type-without-property local inline cache. When setting a property on a type that doesn't
-        // have the property, to determine whether to promote the object like an object of that type was last promoted, we need
-        // to ensure that objects in the prototype chain have not acquired a readonly property or setter (ideally, only for that
-        // property ID, but we just check for any such property). This cache is used to avoid doing this many times, especially
-        // when the prototype chain is not short.
-        //
-        // This list is only used to invalidate the status of types. The type itself contains a boolean indicating whether it
-        // and prototypes contain only writable data properties, which is reset upon invalidating the status.
-        Field(JsUtil::List<Type *> *) typesEnsuredToHaveOnlyWritableDataPropertiesInItAndPrototypeChain;
+        Field(OnlyWritablePropertyProtoChainCache) typesWithOnlyWritablePropertyProtoChain;
+        Field(NoSpecialPropertyProtoChainCache) typesWithNoSpecialPropertyProtoChain;
 
         Field(uint64) randSeed0, randSeed1;
         Field(bool) isPRNGSeeded;
@@ -519,13 +508,15 @@ namespace Js
         static SimpleTypeHandler<1> SharedFunctionWithoutPrototypeTypeHandler;
         static SimpleTypeHandler<1> SharedFunctionWithPrototypeTypeHandlerV11;
         static SimpleTypeHandler<2> SharedFunctionWithPrototypeTypeHandler;
+        static SimpleTypeHandler<1> SharedFunctionWithConfigurableLengthTypeHandler;
         static SimpleTypeHandler<1> SharedFunctionWithLengthTypeHandler;
         static SimpleTypeHandler<2> SharedFunctionWithLengthAndNameTypeHandler;
-        static SimpleTypeHandler<1> SharedIdMappedFunctionWithPrototypeTypeHandler;
+        static SimpleTypeHandler<2> SharedIdMappedFunctionWithPrototypeTypeHandler;
         static SimpleTypeHandler<1> SharedNamespaceSymbolTypeHandler;
         static MissingPropertyTypeHandler MissingPropertyHolderTypeHandler;
 
         static SimplePropertyDescriptor const SharedFunctionPropertyDescriptors[2];
+        static SimplePropertyDescriptor const SharedIdMappedFunctionPropertyDescriptors[2];
         static SimplePropertyDescriptor const HeapArgumentsPropertyDescriptors[3];
         static SimplePropertyDescriptor const FunctionWithLengthAndPrototypeTypeDescriptors[2];
         static SimplePropertyDescriptor const FunctionWithLengthAndNameTypeDescriptors[2];
@@ -538,7 +529,7 @@ namespace Js
 
         static void InitializeProperties(ThreadContext * threadContext);
 
-        JavascriptLibrary(GlobalObject* globalObject) :
+        JavascriptLibrary(GlobalObject* globalObject, Recycler * recycler) :
             JavascriptLibraryBase(globalObject),
             inProfileMode(false),
             inDispatchProfileMode(false),
@@ -565,8 +556,9 @@ namespace Js
             bindRefChunkBegin(nullptr),
             bindRefChunkCurrent(nullptr),
             bindRefChunkEnd(nullptr),
-            dynamicFunctionReference(nullptr)
-
+            dynamicFunctionReference(nullptr),
+            typesWithOnlyWritablePropertyProtoChain(recycler),
+            typesWithNoSpecialPropertyProtoChain(recycler)
         {
             this->globalObject = globalObject;
         }
@@ -586,59 +578,11 @@ namespace Js
         JavascriptString* GetNullString() { return nullString; }
         JavascriptString* GetEmptyString() const;
 
-#define SCACHE_FUNCTION_PROXY(name) JavascriptString* name() { return stringCache.##name##(); }
-        SCACHE_FUNCTION_PROXY(GetEmptyObjectString)
-        SCACHE_FUNCTION_PROXY(GetQuotesString)
-        SCACHE_FUNCTION_PROXY(GetWhackString)
-        SCACHE_FUNCTION_PROXY(GetCommaDisplayString)
-        SCACHE_FUNCTION_PROXY(GetCommaSpaceDisplayString)
-        SCACHE_FUNCTION_PROXY(GetOpenBracketString)
-        SCACHE_FUNCTION_PROXY(GetCloseBracketString)
-        SCACHE_FUNCTION_PROXY(GetOpenSBracketString)
-        SCACHE_FUNCTION_PROXY(GetCloseSBracketString)
-        SCACHE_FUNCTION_PROXY(GetEmptyArrayString)
-        SCACHE_FUNCTION_PROXY(GetNewLineString)
-        SCACHE_FUNCTION_PROXY(GetColonString)
-        SCACHE_FUNCTION_PROXY(GetFunctionAnonymousString)
-        SCACHE_FUNCTION_PROXY(GetFunctionPTRAnonymousString)
-        SCACHE_FUNCTION_PROXY(GetAsyncFunctionAnonymouseString)
-        SCACHE_FUNCTION_PROXY(GetOpenRBracketString)
-        SCACHE_FUNCTION_PROXY(GetNewLineCloseRBracketString)
-        SCACHE_FUNCTION_PROXY(GetSpaceOpenBracketString)
-        SCACHE_FUNCTION_PROXY(GetNewLineCloseBracketString)
-        SCACHE_FUNCTION_PROXY(GetFunctionPrefixString)
-        SCACHE_FUNCTION_PROXY(GetGeneratorFunctionPrefixString)
-        SCACHE_FUNCTION_PROXY(GetAsyncFunctionPrefixString)
-        SCACHE_FUNCTION_PROXY(GetFunctionDisplayString)
-        SCACHE_FUNCTION_PROXY(GetXDomainFunctionDisplayString)
-        SCACHE_FUNCTION_PROXY(GetInvalidDateString)
-        SCACHE_FUNCTION_PROXY(GetObjectDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectArgumentsDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectArrayDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectBooleanDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectDateDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectErrorDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectFunctionDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectNumberDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectRegExpDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectStringDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectNullDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectUndefinedDisplayString)
-        SCACHE_FUNCTION_PROXY(GetUndefinedDisplayString)
-        SCACHE_FUNCTION_PROXY(GetNaNDisplayString)
-        SCACHE_FUNCTION_PROXY(GetNullDisplayString)
-        SCACHE_FUNCTION_PROXY(GetUnknownDisplayString)
-        SCACHE_FUNCTION_PROXY(GetTrueDisplayString)
-        SCACHE_FUNCTION_PROXY(GetFalseDisplayString)
-        SCACHE_FUNCTION_PROXY(GetStringTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetObjectTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetFunctionTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetBooleanTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetNumberTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetModuleTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetVariantDateTypeDisplayString)
-        SCACHE_FUNCTION_PROXY(GetSymbolTypeDisplayString)
-#undef  SCACHE_FUNCTION_PROXY
+#define STRING(name, str) JavascriptString* Get##name##String() { return stringCache.Get##name(); }
+#define PROPERTY_STRING(name, str) STRING(name, str)
+#include "StringCacheList.h"
+#undef PROPERTY_STRING
+#undef STRING
 
         JavascriptString* GetSymbolTypeDisplayString() const { return symbolTypeDisplayString; }
         JavascriptString* GetDebuggerDeadZoneBlockVariableString() { Assert(debuggerDeadZoneBlockVariableString); return debuggerDeadZoneBlockVariableString; }
@@ -859,7 +803,7 @@ namespace Js
         JavascriptFunction* GetThrowerFunction() const { return throwerFunction; }
 
         void SetNativeHostPromiseContinuationFunction(PromiseContinuationCallback function, void *state);
-        void SetNativeHostPromiseRejectionTrackerCallback(HostPromiseRejectionTrackerCallback function, void *state);
+
         void CallNativeHostPromiseRejectionTracker(Var promise, Var reason, bool handled);
 
         void SetJsrtContext(FinalizableObject* jsrtContext);
@@ -881,8 +825,14 @@ namespace Js
         JavascriptArray* CreateArray(uint32 length, uint32 size);
         ArrayBuffer* CreateArrayBuffer(uint32 length);
         ArrayBuffer* CreateArrayBuffer(byte* buffer, uint32 length);
+#ifdef ENABLE_WASM
         class WebAssemblyArrayBuffer* CreateWebAssemblyArrayBuffer(uint32 length);
         class WebAssemblyArrayBuffer* CreateWebAssemblyArrayBuffer(byte* buffer, uint32 length);
+#ifdef ENABLE_WASM_THREADS
+        class WebAssemblySharedArrayBuffer* CreateWebAssemblySharedArrayBuffer(uint32 length, uint32 maxLength);
+        class WebAssemblySharedArrayBuffer* CreateWebAssemblySharedArrayBuffer(SharedContents *contents);
+#endif
+#endif
         SharedArrayBuffer* CreateSharedArrayBuffer(uint32 length);
         SharedArrayBuffer* CreateSharedArrayBuffer(SharedContents *contents);
         ArrayBuffer* CreateProjectionArraybuffer(uint32 length);
@@ -978,9 +928,11 @@ namespace Js
         DynamicType * CreateDeferredPrototypeFunctionType(JavascriptMethod entrypoint);
         DynamicType * CreateDeferredPrototypeFunctionTypeNoProfileThunk(JavascriptMethod entrypoint, bool isShared = false, bool isLengthAvailable = false);
         DynamicType * CreateFunctionType(JavascriptMethod entrypoint, RecyclableObject* prototype = nullptr);
+        DynamicType * CreateFunctionWithConfigurableLengthType(FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthType(FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthAndNameType(FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthAndPrototypeType(FunctionInfo * functionInfo);
+        DynamicType * CreateFunctionWithConfigurableLengthType(DynamicObject * prototype, FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthType(DynamicObject * prototype, FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthAndNameType(DynamicObject * prototype, FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthAndPrototypeType(DynamicObject * prototype, FunctionInfo * functionInfo);
@@ -1076,7 +1028,8 @@ namespace Js
         JavascriptFunction* EnsureJSONStringifyFunction();
         JavascriptFunction* EnsureObjectFreezeFunction();
 
-        void SetCrossSiteForSharedFunctionType(JavascriptFunction * function);
+        void SetCrossSiteForLockedFunctionType(JavascriptFunction * function);
+        void SetCrossSiteForLockedNonBuiltInFunctionType(JavascriptFunction * function);
 
         bool IsPRNGSeeded() { return isPRNGSeeded; }
         uint64 GetRandSeed0() { return randSeed0; }
@@ -1149,8 +1102,8 @@ namespace Js
         template <> PropertyStringCacheMap* GetPropertyMap<PropertyString>() { return this->propertyStringMap; }
         template <> SymbolCacheMap* GetPropertyMap<JavascriptSymbol>() { return this->symbolMap; }
 
-        void TypeAndPrototypesAreEnsuredToHaveOnlyWritableDataProperties(Type *const type);
-        void NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
+        Field(OnlyWritablePropertyProtoChainCache*) GetTypesWithOnlyWritablePropertyProtoChainCache() { return &this->typesWithOnlyWritablePropertyProtoChain; }
+        Field(NoSpecialPropertyProtoChainCache*) GetTypesWithNoSpecialPropertyProtoChainCache() { return &this->typesWithNoSpecialPropertyProtoChain; }
 
         static bool IsDefaultArrayValuesFunction(RecyclableObject * function, ScriptContext *scriptContext);
         static bool ArrayIteratorPrototypeHasUserDefinedNext(ScriptContext *scriptContext);
@@ -1160,6 +1113,9 @@ namespace Js
         {
             return (JavascriptLibrary *)((uintptr_t)cache - offsetof(JavascriptLibrary, charStringCache));
         }
+
+        EnumeratorCache* GetObjectAssignCache(Type* type);
+        EnumeratorCache* GetStringifyCache(Type* type);
 
         bool GetArrayObjectHasUserDefinedSpecies() const { return arrayObjectHasUserDefinedSpecies; }
         void SetArrayObjectHasUserDefinedSpecies(bool val) { arrayObjectHasUserDefinedSpecies = val; }
@@ -1280,6 +1236,7 @@ namespace Js
         void AddMember(DynamicObject* object, PropertyId propertyId, Var value, PropertyAttributes attributes);
         JavascriptString* CreateEmptyString();
 
+        template<uint cacheSlotCount> EnumeratorCache* GetEnumeratorCache(Type* type, Field(EnumeratorCache*)* cacheSlots);
 
         static bool __cdecl InitializeGeneratorFunction(DynamicObject* function, DeferredTypeHandlerBase * typeHandler, DeferredInitializeMode mode);
 

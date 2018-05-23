@@ -29,9 +29,14 @@
     </ClCompile>
     <Link Condition="'$(ChakraICU)'=='shared'">
       <SubSystem>Console</SubSystem>
+      <!-- Unsure why InitializeSecurityDescriptor, SetSecurityDescriptorDacl, and others require this only for ARM -->
+      <AdditionalDependencies Condition="'$(Platform)'=='ARM'">
+        advapi32.lib;
+        %(AdditionalDependencies)
+      </AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup Condition="'$(ChakraICU)'!='false'">
+  <ItemGroup Condition="'$(BuildLocalICU)'=='true'">
     <ClCompile Include="$(IcuCommonSources)" />
     <ClInclude Include="$(IcuCommonHeaders)" />
     <ProjectReference Include="$(MSBuildThisFileDirectory)Chakra.ICU.Stubdata.vcxproj">

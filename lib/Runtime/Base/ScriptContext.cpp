@@ -34,8 +34,11 @@
 #endif
 
 #ifdef ENABLE_BASIC_TELEMETRY
-#include "ScriptContextTelemetry.h"
+#include "ScriptContext/ScriptContextTelemetry.h"
 #endif
+
+#include "ByteCode/ByteCodeSerializer.h"
+#include "Language/SimpleDataCacheWrapper.h"
 
 namespace Js
 {
@@ -135,11 +138,12 @@ namespace Js
 #endif
         inlineCacheAllocator(_u("SC-InlineCache"), threadContext->GetPageAllocator(), Throw::OutOfMemory),
         isInstInlineCacheAllocator(_u("SC-IsInstInlineCache"), threadContext->GetPageAllocator(), Throw::OutOfMemory),
-        forInCacheAllocator(_u("SC-ForInCache"), threadContext->GetPageAllocator(), Throw::OutOfMemory),
+        enumeratorCacheAllocator(_u("SC-EnumeratorCache"), threadContext->GetPageAllocator(), Throw::OutOfMemory),
         hasUsedInlineCache(false),
         hasProtoOrStoreFieldInlineCache(false),
         hasIsInstInlineCache(false),
-        registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(nullptr),
+        noSpecialPropertyRegistry(this, threadContext->GetNoSpecialPropertyRegistry()),
+        onlyWritablePropertyRegistry(this, threadContext->GetOnlyWritablePropertyRegistry()),
         firstInterpreterFrameReturnAddress(nullptr),
         builtInLibraryFunctions(nullptr),
         isWeakReferenceDictionaryListCleared(false)
@@ -176,7 +180,7 @@ namespace Js
         , rejitReasonCountsCap(nullptr)
 #endif
 #ifdef ENABLE_BASIC_TELEMETRY
-        , telemetry(nullptr)
+        , telemetry()
 #endif
 #ifdef INLINE_CACHE_STATS
         , cacheDataMap(nullptr)
@@ -235,16 +239,21 @@ namespace Js
         convertDeferredToSimpleDictionaryCount = 0;
         convertSimpleToDictionaryCount = 0;
         convertSimpleToSimpleDictionaryCount = 0;
-        convertPathToDictionaryCount1 = 0;
-        convertPathToDictionaryCount2 = 0;
-        convertPathToDictionaryCount3 = 0;
-        convertPathToDictionaryCount4 = 0;
+        convertPathToDictionaryExceededLengthCount = 0;
+        convertPathToDictionaryDeletedCount = 0;
+        convertPathToDictionaryAttributesCount = 0;
+        convertPathToDictionaryItemAttributesCount = 0;
+        convertPathToDictionaryAccessorsCount = 0;
+        convertPathToDictionaryItemAccessorsCount = 0;
+        convertPathToDictionaryExtensionsCount = 0;
+        convertPathToDictionaryProtoCount = 0;
+        convertPathToDictionaryNoRootCount = 0;
+        convertPathToDictionaryResetCount = 0;
         convertPathToSimpleDictionaryCount = 0;
         convertSimplePathToPathCount = 0;
         convertSimpleDictionaryToDictionaryCount = 0;
         convertSimpleSharedDictionaryToNonSharedCount = 0;
         convertSimpleSharedToNonSharedCount = 0;
-        simplePathTypeHandlerCount = 0;
         pathTypeHandlerCount = 0;
         promoteCount = 0;
         cacheCount = 0;
@@ -336,7 +345,8 @@ namespace Js
 #endif
 
 #ifdef ENABLE_BASIC_TELEMETRY
-        this->telemetry = Anew(this->TelemetryAllocator(), ScriptContextTelemetry, *this);
+        // TODO - allocate this on the Heap instead of using a custom allocator?
+        this->telemetry = Anew(this->TelemetryAllocator(), Js::ScriptContextTelemetry, this);
 #endif
 
 #ifdef PROFILE_STRINGS
@@ -465,7 +475,7 @@ namespace Js
         if (javascriptLibrary != nullptr)
         {
             javascriptLibrary->scriptContext = nullptr;
-            javascriptLibrary = nullptr;
+
             if (closed)
             {
                 // if we just closed, we haven't unpin the object yet.
@@ -475,11 +485,13 @@ namespace Js
 #if ENABLE_NATIVE_CODEGEN
                 Assert(this->IsClosedNativeCodeGenerator());
 #endif
-                if (!GetThreadContext()->IsJSRT())
+                if (globalObject && !GetThreadContext()->IsJSRT() && !GetLibrary()->IsChakraEngine())
                 {
                     this->recycler->RootRelease(globalObject);
                 }
             }
+
+            javascriptLibrary = nullptr;
         }
 
         // Normally the JavascriptLibraryBase will unregister the scriptContext from the threadContext.
@@ -703,6 +715,13 @@ namespace Js
         }
 #endif
 
+#if ENABLE_NATIVE_CODEGEN
+        if (m_remoteScriptContextAddr)
+        {
+            JITManager::GetJITManager()->CloseScriptContext(m_remoteScriptContextAddr);
+        }
+#endif
+
 #ifdef ENABLE_SCRIPT_PROFILING
         // Stop profiling if present
         DeRegisterProfileProbe(S_OK, nullptr);
@@ -787,14 +806,8 @@ namespace Js
         isWeakReferenceDictionaryListCleared = true;
         this->weakReferenceDictionaryList.Clear(this->GeneralAllocator());
 
-        if (registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext != nullptr)
-        {
-            // UnregisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext may throw, set up the correct state first
-            ScriptContext ** registeredScriptContext = registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext;
-            ClearPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesCaches();
-            Assert(registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext == nullptr);
-            threadContext->UnregisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(registeredScriptContext);
-        }
+        this->noSpecialPropertyRegistry.Clear(false /* isThreadClear */);
+        this->onlyWritablePropertyRegistry.Clear(false /* isThreadClear */);
 
 #ifdef ENABLE_SCRIPT_DEBUGGING
         threadContext->ReleaseDebugManager();
@@ -814,7 +827,9 @@ namespace Js
     bool ScriptContext::Close(bool inDestructor)
     {
         if (isScriptContextActuallyClosed)
+        {
             return false;
+        }
 
         InternalClose();
 
@@ -825,7 +840,7 @@ namespace Js
 #if ENABLE_NATIVE_CODEGEN
             Assert(this->IsClosedNativeCodeGenerator());
 #endif
-            if (!GetThreadContext()->IsJSRT())
+            if (!GetThreadContext()->IsJSRT() && !GetLibrary()->IsChakraEngine())
             {
                 GetRecycler()->RootRelease(globalObject);
             }
@@ -978,20 +993,25 @@ namespace Js
         Output::Print(_u("    Deferred to SimpleMap          %8d\n"), convertDeferredToSimpleDictionaryCount);
         Output::Print(_u("    Simple to Map                  %8d\n"), convertSimpleToDictionaryCount);
         Output::Print(_u("    Simple to SimpleMap            %8d\n"), convertSimpleToSimpleDictionaryCount);
-        Output::Print(_u("    Path to SimpleMap (set)        %8d\n"), convertPathToDictionaryCount1);
-        Output::Print(_u("    Path to SimpleMap (delete)     %8d\n"), convertPathToDictionaryCount2);
-        Output::Print(_u("    Path to SimpleMap (attribute)  %8d\n"), convertPathToDictionaryCount3);
+        Output::Print(_u("    Path to SimpleMap (set)        %8d\n"), convertPathToDictionaryExceededLengthCount);
+        Output::Print(_u("    Path to SimpleMap (delete)     %8d\n"), convertPathToDictionaryDeletedCount);
+        Output::Print(_u("    Path to SimpleMap (attribute)  %8d\n"), convertPathToDictionaryAttributesCount);
+        Output::Print(_u("    Path to SimpleMap (item attr)  %8d\n"), convertPathToDictionaryItemAttributesCount);
+        Output::Print(_u("    Path to SimpleMap (proto)      %8d\n"), convertPathToDictionaryProtoCount);
+        Output::Print(_u("    Path to SimpleMap (no root)    %8d\n"), convertPathToDictionaryNoRootCount);
+        Output::Print(_u("    Path to SimpleMap (reset)      %8d\n"), convertPathToDictionaryResetCount);
+        Output::Print(_u("    Path to Map (accessor)         %8d\n"), convertPathToDictionaryAccessorsCount);
+        Output::Print(_u("    Path to Map (item accessor)    %8d\n"), convertPathToDictionaryItemAccessorsCount);
+        Output::Print(_u("    Path to Map (extensions)       %8d\n"), convertPathToDictionaryExtensionsCount);
         Output::Print(_u("    Path to SimpleMap              %8d\n"), convertPathToSimpleDictionaryCount);
         Output::Print(_u("    SimplePath to Path             %8d\n"), convertSimplePathToPathCount);
         Output::Print(_u("    Shared SimpleMap to non-shared %8d\n"), convertSimpleSharedDictionaryToNonSharedCount);
         Output::Print(_u("    Deferred to Map                %8d\n"), convertDeferredToDictionaryCount);
-        Output::Print(_u("    Path to Map (accessor)         %8d\n"), convertPathToDictionaryCount4);
         Output::Print(_u("    SimpleMap to Map               %8d\n"), convertSimpleDictionaryToDictionaryCount);
         Output::Print(_u("    Path Cache Hits                %8d\n"), cacheCount);
         Output::Print(_u("    Path Branches                  %8d\n"), branchCount);
         Output::Print(_u("    Path Promotions                %8d\n"), promoteCount);
         Output::Print(_u("    Path Length (max)              %8d\n"), maxPathLength);
-        Output::Print(_u("    SimplePathTypeHandlers         %8d\n"), simplePathTypeHandlerCount);
         Output::Print(_u("    PathTypeHandlers               %8d\n"), pathTypeHandlerCount);
         Output::Print(_u("\n"));
         Output::Print(_u("Type Statistics:                   %8s   %8s\n"), _u("Types"), _u("Instances"));
@@ -1299,8 +1319,6 @@ namespace Js
 #endif
 
         this->operationStack = Anew(GeneralAllocator(), JsUtil::Stack<Var>, GeneralAllocator());
-
-        Tick::InitType();
     }
 
     void ScriptContext::Initialize()
@@ -1454,12 +1472,6 @@ namespace Js
 #endif
             }
 
-#if ENABLE_NATIVE_CODEGEN
-            if (m_remoteScriptContextAddr)
-            {
-                JITManager::GetJITManager()->CloseScriptContext(m_remoteScriptContextAddr);
-            }
-#endif
             this->PrintStats();
         }
     }
@@ -1683,10 +1695,18 @@ namespace Js
 
         if (propertyMap != nullptr)
         {
+#if ENABLE_WEAK_REFERENCE_REGIONS
+            TProperty* propReference = nullptr;
+#else
             RecyclerWeakReference<TProperty>* propReference = nullptr;
+#endif
             if (propertyMap->TryGetValue(propertyId, &propReference))
             {
+#if ENABLE_WEAK_REFERENCE_REGIONS
+                return propReference;
+#else
                 return propReference->Get();
+#endif
             }
         }
 
@@ -1712,7 +1732,11 @@ namespace Js
         // Library doesn't cache PropertyString instances because we might hold them in the 2-letter cache instead.
         PropertyStringCacheMap* propertyMap = this->GetLibrary()->EnsurePropertyStringMap();
         PropertyString* prop = this->GetLibrary()->CreatePropertyString(propertyRecord);
+#if ENABLE_WEAK_REFERENCE_REGIONS
+        propertyMap->Item(propertyRecord->GetPropertyId(), prop);
+#else
         propertyMap->Item(propertyRecord->GetPropertyId(), recycler->CreateWeakReferenceHandle(prop));
+#endif
         return prop;
     }
 
@@ -1909,22 +1933,13 @@ namespace Js
         Js::JavascriptError::MapAndThrowError(this, E_FAIL);
     }
 
-    ParseNode* ScriptContext::ParseScript(Parser* parser,
-        const byte* script,
+    void ScriptContext::MakeUtf8SourceInfo(const byte* script,
         size_t cb,
         SRCINFO const * pSrcInfo,
-        CompileScriptException * pse,
         Utf8SourceInfo** ppSourceInfo,
-        const char16 *rootDisplayName,
         LoadScriptFlag loadScriptFlag,
-        uint* sourceIndex,
         Js::Var scriptSource)
     {
-        if (pSrcInfo == nullptr)
-        {
-            pSrcInfo = this->Cache()->noContextGlobalSourceInfo;
-        }
-
         LPUTF8 utf8Script = nullptr;
         size_t length = cb;
         size_t cbNeeded = 0;
@@ -1953,7 +1968,7 @@ namespace Js
             cbNeeded = utf8::EncodeIntoAndNullTerminate(utf8Script, (const char16*)script, static_cast<charcount_t>(length));
 
 #if DBG_DUMP && defined(PROFILE_MEM)
-            if(Js::Configuration::Global.flags.TraceMemory.IsEnabled(Js::ParsePhase) && Configuration::Global.flags.Verbose)
+            if (Js::Configuration::Global.flags.TraceMemory.IsEnabled(Js::ParsePhase) && Configuration::Global.flags.Verbose)
             {
                 Output::Print(_u("Loading script.\n")
                     _u("  Unicode (in bytes)    %u\n")
@@ -1970,7 +1985,7 @@ namespace Js
         else
         {
             // We do not own the memory passed into DefaultLoadScriptUtf8. We need to save it so we copy the memory.
-            if(*ppSourceInfo == nullptr)
+            if (*ppSourceInfo == nullptr)
             {
 #ifndef NTBUILD
                 if (loadScriptFlag & LoadScriptFlag_ExternalArrayBuffer)
@@ -1989,51 +2004,86 @@ namespace Js
                 }
             }
         }
-        //
-        // Parse and the JavaScript code
-        //
-        HRESULT hr;
+    }
 
-        SourceContextInfo * sourceContextInfo = pSrcInfo->sourceContextInfo;
-
-        // Invoke the parser, passing in the global function name, which we will then run to execute
-        // the script.
+    ULONG ScriptContext::GetParseFlags(LoadScriptFlag loadScriptFlag, Utf8SourceInfo* pSourceInfo, SourceContextInfo* sourceContextInfo)
+    {
         // TODO: yongqu handle non-global code.
         ULONG grfscr = fscrGlobalCode | ((loadScriptFlag & LoadScriptFlag_Expression) == LoadScriptFlag_Expression ? fscrReturnExpression : 0);
-        if(((loadScriptFlag & LoadScriptFlag_disableDeferredParse) != LoadScriptFlag_disableDeferredParse) &&
-            (length > Parser::GetDeferralThreshold(sourceContextInfo->IsSourceProfileLoaded())))
+
+        if ((loadScriptFlag & LoadScriptFlag_CreateParserState) == LoadScriptFlag_CreateParserState)
         {
-            grfscr |= fscrDeferFncParse;
+            grfscr |= fscrCreateParserState;
         }
 
-        if((loadScriptFlag & LoadScriptFlag_disableAsmJs) == LoadScriptFlag_disableAsmJs)
+        if((loadScriptFlag & LoadScriptFlag_disableDeferredParse) != LoadScriptFlag_disableDeferredParse)
+        {
+            grfscr |= fscrCanDeferFncParse;
+            if(pSourceInfo->GetCchLength() > Parser::GetDeferralThreshold(sourceContextInfo->IsSourceProfileLoaded()))
+            {
+                grfscr |= fscrWillDeferFncParse;
+            }
+        }
+
+        if ((loadScriptFlag & LoadScriptFlag_disableAsmJs) == LoadScriptFlag_disableAsmJs)
         {
             grfscr |= fscrNoAsmJs;
         }
 
-        if(PHASE_FORCE1(Js::EvalCompilePhase))
+        if (PHASE_FORCE1(Js::EvalCompilePhase))
         {
             // pretend it is eval
             grfscr |= (fscrEval | fscrEvalCode);
         }
 
-        if((loadScriptFlag & LoadScriptFlag_isByteCodeBufferForLibrary) == LoadScriptFlag_isByteCodeBufferForLibrary)
+        if ((loadScriptFlag & LoadScriptFlag_isByteCodeBufferForLibrary) == LoadScriptFlag_isByteCodeBufferForLibrary)
         {
             grfscr |= fscrNoPreJit;
         }
 
-        if(((loadScriptFlag & LoadScriptFlag_Module) == LoadScriptFlag_Module) &&
+        if (((loadScriptFlag & LoadScriptFlag_Module) == LoadScriptFlag_Module) &&
             GetConfig()->IsES6ModuleEnabled())
         {
             grfscr |= fscrIsModuleCode;
         }
 
-        if (isLibraryCode)
+        if ((loadScriptFlag & LoadScriptFlag_LibraryCode) == LoadScriptFlag_LibraryCode)
         {
             grfscr |= fscrIsLibraryCode;
         }
 
-        ParseNodePtr parseTree;
+        return grfscr;
+    }
+
+    ParseNodeProg * ScriptContext::ParseScript(Parser* parser,
+        const byte* script,
+        size_t cb,
+        SRCINFO const * pSrcInfo,
+        CompileScriptException * pse,
+        Utf8SourceInfo** ppSourceInfo,
+        const char16 *rootDisplayName,
+        LoadScriptFlag loadScriptFlag,
+        uint* sourceIndex,
+        Js::Var scriptSource)
+    {
+        if (pSrcInfo == nullptr)
+        {
+            pSrcInfo = this->Cache()->noContextGlobalSourceInfo;
+        }
+
+        MakeUtf8SourceInfo(script, cb, pSrcInfo, ppSourceInfo, loadScriptFlag, scriptSource);
+
+        //
+        // Parse and the JavaScript code
+        //
+        HRESULT hr;
+        SourceContextInfo * sourceContextInfo = pSrcInfo->sourceContextInfo;
+
+        // Invoke the parser, passing in the global function name, which we will then run to execute
+        // the script.
+        ULONG grfscr = GetParseFlags(loadScriptFlag, *ppSourceInfo, sourceContextInfo);
+
+        ParseNodeProg * parseTree;
         if((loadScriptFlag & LoadScriptFlag_Utf8Source) == LoadScriptFlag_Utf8Source)
         {
             hr = parser->ParseUtf8Source(&parseTree, script, cb, grfscr, pse,
@@ -2041,7 +2091,7 @@ namespace Js
         }
         else
         {
-            hr = parser->ParseCesu8Source(&parseTree, utf8Script, cbNeeded, grfscr,
+            hr = parser->ParseCesu8Source(&parseTree, (*ppSourceInfo)->GetSource(), (*ppSourceInfo)->GetCbLength(), grfscr,
                 pse, &sourceContextInfo->nextLocalFunctionId, sourceContextInfo);
         }
 
@@ -2067,6 +2117,358 @@ namespace Js
         return parseTree;
     }
 
+    HRESULT ScriptContext::TryDeserializeParserState(
+        _In_ ULONG grfscr,
+        _In_ charcount_t cchLength,
+        _In_ SRCINFO *srcInfo,
+        _In_ Js::Utf8SourceInfo* utf8SourceInfo,
+        _Inout_ uint& sourceIndex,
+        _In_ bool isCesu8,
+        _In_opt_ NativeModule* nativeModule,
+        _Out_ Js::ParseableFunctionInfo ** func,
+        _Out_ byte** parserStateCacheBuffer,
+        _Out_ DWORD* parserStateCacheByteCount,
+        _In_ Js::SimpleDataCacheWrapper* pDataCache)
+    {
+        HRESULT hr = E_FAIL;
+
+        Assert(pDataCache != nullptr);
+        Assert(func != nullptr);
+        Assert(parserStateCacheBuffer != nullptr);
+        Assert(parserStateCacheByteCount != nullptr);
+
+        *func = nullptr;
+        *parserStateCacheBuffer = nullptr;
+        *parserStateCacheByteCount = 0;
+
+#ifdef ENABLE_WININET_PROFILE_DATA_CACHE
+        // Find the parser state block in the read stream and get the size of the block in bytes.
+        ULONG byteCount = 0;
+        DebugOnly(auto url = !srcInfo->sourceContextInfo->isHostDynamicDocument ? srcInfo->sourceContextInfo->url : this->GetUrl());
+
+        OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Trying to read parser state cache for '%s'\n"), url);
+
+        hr = pDataCache->SeekReadStreamToBlock(SimpleDataCacheWrapper::BlockType_ParserState, &byteCount);
+        if (FAILED(hr))
+        {
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Failed to find parser state cache in the stream (hr = 0x%08lx) for '%s'\n"), hr, url);
+            return hr;
+        }
+
+        // The contract for this bytecode buffer is that it is available as long as we have this ScriptContext.
+        // We will use this buffer as the string table needed to back the deferred stubs as well as bytecode
+        // for defer deserialized functions.
+        // TODO: This, better.
+        ArenaAllocator* alloc = this->SourceCodeAllocator();
+        byte* buffer = AnewArray(alloc, byte, byteCount);
+
+        if (buffer == nullptr)
+        {
+            return E_FAIL;
+        }
+
+        hr = pDataCache->ReadArray(buffer, byteCount);
+        if (FAILED(hr))
+        {
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Failed to read parser state cache (wanted %lu bytes, got %lu bytes) (hr = 0x%08lx) for '%s'\n"), byteCount, pDataCache->BytesWrittenInBlock(), hr, url);
+            return hr;
+        }
+
+        OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Successfully read parser state cache (%lu bytes) for '%s'\n"), byteCount, url);
+
+        if (utf8SourceInfo != nullptr)
+        {
+            // We are not going to parse the source when we have the parser state cache available so we
+            // need to setup the source info for the defer-parse functions we'll hydrate from the cache.
+            // Note: Since we didn't parse the code we won't be able to correct the source length like
+            // we would have if we had parsed the UTF8 code and discovered the actual number of characters.
+            // If this is necessary, we can probably use the Utf8Codex to count the characters in
+            // the source.
+            utf8SourceInfo->SetParseFlags(grfscr);
+            sourceIndex = this->SaveSourceNoCopy(utf8SourceInfo, cchLength, isCesu8);
+            utf8SourceInfo->SetByteCodeGenerationFlags(grfscr);
+        }
+
+        OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Trying to deserialize parser state cache for '%s'\n"), url);
+
+        FunctionBody* functionBody = nullptr;
+        hr = Js::ByteCodeSerializer::DeserializeFromBuffer(this, grfscr, (ISourceHolder*) nullptr, srcInfo, buffer, nativeModule, &functionBody, sourceIndex);
+
+        if (FAILED(hr))
+        {
+            AdeleteArray(alloc, byteCount, buffer);
+
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Failed to deserialize parser state cache (hr = 0x%08lx) for '%s'\n"), hr, url);
+            return hr;
+        }
+
+        OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Successfully deserialized parser state cache for '%s'\n"), url);
+
+        *func = functionBody->GetParseableFunctionInfo();
+        *parserStateCacheBuffer = buffer;
+        *parserStateCacheByteCount = byteCount;
+#endif
+
+        return hr;
+    }
+
+    HRESULT ScriptContext::TrySerializeParserState(
+        _In_ LPCUTF8 pszSrc,
+        _In_ size_t cbLength,
+        _In_ SRCINFO *srcInfo,
+        _In_ Js::ParseableFunctionInfo* func,
+        _In_ byte* parserStateCacheBuffer,
+        _In_ DWORD parserStateCacheByteCount,
+        _In_ Js::SimpleDataCacheWrapper* pDataCache)
+    {
+        HRESULT hr = E_FAIL;
+
+        Assert(func != nullptr);
+        Assert(pDataCache != nullptr);
+
+#ifdef ENABLE_WININET_PROFILE_DATA_CACHE
+        byte* serializeParserStateCacheBuffer = parserStateCacheBuffer;
+        DWORD serializeParserStateCacheSize = parserStateCacheByteCount;
+        DWORD dwFlags = GENERATE_BYTE_CODE_PARSER_STATE | GENERATE_BYTE_CODE_ALLOC_ANEW;
+        DebugOnly(auto url = !srcInfo->sourceContextInfo->isHostDynamicDocument ? srcInfo->sourceContextInfo->url : this->GetUrl());
+
+        // If we already have a parser state cache serialized into a buffer, we should skip creating it again
+        if (parserStateCacheBuffer == nullptr)
+        {
+            Assert(serializeParserStateCacheSize == 0);
+
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Trying to serialize parser state cache for '%s'\n"), url);
+
+            BEGIN_TEMP_ALLOCATOR(tempAllocator, this, _u("ByteCodeSerializer"));
+            hr = Js::ByteCodeSerializer::SerializeToBuffer(this,
+                tempAllocator, (DWORD)cbLength, pszSrc, func->GetFunctionBody(),
+                func->GetHostSrcInfo(), &serializeParserStateCacheBuffer,
+                &serializeParserStateCacheSize, dwFlags);
+            END_TEMP_ALLOCATOR(tempAllocator, this);
+
+            if (FAILED(hr))
+            {
+                OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Failed to serialize parser state cache (hr = 0x%08lx) for '%s'\n"), hr, url);
+                return hr;
+            }
+
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Successfully serialized parser state cache for '%s'\n"), url);
+        }
+        else
+        {
+            Assert(serializeParserStateCacheSize != 0);
+
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Skip serializing parser state cache since deserialized cache is available for '%s'\n"), url);
+        }
+
+        OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Trying to write parser state cache (%lu bytes) to stream for '%s'\n"), serializeParserStateCacheSize, url);
+
+        hr = pDataCache->StartBlock(Js::SimpleDataCacheWrapper::BlockType_ParserState, serializeParserStateCacheSize);
+
+        if (FAILED(hr))
+        {
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Failed to write a block to the parser state cache data stream (hr = 0x%08lx) for '%s'\n"), hr, url);
+            return hr;
+        }
+
+        hr = pDataCache->WriteArray(serializeParserStateCacheBuffer, serializeParserStateCacheSize);
+
+        if (FAILED(hr))
+        {
+            OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Failed to write parser state cache (hr = 0x%08lx) for '%s'\n"), hr, url);
+            return hr;
+        }
+
+        OUTPUT_TRACE_DEBUGONLY(Js::DataCachePhase, _u(" Successfully wrote parser state cache for '%s'\n"), url);
+#endif
+
+        return hr;
+    }
+
+    HRESULT ScriptContext::CompileUTF8Core(
+        __in Parser& ps,
+        __in Js::Utf8SourceInfo* utf8SourceInfo,
+        __in SRCINFO *srcInfo,
+        __in BOOL fOriginalUTF8Code,
+        __in LPCUTF8 pszSrc,
+        __in size_t cbLength,
+        __in ULONG grfscr,
+        __in CompileScriptException *pse,
+        __inout charcount_t& cchLength,
+        __out size_t& srcLength,
+        __out uint& sourceIndex,
+        __deref_out Js::ParseableFunctionInfo ** func,
+        __in_opt Js::SimpleDataCacheWrapper* pDataCache
+    )
+    {
+        HRESULT hr = E_FAIL;
+        (*func) = nullptr;
+        srcLength = cchLength;
+
+        bool isCesu8 = !fOriginalUTF8Code;
+        ParseNodeProg * parseTree = nullptr;
+        SourceContextInfo * sourceContextInfo = srcInfo->sourceContextInfo;
+        bool fUseParserStateCache = ((grfscr & fscrCreateParserState) == fscrCreateParserState)
+            && CONFIG_FLAG(ParserStateCache)
+            && pDataCache != nullptr
+            && !this->IsScriptContextInDebugMode();
+        byte* parserStateCacheBuffer = nullptr;
+        DWORD parserStateCacheByteCount = 0;
+
+        if (fUseParserStateCache)
+        {
+            hr = TryDeserializeParserState(grfscr, cchLength, srcInfo, utf8SourceInfo, sourceIndex, isCesu8, nullptr, func, &parserStateCacheBuffer, &parserStateCacheByteCount, pDataCache);
+#ifdef ENABLE_WININET_PROFILE_DATA_CACHE
+            // ERROR_WRITE_PROTECT indicates we cannot cache this script for whatever reason.
+            // Disable generating and serializing the parser state cache.
+            if (hr == HRESULT_FROM_WIN32(ERROR_WRITE_PROTECT))
+            {
+                fUseParserStateCache = false;
+                grfscr &= ~fscrCreateParserState;
+            }
+#endif
+        }
+
+        // If hydrating the parser state cache failed, let's try to do an ordinary parse
+        if (FAILED(hr) || *func == nullptr)
+        {
+            if (fOriginalUTF8Code)
+            {
+                hr = ps.ParseUtf8Source(&parseTree, pszSrc, cbLength, grfscr, pse, &sourceContextInfo->nextLocalFunctionId,
+                    sourceContextInfo);
+                cchLength = ps.GetSourceIchLim();
+
+                // Correcting total number of characters.
+                utf8SourceInfo->SetCchLength(cchLength);
+            }
+            else
+            {
+                hr = ps.ParseCesu8Source(&parseTree, pszSrc, cbLength, grfscr, pse, &sourceContextInfo->nextLocalFunctionId,
+                    sourceContextInfo);
+            }
+            
+            utf8SourceInfo->SetParseFlags(grfscr);
+            srcLength = ps.GetSourceLength();
+
+            if (SUCCEEDED(hr))
+            {
+                sourceIndex = this->SaveSourceNoCopy(utf8SourceInfo, cchLength, isCesu8);
+                hr = GenerateByteCode(parseTree, grfscr, this, func, sourceIndex, this->IsForceNoNative(), &ps, pse);
+                utf8SourceInfo->SetByteCodeGenerationFlags(grfscr);
+            }
+        }
+
+        if (SUCCEEDED(hr))
+        {
+            // If we are supposed to create a parser state cache, do that now since we have the generated code and the parser available.
+            // Note: We do need to serialze the parser state cache again even if we just deserialized it because the data cache will
+            // persist whatever we write into it and it starts empty.
+            if (fUseParserStateCache)
+            {
+                Assert(*func != nullptr);
+                TrySerializeParserState(pszSrc, cbLength, srcInfo, *func, parserStateCacheBuffer, parserStateCacheByteCount, pDataCache);
+            }
+        }
+#ifdef ENABLE_SCRIPT_DEBUGGING
+        else if (this->IsScriptContextInDebugMode() && !utf8SourceInfo->GetIsLibraryCode() && !utf8SourceInfo->IsInDebugMode())
+        {
+            // In case of syntax error, if we are in debug mode, put the utf8SourceInfo into debug mode.
+            utf8SourceInfo->SetInDebugMode(true);
+        }
+#endif
+
+        return hr;
+    }
+
+    HRESULT ScriptContext::SerializeParserState(const byte* script, size_t cb,
+        SRCINFO const * pSrcInfo, CompileScriptException * pse, Utf8SourceInfo** ppSourceInfo,
+        const char16 *rootDisplayName, LoadScriptFlag loadScriptFlag, byte** buffer,
+        DWORD* bufferSize, ArenaAllocator* alloc, JavascriptFunction** function, Js::Var scriptSource)
+    {
+        Assert(!this->threadContext->IsScriptActive());
+        Assert(pse != nullptr);
+        Assert(alloc != nullptr);
+        Assert(function != nullptr);
+
+        *function = nullptr;
+        HRESULT hr = NOERROR;
+
+        try
+        {
+            AUTO_NESTED_HANDLED_EXCEPTION_TYPE((ExceptionType)(ExceptionType_OutOfMemory | ExceptionType_StackOverflow));
+            Js::AutoDynamicCodeReference dynamicFunctionReference(this);
+            Parser parser(this);
+            *function = LoadScriptInternal(&parser, script, cb, pSrcInfo, pse, ppSourceInfo, rootDisplayName, loadScriptFlag, scriptSource);
+
+            if (*function != nullptr)
+            {
+                Js::FunctionBody *functionBody = (*function)->GetFunctionBody();
+                const Js::Utf8SourceInfo *sourceInfo = functionBody->GetUtf8SourceInfo();
+                size_t cSourceCodeLength = sourceInfo->GetCbLength(_u("JsSerializeParserState"));
+                LPCUTF8 utf8Code = sourceInfo->GetSource(_u("JsSerializeParserState"));
+                DWORD dwFlags = GENERATE_BYTE_CODE_PARSER_STATE;
+
+                return Js::ByteCodeSerializer::SerializeToBuffer(this,
+                    alloc, static_cast<DWORD>(cSourceCodeLength), utf8Code,
+                    functionBody, functionBody->GetHostSrcInfo(), buffer,
+                    bufferSize, dwFlags);
+            }
+            else
+            {
+                hr = E_FAIL;
+            }
+        }
+        catch (Js::OutOfMemoryException)
+        {
+            hr = E_OUTOFMEMORY;
+        }
+        catch (Js::StackOverflowException)
+        {
+            hr = VBSERR_OutOfStack;
+        }
+        pse->ProcessError(nullptr, hr, nullptr);
+        return hr;
+    }
+
+    JavascriptFunction* ScriptContext::LoadScriptInternal(Parser* parser, const byte* script, size_t cb,
+        SRCINFO const * pSrcInfo, CompileScriptException * pse, Utf8SourceInfo** ppSourceInfo,
+        const char16 *rootDisplayName, LoadScriptFlag loadScriptFlag, Js::Var scriptSource)
+    {
+        uint sourceIndex;
+        JavascriptFunction * pFunction = nullptr;
+
+        ParseNodeProg * parseTree = ParseScript(parser, script, cb, pSrcInfo,
+            pse, ppSourceInfo, rootDisplayName, loadScriptFlag,
+            &sourceIndex, scriptSource);
+
+        if (parseTree != nullptr)
+        {
+            pFunction = GenerateRootFunction(parseTree, sourceIndex, parser, (*ppSourceInfo)->GetParseFlags(), pse, rootDisplayName);
+        }
+
+        if (pse->ei.scode == JSERR_AsmJsCompileError)
+        {
+            Assert((loadScriptFlag & LoadScriptFlag_disableAsmJs) != LoadScriptFlag_disableAsmJs);
+
+            pse->Free();
+
+            loadScriptFlag = (LoadScriptFlag)(loadScriptFlag | LoadScriptFlag_disableAsmJs);
+            return LoadScript(script, cb, pSrcInfo, pse, ppSourceInfo,
+                rootDisplayName, loadScriptFlag, scriptSource);
+        }
+
+#ifdef ENABLE_SCRIPT_PROFILING
+        if (pFunction != nullptr && this->IsProfiling())
+        {
+            RegisterScript(pFunction->GetFunctionProxy());
+        }
+#else
+        Assert(!this->IsProfiling());
+#endif
+
+        return pFunction;
+    }
+
     JavascriptFunction* ScriptContext::LoadScript(const byte* script, size_t cb,
         SRCINFO const * pSrcInfo, CompileScriptException * pse, Utf8SourceInfo** ppSourceInfo,
         const char16 *rootDisplayName, LoadScriptFlag loadScriptFlag, Js::Var scriptSource)
@@ -2079,38 +2481,7 @@ namespace Js
             AUTO_NESTED_HANDLED_EXCEPTION_TYPE((ExceptionType)(ExceptionType_OutOfMemory | ExceptionType_StackOverflow));
             Js::AutoDynamicCodeReference dynamicFunctionReference(this);
             Parser parser(this);
-            uint sourceIndex;
-            JavascriptFunction * pFunction = nullptr;
-
-            ParseNodePtr parseTree = ParseScript(&parser, script, cb, pSrcInfo,
-                pse, ppSourceInfo, rootDisplayName, loadScriptFlag,
-                &sourceIndex, scriptSource);
-
-            if (parseTree != nullptr)
-            {
-                pFunction = GenerateRootFunction(parseTree, sourceIndex, &parser, (*ppSourceInfo)->GetParseFlags(), pse, rootDisplayName);
-            }
-
-            if (pse->ei.scode == JSERR_AsmJsCompileError)
-            {
-                Assert((loadScriptFlag & LoadScriptFlag_disableAsmJs) != LoadScriptFlag_disableAsmJs);
-
-                pse->Free();
-
-                loadScriptFlag = (LoadScriptFlag)(loadScriptFlag | LoadScriptFlag_disableAsmJs);
-                return LoadScript(script, cb, pSrcInfo, pse, ppSourceInfo,
-                    rootDisplayName, loadScriptFlag, scriptSource);
-            }
-
-#ifdef ENABLE_SCRIPT_PROFILING
-            if (pFunction != nullptr && this->IsProfiling())
-            {
-                RegisterScript(pFunction->GetFunctionProxy());
-            }
-#else
-            Assert(!this->IsProfiling());
-#endif
-            return pFunction;
+            return LoadScriptInternal(&parser, script, cb, pSrcInfo, pse, ppSourceInfo, rootDisplayName, loadScriptFlag, scriptSource);
         }
         catch (Js::OutOfMemoryException)
         {
@@ -2124,7 +2495,7 @@ namespace Js
         return nullptr;
     }
 
-    JavascriptFunction* ScriptContext::GenerateRootFunction(ParseNodePtr parseTree, uint sourceIndex, Parser* parser, uint32 grfscr, CompileScriptException * pse, const char16 *rootDisplayName)
+    JavascriptFunction* ScriptContext::GenerateRootFunction(ParseNodeProg * parseTree, uint sourceIndex, Parser* parser, uint32 grfscr, CompileScriptException * pse, const char16 *rootDisplayName)
     {
         HRESULT hr;
 
@@ -2579,13 +2950,13 @@ namespace Js
     // Makes a copy of the URL to be stored in the map.
     //
     SourceContextInfo * ScriptContext::CreateSourceContextInfo(DWORD_PTR sourceContext, char16 const * url, size_t len,
-        IActiveScriptDataCache* profileDataCache, char16 const * sourceMapUrl /*= NULL*/, size_t sourceMapUrlLen /*= 0*/)
+        SimpleDataCacheWrapper* dataCacheWrapper, char16 const * sourceMapUrl /*= NULL*/, size_t sourceMapUrlLen /*= 0*/)
     {
         // Take etw rundown lock on this thread context. We are going to init/add to sourceContextInfoMap.
         AutoCriticalSection autocs(GetThreadContext()->GetFunctionBodyLock());
 
         EnsureSourceContextInfoMap();
-        Assert(this->GetSourceContextInfo(sourceContext, profileDataCache) == nullptr);
+        Assert(this->GetSourceContextInfo(sourceContext, dataCacheWrapper) == nullptr);
         SourceContextInfo * sourceContextInfo = RecyclerNewStructZ(this->GetRecycler(), SourceContextInfo);
         sourceContextInfo->sourceContextId = this->GetNextSourceContextId();
         sourceContextInfo->dwHostSourceContext = sourceContext;
@@ -2607,7 +2978,7 @@ namespace Js
 #if ENABLE_PROFILE_INFO
         if (!this->startupComplete)
         {
-            sourceContextInfo->sourceDynamicProfileManager = SourceDynamicProfileManager::LoadFromDynamicProfileStorage(sourceContextInfo, this, profileDataCache);
+            sourceContextInfo->sourceDynamicProfileManager = SourceDynamicProfileManager::LoadFromDynamicProfileStorage(sourceContextInfo, this, dataCacheWrapper);
             Assert(sourceContextInfo->sourceDynamicProfileManager != NULL);
         }
 
@@ -2626,7 +2997,7 @@ namespace Js
         return copy;
     }
 
-    SourceContextInfo *  ScriptContext::GetSourceContextInfo(DWORD_PTR sourceContext, IActiveScriptDataCache* profileDataCache)
+    SourceContextInfo *  ScriptContext::GetSourceContextInfo(DWORD_PTR sourceContext, SimpleDataCacheWrapper* dataCacheWrapper)
     {
         if (sourceContext == Js::Constants::NoHostSourceContext)
         {
@@ -2639,12 +3010,12 @@ namespace Js
         if (this->Cache()->sourceContextInfoMap->TryGetValue(sourceContext, &sourceContextInfo))
         {
 #if ENABLE_PROFILE_INFO
-            if (profileDataCache &&
+            if (dataCacheWrapper &&
                 sourceContextInfo->sourceDynamicProfileManager != nullptr &&
                 !sourceContextInfo->sourceDynamicProfileManager->IsProfileLoadedFromWinInet() &&
                 !this->startupComplete)
             {
-                bool profileLoaded = sourceContextInfo->sourceDynamicProfileManager->LoadFromProfileCache(profileDataCache, sourceContextInfo->url);
+                bool profileLoaded = sourceContextInfo->sourceDynamicProfileManager->LoadFromProfileCache(dataCacheWrapper, sourceContextInfo->url);
                 if (profileLoaded)
                 {
                     JS_ETW(EventWriteJSCRIPT_PROFILE_LOAD(sourceContextInfo->dwHostSourceContext, this));
@@ -4726,12 +5097,11 @@ void ScriptContext::ClearIsInstInlineCaches()
     DebugOnly(isInstInlineCacheAllocator.CheckIsAllZero(true));
 }
 
-void ScriptContext::ClearForInCaches()
+void ScriptContext::ClearEnumeratorCaches()
 {
-    forInCacheAllocator.ZeroAll();
-    DebugOnly(forInCacheAllocator.CheckIsAllZero(false));
+    enumeratorCacheAllocator.ZeroAll();
+    DebugOnly(enumeratorCacheAllocator.CheckIsAllZero(false));
 }
-
 
 #ifdef PERSISTENT_INLINE_CACHES
 void ScriptContext::ClearInlineCachesWithDeadWeakRefs()
@@ -4756,37 +5126,6 @@ ScriptContext::GetJitFuncRangeCache()
     return jitFuncRangeCache;
 }
 #endif
-
-void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext()
-{
-    Assert(!IsClosed());
-
-    if (registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext == nullptr)
-    {
-        DoRegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext();
-    }
-}
-
-    void ScriptContext::DoRegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext()
-    {
-        Assert(!IsClosed());
-        Assert(registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext == nullptr);
-
-        // this call may throw OOM
-        registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext = threadContext->RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext(this);
-    }
-
-    void ScriptContext::ClearPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesCaches()
-    {
-        Assert(registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext != nullptr);
-        if (!isFinalized)
-        {
-            javascriptLibrary->NoPrototypeChainsAreEnsuredToHaveOnlyWritableDataProperties();
-        }
-
-        // Caller will unregister the script context from the thread context
-        registeredPrototypeChainEnsuredToHaveOnlyWritableDataPropertiesScriptContext = nullptr;
-    }
 
     JavascriptString * ScriptContext::GetLastNumberToStringRadix10(double value)
     {
@@ -5708,11 +6047,7 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
             Output::Print(_u("\n\n"));
 
             // If in verbose mode, dump data for each FunctionBody
-            if (
-#if defined(FLAG) || defined(FLAG_REGOVR_EXP)
-                Configuration::Global.flags.Verbose &&
-#endif
-                rejitStatsMap != nullptr)
+            if (CONFIG_FLAG(Verbose) && rejitStatsMap != nullptr)
             {
                 // Aggregated data
                 Output::Print(_u("%-30s %14s %14s\n"), _u("Function (#),"), _u("Bailout Count,"), _u("Rejit Count"));
@@ -5923,12 +6258,10 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
         Assert(reasonIndex < NumRejitReasons);
         rejitReasonCounts[reasonIndex]++;
 
-#if defined(FLAG) || defined(FLAG_REGOVR_EXP)
-        if (Js::Configuration::Global.flags.Verbose)
+        if (CONFIG_FLAG(Verbose))
         {
             LogDataForFunctionBody(body, reasonIndex, true);
         }
-#endif
     }
     void ScriptContext::LogBailout(Js::FunctionBody *body, uint kind)
     {
@@ -5943,12 +6276,10 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
             bailoutReasonCounts->Item(kind, val);
         }
 
-#if defined(FLAG) || defined(FLAG_REGOVR_EXP)
-        if (Js::Configuration::Global.flags.Verbose)
+        if (CONFIG_FLAG(Verbose))
         {
             LogDataForFunctionBody(body, kind, false);
         }
-#endif
     }
     void ScriptContext::ClearBailoutReasonCountsMap()
     {
@@ -5981,7 +6312,7 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
 #endif
 
 #ifdef ENABLE_BASIC_TELEMETRY
-    ScriptContextTelemetry& ScriptContext::GetTelemetry()
+    Js::ScriptContextTelemetry& ScriptContext::GetTelemetry()
     {
         return *this->telemetry;
     }
@@ -6217,7 +6548,7 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
             Js::StringBuilder<ArenaAllocator> nameBuffer(tempAllocator);
             nameBuffer.Reset();
 
-            OUTPUT_TRACE(Js::StackFramesEventPhase, _u("\nPosting stack trace via ETW:\n"));
+            OUTPUT_TRACE(Js::StackFramesEventPhase, _u("Posting stack trace via ETW:\n"));
 
             ushort frameCount = walker.WalkUntil((ushort)maxFrameCount, [&](Js::JavascriptFunction* function, ushort frameIndex) -> bool
             {
@@ -6260,12 +6591,7 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
                     methodIdOrNameId,
                     isFrameIndex);
 
-                OUTPUT_TRACE(Js::StackFramesEventPhase, _u("Frame : (%s : %u) (%s), LineNumber : %u, ColumnNumber : %u\n"),
-                    (isFrameIndex == 1) ? (_u("NameBufferIndex")) : (_u("MethodID")),
-                    methodIdOrNameId,
-                    name,
-                    lineNumber,
-                    columnNumber);
+                OUTPUT_TRACE(Js::StackFramesEventPhase, _u("Frame : Name : %s, LineNumber : %u, ColumnNumber : %u\n"), name, lineNumber, columnNumber);
 
                 stackFrames.Add(frame);
 
@@ -6518,4 +6844,3 @@ void ScriptContext::RegisterPrototypeChainEnsuredToHaveOnlyWritableDataPropertie
 #endif
 
 } // End namespace Js
-

@@ -6,6 +6,7 @@
     "testsuite/js-api",
 
     "features/extends",
+    "features/nontrapping",
     "features/threads"
   ],
   "features": [{
@@ -41,7 +42,25 @@
     ]
   }, {
     "required": true,
-    "flags": ["-WasmThreads"],
+    "flags": ["-WasmNontrapping"],
+    "folders": [
+      "features/nontrapping"
+    ],
+    "files": [
+      "nontrapping_conversions"
+    ]
+  }, {
+    "required": true,
+    "flags": ["-WasmThreads", "-ESSharedArrayBuffer"],
+    "folders": [
+      "features/threads"
+    ],
+    "files": [
+      "chakra_atomic_load",
+      "chakra_atomic_store"
+    ]
+  }, {
+    "flags": ["-WasmThreads", "-ESSharedArrayBuffer", "-WasmSharedArrayVirtualBuffer-", "-WasmFastArray-"],
     "folders": [
       "features/threads"
     ],

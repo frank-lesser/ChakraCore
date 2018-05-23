@@ -294,7 +294,7 @@ JITManager::ConnectProcess()
     HANDLE processHandle;
     if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &processHandle, 0, false, DUPLICATE_SAME_ACCESS))
     {
-        return false;
+        return HRESULT_FROM_WIN32(GetLastError());
     }
 #endif
 
@@ -586,7 +586,7 @@ JITManager::CloseScriptContext(
 
 HRESULT
 JITManager::FreeAllocation(
-    __in PTHREADCONTEXT_HANDLE threadContextInfoAddress,
+    __in PSCRIPTCONTEXT_HANDLE scriptContextInfoAddress,
     __in intptr_t codeAddress)
 {
     Assert(IsOOPJITEnabled());
@@ -594,7 +594,7 @@ JITManager::FreeAllocation(
     HRESULT hr = E_FAIL;
     RpcTryExcept
     {
-        hr = ClientFreeAllocation(m_rpcBindingHandle, threadContextInfoAddress, codeAddress);
+        hr = ClientFreeAllocation(m_rpcBindingHandle, scriptContextInfoAddress, codeAddress);
     }
     RpcExcept(RpcExceptionFilter(RpcExceptionCode()))
     {

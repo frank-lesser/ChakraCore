@@ -76,6 +76,7 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)RecyclerObjectGraphDumper.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RecyclerPageAllocator.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RecyclerSweep.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)RecyclerTelemetryInfo.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)RecyclerWriteBarrierManager.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)SmallFinalizableHeapBlock.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)SmallFinalizableHeapBucket.cpp" />
@@ -90,11 +91,15 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)SectionAllocWrapper.cpp" />
-    <ClCompile Include="DelayDeletingFunctionTable.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)HeapInfoManager.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)RecyclerSweepManager.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)DelayDeletingFunctionTable.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)HeapBucketStats.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AllocationPolicyManager.h" />
     <ClInclude Include="Allocator.h" />
+    <ClInclude Include="AllocatorTelemetryStats.h" />
     <ClInclude Include="amd64\XDataAllocator.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
     </ClInclude>
@@ -107,6 +112,7 @@
     </ClInclude>
     <ClInclude Include="AutoAllocatorObjectPtr.h" />
     <ClInclude Include="AutoPtr.h" />
+    <ClInclude Include="BucketStatsReporter.h" />
     <ClInclude Include="CollectionState.h" />
     <ClInclude Include="CommonMemoryPch.h" />
     <ClInclude Include="CustomHeap.h" />
@@ -116,8 +122,10 @@
     <ClInclude Include="HeapBlock.h" />
     <ClInclude Include="HeapBlockMap.h" />
     <ClInclude Include="HeapBucket.h" />
+    <ClInclude Include="HeapBucketStats.h" />
     <ClInclude Include="HeapConstants.h" />
     <ClInclude Include="HeapInfo.h" />
+    <ClInclude Include="HeapInfoManager.h" />
     <ClInclude Include="IdleDecommitPageAllocator.h" />
     <ClInclude Include="LargeHeapBlock.h" />
     <ClInclude Include="LeakReport.h" />
@@ -137,6 +145,8 @@
     <ClInclude Include="RecyclerPointers.h" />
     <ClInclude Include="RecyclerRootPtr.h" />
     <ClInclude Include="RecyclerSweep.h" />
+    <ClInclude Include="RecyclerSweepManager.h" />
+    <ClInclude Include="RecyclerTelemetryInfo.h" />
     <ClInclude Include="RecyclerWeakReference.h" />
     <ClInclude Include="RecyclerWriteBarrierManager.h" />
     <ClInclude Include="SectionAllocWrapper.h" />
@@ -150,6 +160,8 @@
     <ClInclude Include="MemoryLogger.h" />
     <ClInclude Include="StressTest.h" />
     <ClInclude Include="VirtualAllocWrapper.h" />
+    <ClInclude Include="RecyclerWaitReason.h" />
+    <ClInclude Include="RecyclerWaitReasonInc.h" />
     <ClInclude Include="WriteBarrierMacros.h" />
     <ClInclude Include="XDataAllocator.h" />
   </ItemGroup>

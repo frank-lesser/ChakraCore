@@ -278,6 +278,7 @@ GlobOpt::CSEAddInstr(
         break;
 
     case Js::OpCode::Conv_Prim:
+    case Js::OpCode::Conv_Prim_Sat:
         exprAttributes = ConvAttributes(instr->GetDst()->IsUnsigned(), instr->GetSrc1()->IsUnsigned());
         break;
     }
@@ -534,6 +535,7 @@ GlobOpt::CSEOptimize(BasicBlock *block, IR::Instr * *const instrRef, Value **pSr
             break;
 
         case Js::OpCode::Conv_Prim:
+        case Js::OpCode::Conv_Prim_Sat:
             exprAttributes = ConvAttributes(instr->GetDst()->IsUnsigned(), instr->GetSrc1()->IsUnsigned());
             break;
 
@@ -796,6 +798,7 @@ GlobOpt::CSEOptimize(BasicBlock *block, IR::Instr * *const instrRef, Value **pSr
         // code and due to other similar potential issues, always create a new instr instead of changing the existing one.
         IR::Instr *const originalInstr = instr;
         instr = IR::Instr::New(Js::OpCode::Ld_A, instr->GetDst(), cseOpnd, instr->m_func);
+        instr->SetByteCodeOffset(originalInstr);
         originalInstr->TransferDstAttributesTo(instr);
         block->InsertInstrBefore(instr, originalInstr);
         block->RemoveInstr(originalInstr);

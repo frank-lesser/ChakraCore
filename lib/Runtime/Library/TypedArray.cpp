@@ -740,7 +740,7 @@ namespace Js
 
     BOOL TypedArrayBase::HasOwnProperty(PropertyId propertyId)
     {
-        return JavascriptConversion::PropertyQueryFlagsToBoolean(HasPropertyQuery(propertyId));
+        return JavascriptConversion::PropertyQueryFlagsToBoolean(HasPropertyQuery(propertyId, nullptr /*info*/));
     }
 
     inline BOOL TypedArrayBase::CanonicalNumericIndexString(PropertyId propertyId, ScriptContext *scriptContext)
@@ -755,7 +755,7 @@ namespace Js
         return JavascriptConversion::CanonicalNumericIndexString(propertyString, &result, scriptContext);
     }
 
-    PropertyQueryFlags TypedArrayBase::HasPropertyQuery(PropertyId propertyId)
+    PropertyQueryFlags TypedArrayBase::HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info)
     {
         uint32 index = 0;
         ScriptContext *scriptContext = GetScriptContext();
@@ -770,7 +770,7 @@ namespace Js
             return PropertyQueryFlags::Property_NotFound_NoProto;
         }
 
-        return DynamicObject::HasPropertyQuery(propertyId);
+        return DynamicObject::HasPropertyQuery(propertyId, info);
     }
 
     BOOL TypedArrayBase::DeleteProperty(PropertyId propertyId, PropertyOperationFlags flags)
@@ -938,9 +938,9 @@ namespace Js
         return __super::GetItemSetter(index, setterValue, requestContext);
     }
 
-    BOOL TypedArrayBase::GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, ForInCache * forInCache)
+    BOOL TypedArrayBase::GetEnumerator(JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext* requestContext, EnumeratorCache * enumeratorCache)
     {
-        return enumerator->Initialize(nullptr, this, this, flags, requestContext, forInCache);
+        return enumerator->Initialize(nullptr, this, this, flags, requestContext, enumeratorCache);
     }
 
     JavascriptEnumerator * TypedArrayBase::GetIndexEnumerator(EnumeratorFlags flags, ScriptContext * requestContext)

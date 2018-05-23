@@ -468,6 +468,19 @@ GlobOpt::CaptureByteCodeSymUses(IR::Instr * instr)
 }
 
 void
+GlobOpt::ProcessInlineeEnd(IR::Instr* instr)
+{
+    if (instr->m_func->m_hasInlineArgsOpt)
+    {
+        RecordInlineeFrameInfo(instr);
+    }
+    EndTrackingOfArgObjSymsForInlinee();
+
+    Assert(this->currentBlock->globOptData.inlinedArgOutSize >= instr->GetArgOutSize(/*getInterpreterArgOutCount*/ false));
+    this->currentBlock->globOptData.inlinedArgOutSize -= instr->GetArgOutSize(/*getInterpreterArgOutCount*/ false);
+}
+
+void
 GlobOpt::TrackCalls(IR::Instr * instr)
 {
     // Keep track of out params for bailout
@@ -549,7 +562,6 @@ GlobOpt::TrackCalls(IR::Instr * instr)
         Assert(instr->m_func->GetParentFunc() == this->currentBlock->globOptData.curFunc);
         Assert(instr->m_func->GetParentFunc());
         this->currentBlock->globOptData.curFunc = instr->m_func;
-        this->currentBlock->globOptData.curFunc = instr->m_func;
 
         this->func->UpdateMaxInlineeArgOutSize(this->currentBlock->globOptData.inlinedArgOutSize);
         this->EndTrackCall(instr);
@@ -559,8 +571,9 @@ GlobOpt::TrackCalls(IR::Instr * instr)
             instr->m_func->m_hasInlineArgsOpt = true;
             InlineeFrameInfo* frameInfo = InlineeFrameInfo::New(func->m_alloc);
             instr->m_func->frameInfo = frameInfo;
-            frameInfo->floatSyms = currentBlock->globOptData.liveFloat64Syms->CopyNew(this->alloc);
-            frameInfo->intSyms = currentBlock->globOptData.liveInt32Syms->MinusNew(currentBlock->globOptData.liveLossyInt32Syms, this->alloc);
+            frameInfo->floatSyms = CurrentBlockData()->liveFloat64Syms->CopyNew(this->alloc);
+            frameInfo->intSyms = CurrentBlockData()->liveInt32Syms->MinusNew(CurrentBlockData()->liveLossyInt32Syms, this->alloc);
+            frameInfo->varSyms = CurrentBlockData()->liveVarSyms->CopyNew(this->alloc);
         }
         break;
 
@@ -576,14 +589,7 @@ GlobOpt::TrackCalls(IR::Instr * instr)
         break;
 
     case Js::OpCode::InlineeEnd:
-        if (instr->m_func->m_hasInlineArgsOpt)
-        {
-            RecordInlineeFrameInfo(instr);
-        }
-        EndTrackingOfArgObjSymsForInlinee();
-
-        Assert(this->currentBlock->globOptData.inlinedArgOutSize >= instr->GetArgOutSize(/*getInterpreterArgOutCount*/ false));
-        this->currentBlock->globOptData.inlinedArgOutSize -= instr->GetArgOutSize(/*getInterpreterArgOutCount*/ false);
+        ProcessInlineeEnd(instr);
         break;
 
     case Js::OpCode::InlineeMetaArg:
@@ -770,14 +776,13 @@ void GlobOpt::RecordInlineeFrameInfo(IR::Instr* inlineeEnd)
                     if (value)
                     {
                         StackSym * copyPropSym = this->currentBlock->globOptData.GetCopyPropSym(argSym, value);
-                        if (copyPropSym)
+                        if (copyPropSym &&
+                            frameInfo->varSyms->TestEmpty() && frameInfo->varSyms->Test(copyPropSym->m_id))
                         {
                             argSym = copyPropSym;
                         }
                     }
                 }
-
-                GlobOptBlockData& globOptData = this->currentBlock->globOptData;
 
                 if (frameInfo->intSyms->TestEmpty() && frameInfo->intSyms->Test(argSym->m_id))
                 {
@@ -793,7 +798,7 @@ void GlobOpt::RecordInlineeFrameInfo(IR::Instr* inlineeEnd)
                 }
                 else
                 {
-                    Assert(globOptData.liveVarSyms->Test(argSym->m_id));
+                    Assert(frameInfo->varSyms->Test(argSym->m_id));
                 }
 
                 if (argSym->IsConst() && !argSym->IsInt64Const())
@@ -815,6 +820,8 @@ void GlobOpt::RecordInlineeFrameInfo(IR::Instr* inlineeEnd)
     frameInfo->intSyms = nullptr;
     JitAdelete(this->alloc, frameInfo->floatSyms);
     frameInfo->floatSyms = nullptr;
+    JitAdelete(this->alloc, frameInfo->varSyms);
+    frameInfo->varSyms = nullptr;
     frameInfo->isRecorded = true;
 }
 
@@ -840,7 +847,6 @@ void GlobOpt::EndTrackingOfArgObjSymsForInlinee()
         JitAdelete(this->tempAlloc, tempBv);
     }
     this->currentBlock->globOptData.curFunc = this->currentBlock->globOptData.curFunc->GetParentFunc();
-    this->currentBlock->globOptData.curFunc = this->currentBlock->globOptData.curFunc;
 }
 
 void GlobOpt::EndTrackCall(IR::Instr* instr)
@@ -1040,7 +1046,14 @@ GlobOpt::InsertByteCodeUses(IR::Instr * instr, bool includeDef)
     }
     if (!this->byteCodeUses->IsEmpty() || this->propertySymUse || dstOpnd != nullptr)
     {
-        byteCodeUsesInstr = IR::ByteCodeUsesInstr::New(instr);
+        if (instr->GetByteCodeOffset() != Js::Constants::NoByteCodeOffset || !instr->HasBailOutInfo())
+        {
+            byteCodeUsesInstr = IR::ByteCodeUsesInstr::New(instr);
+        }
+        else
+        {
+            byteCodeUsesInstr = IR::ByteCodeUsesInstr::New(instr->m_func, instr->GetBailOutInfo()->bailOutOffset);
+        }
         if (!this->byteCodeUses->IsEmpty())
         {
             byteCodeUsesInstr->SetBV(byteCodeUses->CopyNew(instr->m_func->m_alloc));
@@ -1076,7 +1089,7 @@ GlobOpt::ConvertToByteCodeUses(IR::Instr * instr)
     instr->Remove();
     if (byteCodeUsesInstr)
     {
-        byteCodeUsesInstr->Aggregate();
+        byteCodeUsesInstr->AggregateFollowingByteCodeUses();
     }
     return byteCodeUsesInstr;
 }
@@ -1085,8 +1098,7 @@ bool
 GlobOpt::MayNeedBailOut(Loop * loop) const
 {
     Assert(this->IsLoopPrePass());
-    return loop->CanHoistInvariants() ||
-        this->DoFieldCopyProp(loop) || (this->DoFieldHoisting(loop) && !loop->fieldHoistCandidates->IsEmpty());
+    return loop->CanHoistInvariants() || this->DoFieldCopyProp(loop) ;
 }
 
 bool

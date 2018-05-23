@@ -5,16 +5,23 @@
 #pragma once
 
 namespace Js {
+    class ByteCodeBufferBuilder;
+    class ByteCodeBufferReader;
+
     //
     // ScopeInfo is used to persist Scope info of outer functions. When reparsing deferred nested
     // functions, use persisted ScopeInfo to restore outer closures.
     //
     class ScopeInfo
     {
+        friend class ByteCodeBufferBuilder;
+        friend class ByteCodeBufferReader;
+
         DECLARE_RECYCLER_VERIFY_MARK_FRIEND()
 
         struct MapSymbolData
         {
+            ByteCodeGenerator *byteCodeGenerator;
             FuncInfo* func;
             int nonScopeSymbolCount;
         };
@@ -181,8 +188,8 @@ namespace Js {
 
         void SaveSymbolInfo(Symbol* sym, MapSymbolData* mapSymbolData);
 
-        static ScopeInfo* SaveScopeInfo(Scope * scope, ScriptContext * scriptContext);
-        static ScopeInfo* SaveOneScopeInfo(Scope * scope, ScriptContext * scriptContext);
+        static ScopeInfo* SaveScopeInfo(ByteCodeGenerator * byteCodeGenerator, Scope * scope, ScriptContext * scriptContext);
+        static ScopeInfo* SaveOneScopeInfo(ByteCodeGenerator * byteCodeGenerator, Scope * scope, ScriptContext * scriptContext);
 
     public:
         FunctionInfo * GetFunctionInfo() const
