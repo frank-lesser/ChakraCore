@@ -99,6 +99,11 @@ namespace Js
             {
                 MarshalDynamicObject(scriptContext, prototypeObject);
             }
+            if (JavascriptProxy::Is(prototypeObject))
+            {
+                // Fetching prototype of proxy can invoke trap - which we don't want during the marshalling time.
+                break;
+            }
             prototype = prototypeObject->GetPrototype();
         }
     }
@@ -357,16 +362,7 @@ namespace Js
 #ifdef ENABLE_WASM
         if (WasmScriptFunction::Is(function))
         {
-            AsmJsFunctionInfo* asmInfo = funcInfo->GetFunctionBody()->GetAsmJsFunctionInfo();
-            Assert(asmInfo);
-            if (asmInfo->IsWasmDeferredParse())
-            {
-                entryPoint = WasmLibrary::WasmDeferredParseExternalThunk;
-            }
-            else
-            {
-                entryPoint = Js::AsmJsExternalEntryPoint;
-            }
+            entryPoint = Js::AsmJsExternalEntryPoint;
         } else
 #endif
         if (funcInfo->HasBody())
@@ -414,17 +410,7 @@ namespace Js
             if (funcInfo->GetFunctionProxy()->IsFunctionBody() &&
                 funcInfo->GetFunctionBody()->GetIsAsmJsFunction())
             {
-#ifdef ENABLE_WASM
-                AsmJsFunctionInfo* asmInfo = funcInfo->GetFunctionBody()->GetAsmJsFunctionInfo();
-                if (asmInfo && asmInfo->IsWasmDeferredParse())
-                {
-                    entryPoint = WasmLibrary::WasmDeferredParseExternalThunk;
-                }
-                else
-#endif
-                {
-                    entryPoint = Js::AsmJsExternalEntryPoint;
-                }
+                entryPoint = Js::AsmJsExternalEntryPoint;
             }
             else
 #endif
@@ -464,7 +450,11 @@ namespace Js
 
         if (callerHostScriptContext == calleeHostScriptContext || (callerHostScriptContext == nullptr && !calleeHostScriptContext->HasCaller()))
         {
-            return JavascriptFunction::CallFunction<true>(function, entryPoint, args, true /*useLargeArgCount*/);
+            BEGIN_SAFE_REENTRANT_CALL(targetScriptContext->GetThreadContext())
+            {
+                 return JavascriptFunction::CallFunction<true>(function, entryPoint, args, true /*useLargeArgCount*/);
+            }
+            END_SAFE_REENTRANT_CALL
         }
 
 #if DBG_DUMP || defined(PROFILE_EXEC) || defined(PROFILE_MEM)
@@ -485,7 +475,12 @@ namespace Js
         {
             args.Values[i] = CrossSite::MarshalVar(targetScriptContext, args.Values[i]);
         }
-        if (args.HasExtraArg())
+        if (args.HasNewTarget())
+        {
+            // Last value is new.target
+            args.Values[count] = CrossSite::MarshalVar(targetScriptContext, args.GetNewTarget());
+        }
+        else if (args.HasExtraArg())
         {
             // The final eval arg is a frame display that needs to be marshaled specially.
             args.Values[count] = CrossSite::MarshalFrameDisplay(targetScriptContext, args.GetFrameDisplay());
@@ -536,7 +531,11 @@ namespace Js
             }
             wasDispatchExCallerPushed = TRUE;
 
+            BEGIN_SAFE_REENTRANT_CALL(targetScriptContext->GetThreadContext())
+            {
             result = JavascriptFunction::CallFunction<true>(function, entryPoint, args, true /*useLargeArgCount*/);
+            }
+            END_SAFE_REENTRANT_CALL
             ScriptContext* callerScriptContext = callerHostScriptContext->GetScriptContext();
             result = CrossSite::MarshalVar(callerScriptContext, result);
         },

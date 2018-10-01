@@ -4,8 +4,8 @@
 //-------------------------------------------------------------------------------------------------------
 #include "RuntimeLibraryPch.h"
 
-namespace Js
-{
+using namespace Js;
+
     FunctionInfo JavascriptGeneratorFunction::functionInfo(
         FORCE_NO_WRITE_BARRIER_TAG(JavascriptGeneratorFunction::EntryGeneratorFunctionImplementation),
         (FunctionInfo::Attributes)(FunctionInfo::DoNotProfile | FunctionInfo::ErrorOnNew));
@@ -104,6 +104,7 @@ namespace Js
     {
         FunctionProxy* functionProxy = (*infoRef)->GetFunctionProxy();
         ScriptContext* scriptContext = functionProxy->GetScriptContext();
+        JIT_HELPER_NOT_REENTRANT_HEADER(ScrFunc_OP_NewScGenFunc, reentrancylock, scriptContext->GetThreadContext());
 
         GeneratorVirtualScriptFunction* scriptFunction = scriptContext->GetLibrary()->CreateGeneratorVirtualScriptFunction(functionProxy);
         scriptFunction->SetEnvironment(environment);
@@ -118,16 +119,20 @@ namespace Js
         scriptFunction->SetRealGeneratorFunction(genFunc);
 
         return genFunc;
+        JIT_HELPER_END(ScrFunc_OP_NewScGenFunc);
     }
 
     JavascriptGeneratorFunction * JavascriptGeneratorFunction::OP_NewScGenFuncHomeObj(FrameDisplay *environment, FunctionInfoPtrPtr infoRef, Var homeObj)
     {
         Assert(homeObj != nullptr);
+        JIT_HELPER_NOT_REENTRANT_HEADER(ScrFunc_OP_NewScGenFuncHomeObj, reentrancylock, (*infoRef)->GetFunctionProxy()->GetScriptContext()->GetThreadContext());
+
         JavascriptGeneratorFunction* genFunc = JavascriptGeneratorFunction::OP_NewScGenFunc(environment, infoRef);
 
         genFunc->SetHomeObj(homeObj);
 
         return genFunc;
+        JIT_HELPER_END(ScrFunc_OP_NewScGenFuncHomeObj);
     }
 
     Var JavascriptGeneratorFunction::EntryGeneratorFunctionImplementation(RecyclableObject* function, CallInfo callInfo, ...)
@@ -152,7 +157,11 @@ namespace Js
         JavascriptOperators::OrdinaryCreateFromConstructor(function, generator, prototype, scriptContext);
 
         // Call a next on the generator to execute till the beginning of the body
-        CALL_ENTRYPOINT(scriptContext->GetThreadContext(), generator->EntryNext, function, CallInfo(CallFlags_Value, 1), generator);
+        BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+        {
+            CALL_ENTRYPOINT(scriptContext->GetThreadContext(), generator->EntryNext, function, CallInfo(CallFlags_Value, 1), generator);
+        }
+        END_SAFE_REENTRANT_CALL
 
         return generator;
     }
@@ -185,7 +194,11 @@ namespace Js
 
         try
         {
-            CALL_FUNCTION(scriptContext->GetThreadContext(), executor, CallInfo(CallFlags_Value, 3), library->GetUndefined(), resolve, reject);
+            BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+            {
+                CALL_FUNCTION(scriptContext->GetThreadContext(), executor, CallInfo(CallFlags_Value, 3), library->GetUndefined(), resolve, reject);
+            }
+            END_SAFE_REENTRANT_CALL
         }
         catch (const JavascriptException& err)
         {
@@ -265,11 +278,6 @@ namespace Js
 
     PropertyQueryFlags JavascriptGeneratorFunction::HasPropertyQuery(PropertyId propertyId, _Inout_opt_ PropertyValueInfo* info)
     {
-        if (propertyId == PropertyIds::length)
-        {
-            return PropertyQueryFlags::Property_Found;
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -281,12 +289,6 @@ namespace Js
 
     PropertyQueryFlags JavascriptGeneratorFunction::GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext)
     {
-        BOOL result;
-        if (GetPropertyBuiltIns(originalInstance, propertyId, value, info, requestContext, &result))
-        {
-            return JavascriptConversion::BooleanToPropertyQueryFlags(result);
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -303,12 +305,6 @@ namespace Js
 
         if (propertyRecord != nullptr)
         {
-            BOOL result;
-            if (GetPropertyBuiltIns(originalInstance, propertyRecord->GetPropertyId(), value, info, requestContext, &result))
-            {
-                return JavascriptConversion::BooleanToPropertyQueryFlags(result);
-            }
-
             if (propertyRecord->GetPropertyId() == PropertyIds::caller || propertyRecord->GetPropertyId() == PropertyIds::arguments)
             {
                 // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -319,27 +315,6 @@ namespace Js
         return JavascriptFunction::GetPropertyQuery(originalInstance, propertyNameString, value, info, requestContext);
     }
 
-    bool JavascriptGeneratorFunction::GetPropertyBuiltIns(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext, BOOL* result)
-    {
-        if (propertyId == PropertyIds::length)
-        {
-            // Cannot just call the base GetProperty for `length` because we need
-            // to get the length from our private ScriptFunction instead of ourself.
-            int len = 0;
-            Var varLength;
-            if (scriptFunction->GetProperty(this, PropertyIds::length, &varLength, NULL, requestContext))
-            {
-                len = JavascriptConversion::ToInt32(varLength, requestContext);
-            }
-
-            *value = JavascriptNumber::ToVar(len, requestContext);
-            *result = true;
-            return true;
-        }
-
-        return false;
-    }
-
     PropertyQueryFlags JavascriptGeneratorFunction::GetPropertyReferenceQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext)
     {
         return JavascriptGeneratorFunction::GetPropertyQuery(originalInstance, propertyId, value, info, requestContext);
@@ -347,12 +322,6 @@ namespace Js
 
     BOOL JavascriptGeneratorFunction::SetProperty(PropertyId propertyId, Var value, PropertyOperationFlags flags, PropertyValueInfo* info)
     {
-        BOOL result;
-        if (SetPropertyBuiltIns(propertyId, value, flags, info, &result))
-        {
-            return result;
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -369,12 +338,6 @@ namespace Js
 
         if (propertyRecord != nullptr)
         {
-            BOOL result;
-            if (SetPropertyBuiltIns(propertyRecord->GetPropertyId(), value, flags, info, &result))
-            {
-                return result;
-            }
-
             if (propertyRecord->GetPropertyId() == PropertyIds::caller || propertyRecord->GetPropertyId() == PropertyIds::arguments)
             {
                 // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -385,36 +348,8 @@ namespace Js
         return JavascriptFunction::SetProperty(propertyNameString, value, flags, info);
     }
 
-    bool JavascriptGeneratorFunction::SetPropertyBuiltIns(PropertyId propertyId, Var value, PropertyOperationFlags flags, PropertyValueInfo* info, BOOL* result)
+    _Check_return_ _Success_(return) BOOL JavascriptGeneratorFunction::GetAccessors(PropertyId propertyId, _Outptr_result_maybenull_ Var* getter, _Outptr_result_maybenull_ Var* setter, ScriptContext* requestContext)
     {
-        if (propertyId == PropertyIds::length)
-        {
-            JavascriptError::ThrowCantAssignIfStrictMode(flags, this->GetScriptContext());
-
-            *result = false;
-            return true;
-        }
-
-        return false;
-    }
-
-    BOOL JavascriptGeneratorFunction::SetAccessors(PropertyId propertyId, Var getter, Var setter, PropertyOperationFlags flags)
-    {
-        if (propertyId == PropertyIds::length)
-        {
-            return this->scriptFunction->SetAccessors(propertyId, getter, setter, flags);
-        }
-
-        return JavascriptFunction::SetAccessors(propertyId, getter, setter, flags);
-    }
-
-    BOOL JavascriptGeneratorFunction::GetAccessors(PropertyId propertyId, Var *getter, Var *setter, ScriptContext * requestContext)
-    {
-        if (propertyId == PropertyIds::length)
-        {
-            return this->scriptFunction->GetAccessors(propertyId, getter, setter, requestContext);
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -432,11 +367,6 @@ namespace Js
             return DynamicObject::GetSetter(propertyId, setterValue, info, requestContext);
         }
 
-        if (propertyId == PropertyIds::length)
-        {
-            return this->scriptFunction->GetSetter(propertyId, setterValue, info, requestContext);
-        }
-
         return JavascriptFunction::GetSetter(propertyId, setterValue, info, requestContext);
     }
 
@@ -447,11 +377,6 @@ namespace Js
 
         if (propertyRecord != nullptr)
         {
-            if (propertyRecord->GetPropertyId() == PropertyIds::length)
-            {
-                return this->scriptFunction->GetSetter(propertyNameString, setterValue, info, requestContext);
-            }
-
             if ((propertyRecord->GetPropertyId() == PropertyIds::caller || propertyRecord->GetPropertyId() == PropertyIds::arguments))
             {
                 // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -469,11 +394,6 @@ namespace Js
 
     BOOL JavascriptGeneratorFunction::DeleteProperty(PropertyId propertyId, PropertyOperationFlags flags)
     {
-        if (propertyId == PropertyIds::length)
-        {
-            return false;
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -485,11 +405,6 @@ namespace Js
 
     BOOL JavascriptGeneratorFunction::DeleteProperty(JavascriptString *propertyNameString, PropertyOperationFlags flags)
     {
-        if (BuiltInPropertyRecords::length.Equals(propertyNameString))
-        {
-            return false;
-        }
-
         if (BuiltInPropertyRecords::caller.Equals(propertyNameString) || BuiltInPropertyRecords::arguments.Equals(propertyNameString))
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -501,11 +416,6 @@ namespace Js
 
     BOOL JavascriptGeneratorFunction::IsWritable(PropertyId propertyId)
     {
-        if (propertyId == PropertyIds::length)
-        {
-            return false;
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -517,11 +427,6 @@ namespace Js
 
     BOOL JavascriptGeneratorFunction::IsEnumerable(PropertyId propertyId)
     {
-        if (propertyId == PropertyIds::length)
-        {
-            return false;
-        }
-
         if (propertyId == PropertyIds::caller || propertyId == PropertyIds::arguments)
         {
             // JavascriptFunction has special case for caller and arguments; call DynamicObject:: virtual directly to skip that.
@@ -626,4 +531,4 @@ namespace Js
         TTD::NSSnapObjects::StdExtractSetKindSpecificInfo<TTD::NSSnapObjects::SnapGeneratorVirtualScriptFunctionInfo*, TTD::NSSnapObjects::SnapObjectType::SnapGeneratorVirtualScriptFunction>(objData, fi);
     }
 #endif
-}
+

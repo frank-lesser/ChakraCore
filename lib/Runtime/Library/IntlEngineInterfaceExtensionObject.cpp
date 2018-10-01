@@ -48,48 +48,76 @@ using namespace PlatformAgnostic::ICUHelpers;
 
 #endif // INTL_ICU
 
-// NOTE(jahorto): Keep these enums in sync with those by the same name in Intl.js
-// These enums are used by both WinGlob- and ICU-backed Intl
-enum class NumberFormatStyle
-{
-    Decimal, // Intl.NumberFormat(locale, { style: "decimal" }); // aka in our code as "number"
-    Percent, // Intl.NumberFormat(locale, { style: "percent" });
-    Currency, // Intl.NumberFormat(locale, { style: "currency", ... });
+// The following macros allow the key-value pairs to be C++ enums as well as JS objects
+// in Intl.js. When adding a new macro, follow the same format as the _VALUES macros below,
+// and add your new _VALUES macro to PROJECTED_ENUMS along with the name of the enum.
+// NOTE: make sure the last VALUE macro has the highest integer value, since the C++ enum's ::Max
+// value is added to the end of the C++ enum definition as an increment of the previous value.
+// The ::Max value is used in a defensive assert, and we want to make sure its always 1 greater
+// than the highest valid value.
 
-    Max,
-    Default = Decimal,
+#define NUMBERFORMATSTYLE_VALUES(VALUE) \
+VALUE(Default, default_, 0) \
+VALUE(Decimal, decimal, 0) \
+VALUE(Percent, percent, 1) \
+VALUE(Currency, currency, 2)
+
+#define NUMBERFORMATCURRENCYDISPLAY_VALUES(VALUE) \
+VALUE(Default, default_, 0) \
+VALUE(Symbol, symbol, 0) \
+VALUE(Code, code, 1) \
+VALUE(Name, name, 2)
+
+#define COLLATORSENSITIVITY_VALUES(VALUE) \
+VALUE(Default, default_, 3) \
+VALUE(Base, base, 0) \
+VALUE(Accent, accent, 1) \
+VALUE(Case, case_, 2) \
+VALUE(Variant, variant, 3)
+
+#define COLLATORCASEFIRST_VALUES(VALUE) \
+VALUE(Default, default_, 2) \
+VALUE(Upper, upper, 0) \
+VALUE(Lower, lower, 1) \
+VALUE(False, false_, 2)
+
+// LocaleDataKind intentionally has no Default value
+#define LOCALEDATAKIND_VALUES(VALUE) \
+VALUE(Collation, co, 0) \
+VALUE(CaseFirst, kf, 1) \
+VALUE(Numeric, kn, 2) \
+VALUE(Calendar, ca, 3) \
+VALUE(NumberingSystem, nu, 4) \
+VALUE(HourCycle, hc, 5)
+
+//BuiltInFunctionID intentionally has no Default value
+#define BUILTINFUNCTIONID_VALUES(VALUE) \
+VALUE(DateToLocaleString, DateToLocaleString, 0) \
+VALUE(DateToLocaleDateString, DateToLocaleDateString, 1) \
+VALUE(DateToLocaleTimeString, DateToLocaleTimeString, 2) \
+VALUE(NumberToLocaleString, NumberToLocaleString, 3) \
+VALUE(StringLocaleCompare, StringLocaleCompare, 4)
+
+#define ENUM_VALUE(enumName, propId, value) enumName = value,
+#define PROJECTED_ENUM(ClassName, VALUES) \
+enum class ClassName \
+{ \
+    VALUES(ENUM_VALUE) \
+    Max \
 };
 
-enum class NumberFormatCurrencyDisplay
-{
-    Symbol, // Intl.NumberFormat(locale, { style: "currency", currencyDisplay: "symbol" }); // e.g. "$" or "US$" depeding on locale
-    Code, // Intl.NumberFormat(locale, { style: "currency", currencyDisplay: "code" }); // e.g. "USD"
-    Name, // Intl.NumberFormat(locale, { style: "currency", currencyDisplay: "name" }); // e.g. "US dollar"
+#define PROJECTED_ENUMS(PROJECT) \
+PROJECT(LocaleDataKind, LOCALEDATAKIND_VALUES) \
+PROJECT(CollatorCaseFirst, COLLATORCASEFIRST_VALUES) \
+PROJECT(CollatorSensitivity, COLLATORSENSITIVITY_VALUES) \
+PROJECT(NumberFormatCurrencyDisplay, NUMBERFORMATCURRENCYDISPLAY_VALUES) \
+PROJECT(NumberFormatStyle, NUMBERFORMATSTYLE_VALUES) \
+PROJECT(BuiltInFunctionID, BUILTINFUNCTIONID_VALUES)
 
-    Max,
-    Default = Symbol,
-};
+PROJECTED_ENUMS(PROJECTED_ENUM)
 
-enum class CollatorSensitivity
-{
-    Base,
-    Accent,
-    Case,
-    Variant,
-
-    Max,
-    Default = Variant,
-};
-
-enum class CollatorCaseFirst
-{
-    Upper,
-    Lower,
-    False,
-
-    Max,
-    Default = False,
-};
+#undef PROJECTED_ENUM
+#undef ENUM_VALUE
 
 #pragma warning(push)
 #pragma warning(disable:4309) // truncation of constant value
@@ -330,7 +358,7 @@ namespace Js
     typedef FinalizableICUObject<UPluralRules *, uplrules_close> FinalizableUPluralRules;
 
     template<typename TExecutor>
-    static void EnsureBuffer(_In_ TExecutor executor, _In_ Recycler *recycler, _Outptr_result_buffer_(returnLength) char16 **ret, _Out_ int *returnLength, _In_ bool allowZeroLengthStrings = false, _In_ int firstTryLength = 8)
+    static void EnsureBuffer(_In_ TExecutor executor, _In_ Recycler *recycler, _Outptr_result_buffer_(*returnLength) char16 **ret, _Out_ int *returnLength, _In_ bool allowZeroLengthStrings = false, _In_ int firstTryLength = 8)
     {
         UErrorCode status = U_ZERO_ERROR;
         *ret = RecyclerNewArrayLeaf(recycler, char16, firstTryLength);
@@ -431,7 +459,7 @@ namespace Js
     template <size_t N>
     static void LangtagToLocaleID(_In_ JavascriptString *langtag, _Out_ char(&localeID)[N])
     {
-        LangtagToLocaleID(langtag->GetSz(), langtag->GetLength(), localeID);
+        LangtagToLocaleID(langtag->GetString(), langtag->GetLength(), localeID);
     }
 
     template <typename Callback>
@@ -533,25 +561,52 @@ namespace Js
 
     bool IntlEngineInterfaceExtensionObject::InitializeIntlNativeInterfaces(DynamicObject* intlNativeInterfaces, DeferredTypeHandlerBase * typeHandler, DeferredInitializeMode mode)
     {
-        typeHandler->Convert(intlNativeInterfaces, mode, 16);
+        int initSlotCapacity = 0;
+
+        // automatically get the initSlotCapacity from everything we are about to add to intlNativeInterfaces
+#define INTL_ENTRY(id, func) initSlotCapacity++;
+#include "IntlExtensionObjectBuiltIns.h"
+#undef INTL_ENTRY
+
+#define PROJECTED_ENUM(ClassName, VALUES) initSlotCapacity++;
+PROJECTED_ENUMS(PROJECTED_ENUM)
+#undef PROJECTED_ENUM
+
+        // add capacity for platform.winglob and platform.FallbackSymbol
+        initSlotCapacity += 2;
+
+        typeHandler->Convert(intlNativeInterfaces, mode, initSlotCapacity);
 
         ScriptContext* scriptContext = intlNativeInterfaces->GetScriptContext();
         JavascriptLibrary* library = scriptContext->GetLibrary();
 
 // gives each entrypoint a property ID on the intlNativeInterfaces library object
-#ifdef INTL_ENTRY
-#undef INTL_ENTRY
-#endif
-#define INTL_ENTRY(id, func) \
-    library->AddFunctionToLibraryObject(intlNativeInterfaces, Js::PropertyIds::##id, &IntlEngineInterfaceExtensionObject::EntryInfo::Intl_##func, 1);
+#define INTL_ENTRY(id, func) library->AddFunctionToLibraryObject(intlNativeInterfaces, Js::PropertyIds::##id, &IntlEngineInterfaceExtensionObject::EntryInfo::Intl_##func, 1);
 #include "IntlExtensionObjectBuiltIns.h"
 #undef INTL_ENTRY
+
+        library->AddMember(intlNativeInterfaces, PropertyIds::FallbackSymbol, library->CreateSymbol(BuiltInPropertyRecords::_intlFallbackSymbol));
+
+        DynamicObject * enumObj = nullptr;
+
+// Projects the exact layout of our C++ enums into Intl.js so that we dont have to remember to keep them in sync
+#define ENUM_VALUE(enumName, propId, value) library->AddMember(enumObj, PropertyIds::##propId, JavascriptNumber::ToVar(value, scriptContext));
+#define PROJECTED_ENUM(ClassName, VALUES) \
+    enumObj = library->CreateObject(); \
+    VALUES(ENUM_VALUE) \
+    library->AddMember(intlNativeInterfaces, PropertyIds::##ClassName, enumObj); \
+
+PROJECTED_ENUMS(PROJECTED_ENUM)
+
+#undef PROJECTED_ENUM
+#undef ENUM_VALUE
 
 #if INTL_WINGLOB
         library->AddMember(intlNativeInterfaces, Js::PropertyIds::winglob, library->GetTrue());
 #else
         library->AddMember(intlNativeInterfaces, Js::PropertyIds::winglob, library->GetFalse());
 
+#if defined(NTBUILD)
         // when using ICU, we can call ulocdata_getCLDRVersion to ensure that ICU is functioning properly before allowing Intl to continue.
         // ulocdata_getCLDRVersion will cause the data file to be loaded, and if we don't have enough memory to do so, we can throw OutOfMemory here.
         // This is to protect against spurious U_MISSING_RESOURCE_ERRORs and U_FILE_ACCESS_ERRORs coming from early-lifecycle
@@ -574,6 +629,7 @@ namespace Js
         }
 
         AssertOrFailFastMsg(U_SUCCESS(status), "ulocdata_getCLDRVersion returned non-OOM failure");
+#endif // defined(NTBUILD)
 #endif // else !INTL_WINGLOB
 
         intlNativeInterfaces->SetHasNoEnumerableProperties(true);
@@ -742,11 +798,11 @@ namespace Js
             Js::Var args[] = { scriptContext->GetLibrary()->GetUndefined(), scriptContext->GetLibrary()->GetEngineInterfaceObject(), initType };
             Js::CallInfo callInfo(Js::CallFlags_Value, _countof(args));
 
-            // Clear disable implicit call bit as initialization code doesn't have any side effect
-            Js::ImplicitCallFlags saveImplicitCallFlags = scriptContext->GetThreadContext()->GetImplicitCallFlags();
-            scriptContext->GetThreadContext()->ClearDisableImplicitFlags();
-            JavascriptFunction::CallRootFunctionInScript(function, Js::Arguments(callInfo, args));
-            scriptContext->GetThreadContext()->SetImplicitCallFlags((Js::ImplicitCallFlags)(saveImplicitCallFlags));
+            Js::Arguments arguments(callInfo, args);
+            scriptContext->GetThreadContext()->ExecuteImplicitCall(function, Js::ImplicitCall_Accessor, [=]()->Js::Var
+            {
+                return JavascriptFunction::CallRootFunctionInScript(function, arguments);
+            });
 
             // Delete prototypes on functions if initialized Intl object
             if (intlInitializationType == IntlInitializationType::Intl)
@@ -1047,15 +1103,8 @@ DEFINE_ISXLOCALEAVAILABLE(DTF, udat)
 DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
 
 #ifdef INTL_ICU
-    enum class LocaleDataKind
-    {
-        Collation,
-        CaseFirst,
-        Numeric,
-        Calendar,
-        NumberingSystem,
-        HourCycle
-    };
+
+
 #endif
 
     Var IntlEngineInterfaceExtensionObject::EntryIntl_GetLocaleData(RecyclableObject* function, CallInfo callInfo, ...)
@@ -1085,11 +1134,13 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         if (kind == LocaleDataKind::Collation)
         {
             ScopedUEnumeration collations(ucol_getKeywordValuesForLocale("collation", localeID, false, &status));
-            ICU_ASSERT(status, true);
+            int collationsCount = uenum_count(collations, &status);
+
+            // we expect collationsCount to have at least "standard" and "search" in it
+            ICU_ASSERT(status, collationsCount > 2);
 
             // the return array can't include "standard" and "search", but must have its first element be null (count - 2 + 1) [#sec-intl-collator-internal-slots]
-            ret = library->CreateArray(uenum_count(collations, &status) - 1);
-            ICU_ASSERT(status, true);
+            ret = library->CreateArray(collationsCount - 1);
             ret->SetItem(0, library->GetNull(), flag);
 
             int collationLen = 0;
@@ -1109,7 +1160,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
                 const size_t unicodeCollationLen = strlen(unicodeCollation);
 
                 // we only need strlen(unicodeCollation) + 1 char16s because unicodeCollation will always be ASCII (funnily enough)
-                char16 *unicodeCollation16 = RecyclerNewArrayLeaf(scriptContext->GetRecycler(), char16, strlen(unicodeCollation) + 1);
+                char16 *unicodeCollation16 = RecyclerNewArrayLeaf(scriptContext->GetRecycler(), char16, unicodeCollationLen + 1);
                 charcount_t unicodeCollation16Len = 0;
                 HRESULT hr = utf8::NarrowStringToWideNoAlloc(
                     unicodeCollation,
@@ -1450,6 +1501,25 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
 #endif
     }
 
+#ifdef INTL_ICU
+    // This is used by both NumberFormat and PluralRules
+    static void SetUNumberFormatDigitOptions(UNumberFormat *fmt, DynamicObject *state)
+    {
+        if (JavascriptOperators::HasProperty(state, PropertyIds::minimumSignificantDigits))
+        {
+            unum_setAttribute(fmt, UNUM_SIGNIFICANT_DIGITS_USED, true);
+            unum_setAttribute(fmt, UNUM_MIN_SIGNIFICANT_DIGITS, AssertIntegerProperty(state, PropertyIds::minimumSignificantDigits));
+            unum_setAttribute(fmt, UNUM_MAX_SIGNIFICANT_DIGITS, AssertIntegerProperty(state, PropertyIds::maximumSignificantDigits));
+        }
+        else
+        {
+            unum_setAttribute(fmt, UNUM_MIN_INTEGER_DIGITS, AssertIntegerProperty(state, PropertyIds::minimumIntegerDigits));
+            unum_setAttribute(fmt, UNUM_MIN_FRACTION_DIGITS, AssertIntegerProperty(state, PropertyIds::minimumFractionDigits));
+            unum_setAttribute(fmt, UNUM_MAX_FRACTION_DIGITS, AssertIntegerProperty(state, PropertyIds::maximumFractionDigits));
+        }
+    }
+#endif
+
     Var IntlEngineInterfaceExtensionObject::EntryIntl_CacheNumberFormat(RecyclableObject * function, CallInfo callInfo, ...)
     {
         EngineInterfaceObject_CommonFunctionProlog(function, callInfo);
@@ -1508,18 +1578,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
 
         unum_setAttribute(*fmt, UNUM_ROUNDING_MODE, UNUM_ROUND_HALFUP);
 
-        if (JavascriptOperators::HasProperty(state, PropertyIds::minimumSignificantDigits))
-        {
-            unum_setAttribute(*fmt, UNUM_SIGNIFICANT_DIGITS_USED, true);
-            unum_setAttribute(*fmt, UNUM_MIN_SIGNIFICANT_DIGITS, AssertIntegerProperty(state, PropertyIds::minimumSignificantDigits));
-            unum_setAttribute(*fmt, UNUM_MAX_SIGNIFICANT_DIGITS, AssertIntegerProperty(state, PropertyIds::maximumSignificantDigits));
-        }
-        else
-        {
-            unum_setAttribute(*fmt, UNUM_MIN_INTEGER_DIGITS, AssertIntegerProperty(state, PropertyIds::minimumIntegerDigits));
-            unum_setAttribute(*fmt, UNUM_MIN_FRACTION_DIGITS, AssertIntegerProperty(state, PropertyIds::minimumFractionDigits));
-            unum_setAttribute(*fmt, UNUM_MAX_FRACTION_DIGITS, AssertIntegerProperty(state, PropertyIds::maximumFractionDigits));
-        }
+        SetUNumberFormatDigitOptions(*fmt, state);
 
         if (currency != nullptr)
         {
@@ -1528,7 +1587,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         }
 
         state->SetInternalProperty(
-            InternalPropertyIds::HiddenObject,
+            InternalPropertyIds::CachedUNumberFormat,
             fmt,
             PropertyOperationFlags::PropertyOperation_None,
             nullptr
@@ -1809,14 +1868,13 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         }
 
         // Below, we lazy-initialize the backing UCollator on the first call to localeCompare
-        // On subsequent calls, the UCollator will be cached in state.hiddenObject
-        // TODO(jahorto): Make these property IDs sane, so that hiddenObject doesn't have different meanings in different contexts
-        Var hiddenObject = nullptr;
+        // On subsequent calls, the UCollator will be cached in state.CachedUCollator
+        Var cachedUCollator = nullptr;
         FinalizableUCollator *coll = nullptr;
         UErrorCode status = U_ZERO_ERROR;
-        if (state->GetInternalProperty(state, Js::InternalPropertyIds::HiddenObject, &hiddenObject, nullptr, scriptContext))
+        if (state->GetInternalProperty(state, InternalPropertyIds::CachedUCollator, &cachedUCollator, nullptr, scriptContext))
         {
-            coll = reinterpret_cast<FinalizableUCollator *>(hiddenObject);
+            coll = reinterpret_cast<FinalizableUCollator *>(cachedUCollator);
             INTL_TRACE("Using previously cached UCollator (0x%x)", coll);
         }
         else
@@ -1827,9 +1885,17 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
             bool ignorePunctuation = AssertBooleanProperty(state, PropertyIds::ignorePunctuation);
             bool numeric = AssertBooleanProperty(state, PropertyIds::numeric);
             CollatorCaseFirst caseFirst = AssertEnumProperty<CollatorCaseFirst>(state, PropertyIds::caseFirstEnum);
+            JavascriptString *usage = AssertStringProperty(state, PropertyIds::usage);
 
             char localeID[ULOC_FULLNAME_CAPACITY] = { 0 };
             LangtagToLocaleID(langtag, localeID);
+
+            const char16 searchString[] = _u("search");
+            if (usage->BufferEquals(searchString, _countof(searchString) - 1)) // minus the null terminator
+            {
+                uloc_setKeywordValue("collation", "search", localeID, _countof(localeID), &status);
+                ICU_ASSERT(status, true);
+            }
 
             coll = FinalizableUCollator::New(scriptContext->GetRecycler(), ucol_open(localeID, &status));
             ICU_ASSERT(status, true);
@@ -1890,7 +1956,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
 
             // cache coll for later use (so that the condition that brought us here returns true for future calls)
             state->SetInternalProperty(
-                InternalPropertyIds::HiddenObject,
+                InternalPropertyIds::CachedUCollator,
                 coll,
                 PropertyOperationFlags::PropertyOperation_None,
                 nullptr
@@ -2249,8 +2315,10 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
             // TODO(jahorto): Determine if this would ever be returned and what it would map to
             case UNUM_PERMILL_FIELD: AssertOrFailFastMsg(false, "Unexpected permill field");
 
-            case UNUM_SIGN_FIELD: num < 0 ? library->GetIntlMinusSignPartString() : library->GetIntlPlusSignPartString();
-            default: AssertOrFailFastMsg(false, "Unexpected unknown part"); return nullptr;
+            case UNUM_SIGN_FIELD: return num < 0 ? library->GetIntlMinusSignPartString() : library->GetIntlPlusSignPartString();
+
+            // At the ECMA-402 TC39 call for May 2017, it was decided that we should treat unmapped parts as type: "unknown"
+            default: return library->GetIntlUnknownPartString();
             }
         }
 
@@ -2350,8 +2418,8 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         DynamicObject *state = DynamicObject::UnsafeFromVar(args[2]);
         bool toParts = JavascriptBoolean::UnsafeFromVar(args[3])->GetValue();
         bool forNumberPrototypeToLocaleString = JavascriptBoolean::UnsafeFromVar(args[4])->GetValue();
-        Var cachedFormatter = nullptr; // cached by EntryIntl_CacheNumberFormat
-        AssertOrFailFast(state->GetInternalProperty(state, Js::InternalPropertyIds::HiddenObject, &cachedFormatter, NULL, scriptContext));
+        Var cachedUNumberFormat = nullptr; // cached by EntryIntl_CacheNumberFormat
+        AssertOrFailFast(state->GetInternalProperty(state, InternalPropertyIds::CachedUNumberFormat, &cachedUNumberFormat, NULL, scriptContext));
 
         if (forNumberPrototypeToLocaleString)
         {
@@ -2369,7 +2437,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
             INTL_TRACE("Calling NumberFormat.prototype.format(%f)", num);
         }
 
-        auto fmt = static_cast<FinalizableUNumberFormat *>(cachedFormatter);
+        auto fmt = static_cast<FinalizableUNumberFormat *>(cachedUNumberFormat);
         char16 *formatted = nullptr;
         int formattedLen = 0;
 
@@ -2411,7 +2479,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         {
             return unum_formatDouble(*fmt, num, buf, bufLen, nullptr, status);
         }, scriptContext->GetRecycler(), &formatted, &formattedLen);
-        JavascriptOperators::InitProperty(part, PropertyIds::type, library->GetIntlLiteralPartString());
+        JavascriptOperators::InitProperty(part, PropertyIds::type, library->GetIntlUnknownPartString());
         JavascriptOperators::InitProperty(part, PropertyIds::value, JavascriptString::NewWithBuffer(formatted, formattedLen, scriptContext));
 
         ret->SetItem(0, part, PropertyOperationFlags::PropertyOperation_None);
@@ -2610,14 +2678,13 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         }
 
         // Below, we lazy-initialize the backing UDateFormat on the first call to format{ToParts}
-        // On subsequent calls, the UDateFormat will be cached in state.hiddenObject
-        // TODO(jahorto): Make these property IDs sane, so that hiddenObject doesn't have different meanings in different contexts
-        Var hiddenObject = nullptr;
+        // On subsequent calls, the UDateFormat will be cached in state.CachedUDateFormat
+        Var cachedUDateFormat = nullptr;
         FinalizableUDateFormat *dtf = nullptr;
         UErrorCode status = U_ZERO_ERROR;
-        if (state->GetInternalProperty(state, Js::InternalPropertyIds::HiddenObject, &hiddenObject, nullptr, scriptContext))
+        if (state->GetInternalProperty(state, InternalPropertyIds::CachedUDateFormat, &cachedUDateFormat, nullptr, scriptContext))
         {
-            dtf = reinterpret_cast<FinalizableUDateFormat *>(hiddenObject);
+            dtf = reinterpret_cast<FinalizableUDateFormat *>(cachedUDateFormat);
             INTL_TRACE("Using previously cached UDateFormat (0x%x)", dtf);
         }
         else
@@ -2645,20 +2712,21 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
             // To accomplish this, we can set the switchover date between julian/gregorian
             // to the ECMAScript beginning of time, which is -8.64e15 according to ecma262 #sec-time-values-and-time-range
             UCalendar *cal = const_cast<UCalendar *>(udat_getCalendar(*dtf));
-            ucal_setGregorianChange(cal, -8.64e15, &status);
-
-            // status can be U_UNSUPPORTED_ERROR if the calendar isn't gregorian, which
-            // there does not seem to be a way to check for ahead of time in the C API
-            AssertOrFailFastMsg(U_SUCCESS(status) || status == U_UNSUPPORTED_ERROR, ICU_ERRORMESSAGE(status));
-
-            // If we passed the previous check, we should reset the status to U_ZERO_ERROR (in case it was U_UNSUPPORTED_ERROR)
-            status = U_ZERO_ERROR;
+            const char *calType = ucal_getType(cal, &status);
+            ICU_ASSERT(status, calType != nullptr);
+            if (strcmp(calType, "gregorian") == 0)
+            {
+                double beginningOfTime = -8.64e15;
+                ucal_setGregorianChange(cal, beginningOfTime, &status);
+                double actualGregorianChange = ucal_getGregorianChange(cal, &status);
+                ICU_ASSERT(status, beginningOfTime == actualGregorianChange);
+            }
 
             INTL_TRACE("Caching new UDateFormat (0x%x) with langtag=%s, pattern=%s, timezone=%s", dtf, langtag->GetSz(), pattern->GetSz(), timeZone->GetSz());
 
             // cache dtf for later use (so that the condition that brought us here returns true for future calls)
             state->SetInternalProperty(
-                InternalPropertyIds::HiddenObject,
+                InternalPropertyIds::CachedUDateFormat,
                 dtf,
                 PropertyOperationFlags::PropertyOperation_None,
                 nullptr
@@ -2747,7 +2815,6 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
                 typeString = library->GetIntlLiteralPartString(); break;
 #endif
             default:
-                AssertMsg(false, "Unmapped UDateFormatField");
                 typeString = library->GetIntlUnknownPartString(); break;
             }
 
@@ -2938,13 +3005,13 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
     }
 
 #ifdef INTL_ICU
-    static FinalizableUPluralRules *GetOrCreatePluralRulesCache(DynamicObject *stateObject, ScriptContext *scriptContext)
+    static FinalizableUPluralRules *GetOrCreateCachedUPluralRules(DynamicObject *stateObject, ScriptContext *scriptContext)
     {
-        Var hiddenObject = nullptr;
+        Var cachedUPluralRules = nullptr;
         FinalizableUPluralRules *pr = nullptr;
-        if (stateObject->GetInternalProperty(stateObject, InternalPropertyIds::HiddenObject, &hiddenObject, nullptr, scriptContext))
+        if (stateObject->GetInternalProperty(stateObject, InternalPropertyIds::CachedUPluralRules, &cachedUPluralRules, nullptr, scriptContext))
         {
-            pr = reinterpret_cast<FinalizableUPluralRules *>(hiddenObject);
+            pr = reinterpret_cast<FinalizableUPluralRules *>(cachedUPluralRules);
             INTL_TRACE("Using previously cached UPluralRules (0x%x)", pr);
         }
         else
@@ -2970,9 +3037,9 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
             pr = FinalizableUPluralRules::New(scriptContext->GetRecycler(), uplrules_openForType(localeID, prType, &status));
             ICU_ASSERT(status, true);
 
-            INTL_TRACE("Caching UPluralRules object (0x%x) with langtag %s and type %s", langtag->GetSz(), type->GetSz());
+            INTL_TRACE("Caching UPluralRules object (0x%x) with langtag %s and type %s", pr, langtag->GetSz(), type->GetSz());
 
-            stateObject->SetInternalProperty(InternalPropertyIds::HiddenObject, pr, PropertyOperationFlags::PropertyOperation_None, nullptr);
+            stateObject->SetInternalProperty(InternalPropertyIds::CachedUPluralRules, pr, PropertyOperationFlags::PropertyOperation_None, nullptr);
         }
 
         return pr;
@@ -2994,7 +3061,7 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         // This array is only used in resolved options, so the majority of the functionality can remain (namely, select() still works)
 #if defined(ICU_VERSION) && ICU_VERSION >= 61
         DynamicObject *state = DynamicObject::UnsafeFromVar(args[1]);
-        FinalizableUPluralRules *pr = GetOrCreatePluralRulesCache(state, scriptContext);
+        FinalizableUPluralRules *pr = GetOrCreateCachedUPluralRules(state, scriptContext);
 
         UErrorCode status = U_ZERO_ERROR;
         ScopedUEnumeration keywords(uplrules_getKeywords(*pr, &status));
@@ -3037,13 +3104,52 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
         CHAKRATEL_LANGSTATS_INC_BUILTINCOUNT(PluralRules_Prototype_select);
         INTL_TRACE("Calling PluralRules.prototype.select(%f)", n);
 
-        FinalizableUPluralRules *pr = GetOrCreatePluralRulesCache(state, scriptContext);
+        UErrorCode status = U_ZERO_ERROR;
+
+        FinalizableUPluralRules *pr = GetOrCreateCachedUPluralRules(state, scriptContext);
+
+        // ICU has an internal API, uplrules_selectWithFormat, that is equivalent to uplrules_select but will respect digit options of the passed UNumberFormat.
+        // Since its an internal API, we can't use it -- however, we can work around it by creating a UNumberFormat with provided digit options,
+        // formatting the requested number to a string, and then converting the string back to a double which we can pass to uplrules_select.
+        // This workaround was suggested during the May 2018 ECMA-402 discussion.
+        // The below is similar to GetOrCreateCachedUPluralRules, but since creating a UNumberFormat for Intl.NumberFormat is much more involved and no one else
+        // uses this functionality, it makes more sense to me to just put the logic inline.
+        Var cachedUNumberFormat = nullptr;
+        FinalizableUNumberFormat *nf = nullptr;
+        if (state->GetInternalProperty(state, InternalPropertyIds::CachedUNumberFormat, &cachedUNumberFormat, nullptr, scriptContext))
+        {
+            nf = reinterpret_cast<FinalizableUNumberFormat *>(cachedUNumberFormat);
+            INTL_TRACE("Using previously cached UNumberFormat (0x%x)", nf);
+        }
+        else
+        {
+            char localeID[ULOC_FULLNAME_CAPACITY] = { 0 };
+            LangtagToLocaleID(AssertStringProperty(state, PropertyIds::locale), localeID);
+            nf = FinalizableUNumberFormat::New(scriptContext->GetRecycler(), unum_open(UNUM_DECIMAL, nullptr, 0, localeID, nullptr, &status));
+
+            SetUNumberFormatDigitOptions(*nf, state);
+
+            INTL_TRACE("Caching UNumberFormat object (0x%x) with localeID %S", nf, localeID);
+
+            state->SetInternalProperty(InternalPropertyIds::CachedUNumberFormat, nf, PropertyOperationFlags::PropertyOperation_None, nullptr);
+        }
+
+        char16 *formattedN = nullptr;
+        int formattedNLength = 0;
+        EnsureBuffer([&](UChar *buf, int bufLen, UErrorCode *status)
+        {
+            return unum_formatDouble(*nf, n, buf, bufLen, nullptr, status);
+        }, scriptContext->GetRecycler(), &formattedN, &formattedNLength);
+
+        double nWithOptions = unum_parseDouble(*nf, reinterpret_cast<UChar *>(formattedN), formattedNLength, nullptr, &status);
+        double roundtripDiff = n - nWithOptions;
+        ICU_ASSERT(status, roundtripDiff <= 1.0 && roundtripDiff >= -1.0);
 
         char16 *selected = nullptr;
         int selectedLength = 0;
         EnsureBuffer([&](UChar *buf, int bufLen, UErrorCode *status)
         {
-            return uplrules_select(*pr, n, buf, bufLen, status);
+            return uplrules_select(*pr, nWithOptions, buf, bufLen, status);
         }, scriptContext->GetRecycler(), &selected, &selectedLength);
 
         return JavascriptString::NewWithBuffer(selected, static_cast<charcount_t>(selectedLength), scriptContext);
@@ -3065,17 +3171,6 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
     */
     Var IntlEngineInterfaceExtensionObject::EntryIntl_RegisterBuiltInFunction(RecyclableObject* function, CallInfo callInfo, ...)
     {
-        // Don't put this in a header or add it to the namespace even in this file. Keep it to the minimum scope needed.
-        enum class IntlBuiltInFunctionID : int32 {
-            Min = 0,
-            DateToLocaleString = Min,
-            DateToLocaleDateString,
-            DateToLocaleTimeString,
-            NumberToLocaleString,
-            StringLocaleCompare,
-            Max
-        };
-
         EngineInterfaceObject_CommonFunctionProlog(function, callInfo);
 
         // This function will only be used during the construction of the Intl object, hence Asserts are in place.
@@ -3083,27 +3178,27 @@ DEFINE_ISXLOCALEAVAILABLE(PR, uloc)
 
         JavascriptFunction *func = JavascriptFunction::FromVar(args.Values[1]);
         int32 id = TaggedInt::ToInt32(args.Values[2]);
-        Assert(id >= (int32)IntlBuiltInFunctionID::Min && id < (int32)IntlBuiltInFunctionID::Max);
+        Assert(id >= 0 && id < (int32)BuiltInFunctionID::Max);
 
         EngineInterfaceObject* nativeEngineInterfaceObj = scriptContext->GetLibrary()->GetEngineInterfaceObject();
         IntlEngineInterfaceExtensionObject* extensionObject = static_cast<IntlEngineInterfaceExtensionObject*>(nativeEngineInterfaceObj->GetEngineExtension(EngineInterfaceExtensionKind_Intl));
 
-        IntlBuiltInFunctionID functionID = static_cast<IntlBuiltInFunctionID>(id);
+        BuiltInFunctionID functionID = static_cast<BuiltInFunctionID>(id);
         switch (functionID)
         {
-        case IntlBuiltInFunctionID::DateToLocaleString:
+        case BuiltInFunctionID::DateToLocaleString:
             extensionObject->dateToLocaleString = func;
             break;
-        case IntlBuiltInFunctionID::DateToLocaleDateString:
+        case BuiltInFunctionID::DateToLocaleDateString:
             extensionObject->dateToLocaleDateString = func;
             break;
-        case IntlBuiltInFunctionID::DateToLocaleTimeString:
+        case BuiltInFunctionID::DateToLocaleTimeString:
             extensionObject->dateToLocaleTimeString = func;
             break;
-        case IntlBuiltInFunctionID::NumberToLocaleString:
+        case BuiltInFunctionID::NumberToLocaleString:
             extensionObject->numberToLocaleString = func;
             break;
-        case IntlBuiltInFunctionID::StringLocaleCompare:
+        case BuiltInFunctionID::StringLocaleCompare:
             extensionObject->stringLocaleCompare = func;
             break;
         default:

@@ -4,6 +4,7 @@
 //-------------------------------------------------------------------------------------------------------
 
 #include "Backend.h"
+#include "Core/CRC.h"
 
 #include "X86Encode.h"
 
@@ -1353,11 +1354,11 @@ EncoderMD::FixRelocListEntry(uint32 index, int32 totalBytesSaved, BYTE *buffStar
                 // ptr points to imm32 offset of the instruction that needs to be adjusted
                 // offset is in top 28-bits, arg count in bottom 4
                 uint32 field = *((uint32*) relocRecord.m_origPtr);
-                uint32 offset = field >> 4;
+                uint32 offset = field >> Js::InlineeCallInfo::inlineeStartOffsetShiftCount;
                 uint32 count = field & 0xf;
 
                 AssertMsg(offset < (uint32)(buffEnd - buffStart), "Inlinee entry offset out of range");
-                relocRecord.SetInlineOffset(((offset - totalBytesSaved) << 4) | count);
+                relocRecord.SetInlineOffset(((offset - totalBytesSaved) << Js::InlineeCallInfo::inlineeStartOffsetShiftCount) | count);
             }
             // adjust the ptr to the buffer itself
             relocRecord.m_ptr = (BYTE*) relocRecord.m_ptr - totalBytesSaved;
@@ -1431,7 +1432,7 @@ EncoderMD::ApplyRelocs(uint32 codeBufferAddress, size_t codeSize, uint * bufferC
                     Assert(*(uint32 *)relocAddress == 0);
                     *(uint32 *)relocAddress = offset;
                 }
-                *bufferCRC = Encoder::CalculateCRC(*bufferCRC, offset);
+                *bufferCRC = CalculateCRC(*bufferCRC, offset);
                 break;
             }
         case RelocTypeBranch:
@@ -1466,7 +1467,7 @@ EncoderMD::ApplyRelocs(uint32 codeBufferAddress, size_t codeSize, uint * bufferC
                         Encoder::EnsureRelocEntryIntegrity(codeBufferAddress, codeSize, (size_t)m_encoder->m_encodeBuffer, (size_t)relocAddress, sizeof(uint32), (ptrdiff_t)labelInstr->GetPC() - ((ptrdiff_t)reloc->m_ptr + 4));
                     }
                 }
-                *bufferCRC = Encoder::CalculateCRC(*bufferCRC, pcrel);
+                *bufferCRC = CalculateCRC(*bufferCRC, pcrel);
                 break;
             }
         case RelocTypeLabelUse:
@@ -1484,7 +1485,7 @@ EncoderMD::ApplyRelocs(uint32 codeBufferAddress, size_t codeSize, uint * bufferC
                 {
                     Encoder::EnsureRelocEntryIntegrity(codeBufferAddress, codeSize, (size_t)m_encoder->m_encodeBuffer, (size_t)relocAddress, sizeof(size_t), targetAddress, false);
                 }
-                *bufferCRC = Encoder::CalculateCRC(*bufferCRC, offset);
+                *bufferCRC = CalculateCRC(*bufferCRC, offset);
                 break;
             }
         case RelocTypeLabel:
@@ -1587,7 +1588,7 @@ EncoderMD::EncodeInlineeCallInfo(IR::Instr *instr, uint32 codeOffset)
     // offset of the start of the inlinee. We shouldn't have gotten here with more arguments
     // than can fit in as many bits.
     const bool encodeResult = Js::InlineeCallInfo::Encode(inlineeCallInfo, (uint32)instr->GetSrc1()->AsIntConstOpnd()->GetValue(), codeOffset);
-    Assert(encodeResult);
+    AssertOrFailFast(encodeResult);
 
     instr->GetSrc1()->AsIntConstOpnd()->SetValue(inlineeCallInfo);
 }

@@ -1001,20 +1001,6 @@ void ByteCodeUsesInstr::AggregateFollowingByteCodeUses()
     }
 }
 
-void ByteCodeUsesInstr::AggregatePrecedingByteCodeUses()
-{
-    IR::Instr * instr = this->m_prev;
-    while(instr && CanAggregateByteCodeUsesAcrossInstr(instr))
-    {
-        if (instr->IsByteCodeUsesInstr() && instr->GetByteCodeOffset() == this->GetByteCodeOffset())
-        {
-            IR::ByteCodeUsesInstr* precedingByteCodeUsesInstr = instr->AsByteCodeUsesInstr();
-            this->Aggregate(precedingByteCodeUsesInstr);
-        }
-        instr = instr->m_prev;
-    }
-}
-
 void ByteCodeUsesInstr::Aggregate(ByteCodeUsesInstr * byteCodeUsesInstr)
 {
     Assert(this->m_func == byteCodeUsesInstr->m_func);
@@ -1037,7 +1023,7 @@ void ByteCodeUsesInstr::Aggregate(ByteCodeUsesInstr * byteCodeUsesInstr)
 
 bool Instr::CanAggregateByteCodeUsesAcrossInstr(Instr * instr)
 {
-    return !instr->EndsBasicBlock() && 
+    return !instr->StartsBasicBlock() && 
         instr->m_func == this->m_func &&
         ((instr->GetByteCodeOffset() == Js::Constants::NoByteCodeOffset) ||
         (instr->GetByteCodeOffset() == this->GetByteCodeOffset()));
@@ -1216,9 +1202,10 @@ Instr::ReplaceBailOutInfo(BailOutInfo *newBailOutInfo)
         Assert(false);
         __assume(UNREACHED);
     }
-    Assert(!oldBailOutInfo->wasCloned && !oldBailOutInfo->wasCopied);
+    
     if (oldBailOutInfo->bailOutInstr == this)
     {
+        Assert(!oldBailOutInfo->wasCloned && !oldBailOutInfo->wasCopied);
         JitArenaAllocator * alloc = this->m_func->m_alloc;
         oldBailOutInfo->Clear(alloc);
         JitAdelete(alloc, oldBailOutInfo);
@@ -2520,54 +2507,6 @@ Instr::HoistSrc2(Js::OpCode assignOpcode, RegNum regNum, StackSym *newSym)
     return newInstr;
 }
 
-///----------------------------------------------------------------------------
-///
-/// Instr::HoistIndirOffset
-///
-///     Replace the offset of the given indir with a new symbol, which becomes the indir index.
-///     Assign the new symbol by creating an assignment from the constant offset.
-///
-///----------------------------------------------------------------------------
-
-Instr *
-Instr::HoistIndirOffset(IR::IndirOpnd *indirOpnd, RegNum regNum)
-{
-    int32 offset = indirOpnd->GetOffset();
-    if (indirOpnd->GetIndexOpnd())
-    {
-        Assert(indirOpnd->GetBaseOpnd());
-        return HoistIndirOffsetAsAdd(indirOpnd, indirOpnd->GetBaseOpnd(), offset, regNum);
-    }
-    IntConstOpnd *offsetOpnd = IntConstOpnd::New(offset, TyInt32, this->m_func);
-    RegOpnd *indexOpnd = RegOpnd::New(StackSym::New(TyMachReg, this->m_func), regNum, TyMachReg, this->m_func);
-
-#if defined(DBG) && defined(_M_ARM)
-    if (regNum == SCRATCH_REG)
-    {
-        AssertMsg(indirOpnd->GetBaseOpnd()->GetReg()!= SCRATCH_REG, "Why both are SCRATCH_REG");
-        if (this->GetSrc1() && this->GetSrc1()->IsRegOpnd())
-        {
-            Assert(this->GetSrc1()->AsRegOpnd()->GetReg() != SCRATCH_REG);
-        }
-        if (this->GetSrc2() && this->GetSrc2()->IsRegOpnd())
-        {
-            Assert(this->GetSrc2()->AsRegOpnd()->GetReg() != SCRATCH_REG);
-        }
-        if (this->GetDst() && this->GetDst()->IsRegOpnd())
-        {
-            Assert(this->GetDst()->AsRegOpnd()->GetReg() != SCRATCH_REG);
-        }
-    }
-#endif
-    // Clear the offset and add a new reg as the index.
-    indirOpnd->SetOffset(0);
-    indirOpnd->SetIndexOpnd(indexOpnd);
-
-    Instr *instrAssign = Lowerer::InsertMove(indexOpnd, offsetOpnd, this);
-    indexOpnd->m_sym->SetIsIntConst(offset);
-    return instrAssign;
-}
-
 IndirOpnd *
 Instr::HoistMemRefAddress(MemRefOpnd *const memRefOpnd, const Js::OpCode loadOpCode)
 {
@@ -2640,71 +2579,6 @@ Opnd *Instr::DeepReplace(Opnd *const oldOpnd, Opnd *const newOpnd)
     return Replace(oldOpnd, newOpnd);
 }
 
-Instr *
-Instr::HoistIndirOffsetAsAdd(IR::IndirOpnd *orgOpnd, IR::Opnd *baseOpnd, int offset, RegNum regNum)
-{
-        IR::RegOpnd *newBaseOpnd = IR::RegOpnd::New(StackSym::New(TyMachPtr, this->m_func), regNum, TyMachPtr, this->m_func);
-
-        IR::IntConstOpnd *src2 = IR::IntConstOpnd::New(offset, TyInt32, this->m_func);
-        IR::Instr * instrAdd = IR::Instr::New(Js::OpCode::ADD, newBaseOpnd, baseOpnd, src2, this->m_func);
-
-        this->InsertBefore(instrAdd);
-
-        orgOpnd->ReplaceBaseOpnd(newBaseOpnd);
-        orgOpnd->SetOffset(0);
-
-        return instrAdd;
-}
-
-Instr *
-Instr::HoistIndirIndexOpndAsAdd(IR::IndirOpnd *orgOpnd, IR::Opnd *baseOpnd, IR::Opnd *indexOpnd, RegNum regNum)
-{
-        IR::RegOpnd *newBaseOpnd = IR::RegOpnd::New(StackSym::New(TyMachPtr, this->m_func), regNum, TyMachPtr, this->m_func);
-
-        IR::Instr * instrAdd = IR::Instr::New(Js::OpCode::ADD, newBaseOpnd, baseOpnd, indexOpnd->UseWithNewType(TyMachPtr, this->m_func), this->m_func);
-
-        this->InsertBefore(instrAdd);
-
-        orgOpnd->ReplaceBaseOpnd(newBaseOpnd);
-        orgOpnd->SetIndexOpnd(nullptr);
-
-        return instrAdd;
-}
-
-Instr *
-Instr::HoistSymOffsetAsAdd(IR::SymOpnd *orgOpnd, IR::Opnd *baseOpnd, int offset, RegNum regNum)
-{
-        IR::IndirOpnd *newIndirOpnd = IR::IndirOpnd::New(baseOpnd->AsRegOpnd(), 0, TyMachPtr, this->m_func);
-        this->Replace(orgOpnd, newIndirOpnd); // Replace SymOpnd with IndirOpnd
-        return this->HoistIndirOffsetAsAdd(newIndirOpnd, baseOpnd, offset, regNum);
-}
-
-///----------------------------------------------------------------------------
-///
-/// Instr::HoistSymOffset
-///
-///     Replace the given sym with an indir using the given base and offset.
-///     (This is used, for instance, to hoist a sym offset that is too large to encode.)
-///
-///----------------------------------------------------------------------------
-
-Instr *
-Instr::HoistSymOffset(SymOpnd *symOpnd, RegNum baseReg, uint32 offset, RegNum regNum)
-{
-    IR::RegOpnd *baseOpnd = IR::RegOpnd::New(nullptr, baseReg, TyMachPtr, this->m_func);
-    IR::IndirOpnd *indirOpnd = IR::IndirOpnd::New(baseOpnd, offset, symOpnd->GetType(), this->m_func);
-    if (symOpnd == this->GetDst())
-    {
-        this->ReplaceDst(indirOpnd);
-    }
-    else
-    {
-        this->ReplaceSrc(symOpnd, indirOpnd);
-    }
-
-    return this->HoistIndirOffset(indirOpnd, regNum);
-}
-
 Opnd *
 Instr::UnlinkSrc(Opnd *src)
 {
@@ -2761,6 +2635,10 @@ Instr::IsRealInstr() const
     case Js::OpCode::StatementBoundary:
     case Js::OpCode::NoImplicitCallUses:
     case Js::OpCode::NoIntOverflowBoundary:
+#if DBG
+    case Js::OpCode::CheckLowerIntBound:
+    case Js::OpCode::CheckUpperIntBound:
+#endif
         return false;
 
     default:
@@ -2814,6 +2692,48 @@ Instr::GetNextBranchOrLabel() const
         instr = instr->m_next;
     }
     return instr;
+}
+
+IR::Instr *
+Instr::GetNextByteCodeInstr() const
+{
+    IR::Instr * nextInstr = GetNextRealInstrOrLabel();
+    uint32 currentOffset = GetByteCodeOffset();
+    const auto getNext = [](IR::Instr* nextInstr) -> IR::Instr*
+    {
+        if (nextInstr->IsBranchInstr())
+        {
+            IR::BranchInstr* branchInstr = nextInstr->AsBranchInstr();
+            AssertMsg(branchInstr->IsUnconditional(), "We can't know which branch to take on a conditionnal branch");
+            if (branchInstr->IsUnconditional())
+            {
+                return branchInstr->GetTarget();
+            }
+        }
+        return nextInstr->GetNextRealInstrOrLabel();
+    };
+    while (nextInstr->GetByteCodeOffset() == Js::Constants::NoByteCodeOffset ||
+        nextInstr->GetByteCodeOffset() == currentOffset)
+    {
+        nextInstr = getNext(nextInstr);
+    }
+
+    // Do not check if the instr trying to bailout is in the function prologue
+    // nextInstr->GetByteCodeOffset() < currentOffset would always be true and we would crash
+    if (currentOffset != Js::Constants::NoByteCodeOffset)
+    {
+        // This can happen due to break block removal
+        while (nextInstr->GetByteCodeOffset() == Js::Constants::NoByteCodeOffset ||
+            nextInstr->GetByteCodeOffset() < currentOffset)
+        {
+            nextInstr = getNext(nextInstr);
+        }
+    }
+    else
+    {
+        AssertMsg(nextInstr->GetByteCodeOffset() == 0, "Only instrs before the first one are allowed to not have a bytecode offset");
+    }
+    return nextInstr;
 }
 
 ///----------------------------------------------------------------------------
@@ -3385,7 +3305,6 @@ bool Instr::TransfersSrcValue()
     // No point creating an unknown value for the src of a binary instr, as the dst will just be a different
     // Don't create value for instruction without dst as well. The value doesn't go anywhere.
 
-    // if (src2 == nullptr) Disable copy prop for ScopedLdFld/ScopeStFld, etc., consider enabling that in the future
     // Consider: Add opcode attribute to indicate whether the opcode would use the value or not
 
     return this->GetDst() != nullptr && this->GetSrc2() == nullptr && !OpCodeAttr::DoNotTransfer(this->m_opcode) && !this->CallsAccessor();
@@ -3606,7 +3525,7 @@ uint Instr::GetAsmJsArgOutSize()
         Assert(UNREACHED);
         return 0;
     }
-}
+    }
 
 uint Instr::GetArgOutSize(bool getInterpreterArgOutCount)
 {
@@ -4673,6 +4592,19 @@ PrintByteCodeOffsetEtc:
     }
 }
 
+#if DBG
+bool
+Instr::ShouldEmitIntRangeCheck()
+{
+    // currently only emitting int range check for opnds of instructions with following opcodes:
+    return m_opcode == Js::OpCode::ToVar ||
+        m_opcode == Js::OpCode::LdElemI_A ||
+        m_opcode == Js::OpCode::LdMethodElem ||
+        m_opcode == Js::OpCode::StElemI_A ||
+        m_opcode == Js::OpCode::StElemI_A_Strict ||
+        m_opcode == Js::OpCode::StElemC;
+}
+#endif
 ///----------------------------------------------------------------------------
 ///
 /// LabelInstr::Dump

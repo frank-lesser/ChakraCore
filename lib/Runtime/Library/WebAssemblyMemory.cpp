@@ -8,8 +8,7 @@
 #ifdef ENABLE_WASM
 #include "WasmLimits.h"
 
-namespace Js
-{
+using namespace Js;
 
 WebAssemblyMemory::WebAssemblyMemory(ArrayBufferBase* buffer, uint32 initial, uint32 maximum, DynamicType * type) :
     DynamicObject(type),
@@ -135,17 +134,17 @@ WebAssemblyMemory::EntryGrow(RecyclableObject* function, CallInfo callInfo, ...)
     WebAssemblyMemory* memory = WebAssemblyMemory::FromVar(args[0]);
     Assert(ArrayBufferBase::Is(memory->m_buffer));
 
-    if (memory->m_buffer->IsDetached())
-    {
-        JavascriptError::ThrowTypeError(scriptContext, JSERR_DetachedTypedArray);
-    }
-
     Var deltaVar = scriptContext->GetLibrary()->GetUndefined();
     if (args.Info.Count >= 2)
     {
         deltaVar = args[1];
     }
+
     uint32 deltaPages = WebAssembly::ToNonWrappingUint32(deltaVar, scriptContext);
+    if (memory->m_buffer->IsDetached())
+    {
+        JavascriptError::ThrowTypeError(scriptContext, JSERR_DetachedTypedArray);
+    }
 
     int32 oldPageCount = memory->GrowInternal(deltaPages);
     if (oldPageCount == -1)
@@ -220,12 +219,15 @@ WebAssemblyMemory::GrowInternal(uint32 deltaPages)
 int32
 WebAssemblyMemory::GrowHelper(WebAssemblyMemory * mem, uint32 deltaPages)
 {
+    JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_GrowWasmMemory);
     return mem->GrowInternal(deltaPages);
+    JIT_HELPER_END(Op_GrowWasmMemory);
 }
 
 #if DBG
 void WebAssemblyMemory::TraceMemWrite(WebAssemblyMemory* mem, uint32 index, uint32 offset, Js::ArrayBufferView::ViewType viewType, uint32 bytecodeOffset, ScriptContext* context)
 {
+    JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_WasmMemoryTraceWrite);
     // Must call after the write
     Assert(mem);
     Output::Print(_u("#%04x "), bytecodeOffset);
@@ -265,6 +267,7 @@ void WebAssemblyMemory::TraceMemWrite(WebAssemblyMemory* mem, uint32 index, uint
         Assert(UNREACHED);
     }
     return;
+    JIT_HELPER_END(Op_WasmMemoryTraceWrite);
 }
 #endif
 
@@ -295,7 +298,6 @@ WebAssemblyMemory::CreateMemoryObject(uint32 initial, uint32 maximum, bool isSha
     {
         JavascriptError::ThrowRangeError(scriptContext, JSERR_ArgumentOutOfRange);
     }
-    // This shouldn't overflow since we checked in the module, but just to be safe
     uint32 byteLength = UInt32Math::Mul<WebAssembly::PageSize>(initial);
     ArrayBufferBase* buffer = nullptr;
 #ifdef ENABLE_WASM_THREADS
@@ -378,5 +380,4 @@ bool WebAssemblyMemory::IsSharedMemory() const
 }
 #endif
 
-} // namespace Js
 #endif // ENABLE_WASM

@@ -124,7 +124,7 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
     entryExitRecord(nullptr),
     leafInterpreterFrame(nullptr),
     threadServiceWrapper(nullptr),
-    tryCatchFrameAddr(nullptr),
+    tryHandlerAddrOfReturnAddr(nullptr),
     temporaryArenaAllocatorCount(0),
     temporaryGuestArenaAllocatorCount(0),
     crefSContextForDiag(0),
@@ -210,6 +210,10 @@ ThreadContext::ThreadContext(AllocationPolicyManager * allocationPolicyManager, 
 #endif
     , emptyStringPropertyRecord(nullptr)
     , recyclerTelemetryHostInterface(this)
+    , reentrancySafeOrHandled(false)
+    , isInReentrancySafeRegion(false)
+    , closedScriptContextCount(0)
+    , visibilityState(VisibilityState::Undefined)
 {
     pendingProjectionContextCloseList = JsUtil::List<IProjectionContext*, ArenaAllocator>::New(GetThreadAlloc());
     hostScriptContextStack = Anew(GetThreadAlloc(), JsUtil::Stack<HostScriptContext*>, GetThreadAlloc());
@@ -523,6 +527,12 @@ ThreadContext::~ThreadContext()
 #ifdef ENABLE_SCRIPT_DEBUGGING
         Assert(this->debugManager == nullptr);
 #endif
+
+#if ENABLE_CONCURRENT_GC && defined(_WIN32)
+        AssertOrFailFastMsg(recycler->concurrentThread == NULL, "Recycler background thread should have been shutdown before destroying Recycler.");
+        AssertOrFailFastMsg((recycler->parallelThread1.concurrentThread == NULL) && (recycler->parallelThread2.concurrentThread == NULL), "Recycler parallelThread(s) should have been shutdown before destroying Recycler.");
+#endif
+
         HeapDelete(recycler);
     }
 
@@ -673,15 +683,23 @@ LPFILETIME ThreadContext::ThreadContextRecyclerTelemetryHostInterface::GetLastSc
 #endif
 }
 
-bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::TransmitTelemetry(RecyclerTelemetryInfo& rti)
+bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::TransmitGCTelemetryStats(RecyclerTelemetryInfo& rti)
 {
 #if defined(ENABLE_BASIC_TELEMETRY) && defined(NTBUILD)
-    return Js::TransmitRecyclerTelemetry(rti);
+    return Js::TransmitRecyclerTelemetryStats(rti);
 #else
     return false;
 #endif
 }
 
+bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::TransmitHeapUsage(size_t totalHeapBytes, size_t usedHeapBytes, double heapUsedRatio)
+{
+#if defined(ENABLE_BASIC_TELEMETRY) && defined(NTBUILD)
+    return Js::TransmitRecyclerHeapUsage(totalHeapBytes, usedHeapBytes, heapUsedRatio);
+#else
+    return false;
+#endif
+}
 
 bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::IsTelemetryProviderEnabled() const
 {
@@ -703,13 +721,18 @@ bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::TransmitTelemet
 
 bool ThreadContext::ThreadContextRecyclerTelemetryHostInterface::IsThreadBound() const
 {
-    return this->tc->IsThreadBound(); 
+    return this->tc->IsThreadBound();
 }
 
 
 DWORD ThreadContext::ThreadContextRecyclerTelemetryHostInterface::GetCurrentScriptThreadID() const
 {
     return this->tc->GetCurrentThreadId();
+}
+
+uint ThreadContext::ThreadContextRecyclerTelemetryHostInterface::GetClosedContextCount() const
+{
+    return this->tc->closedScriptContextCount;
 }
 
 Recycler* ThreadContext::EnsureRecycler()
@@ -889,12 +912,12 @@ ThreadContext::FindPropertyRecord(const char16 * propertyName, int propertyNameL
             return this->GetEmptyStringPropertyRecord();
         }
 
-        if (IsDirectPropertyName(propertyName, propertyNameLength))
-        {
+    if (IsDirectPropertyName(propertyName, propertyNameLength))
+    {
             Js::PropertyRecord const * propertyRecord = propertyNamesDirect[propertyName[0]];
-            Assert(propertyRecord == propertyMap->LookupWithKey(Js::HashedCharacterBuffer<char16>(propertyName, propertyNameLength)));
+        Assert(propertyRecord == propertyMap->LookupWithKey(Js::HashedCharacterBuffer<char16>(propertyName, propertyNameLength)));
             return propertyRecord;
-        }
+    }
     }
 
     return propertyMap->LookupWithKey(Js::HashedCharacterBuffer<char16>(propertyName, propertyNameLength));
@@ -1531,11 +1554,7 @@ ThreadContext::EnterScriptEnd(Js::ScriptEntryExitRecord * record, bool doCleanup
     if (doCleanup)
     {
         PHASE_PRINT_TRACE1(Js::DisposePhase, _u("[Dispose] NeedDispose in EnterScriptEnd: %d\n"), this->recycler->NeedDispose());
-
-        if (this->recycler->NeedDispose())
-        {
-            this->recycler->FinishDisposeObjectsNow<FinishDispose>();
-        }
+        this->recycler->FinishDisposeObjectsNow<FinishDispose>();
     }
 
     JS_ETW_INTERNAL(EventWriteJSCRIPT_RUN_STOP(this,0));
@@ -1715,7 +1734,7 @@ ThreadContext::ProbeStack(size_t size, Js::ScriptContext *scriptContext, PVOID r
 
     // BACKGROUND-GC TODO: If we're stuck purely in JITted code, we should have the
     // background GC thread modify the threads stack limit to trigger the runtime stack probe
-    if (this->callDispose && this->recycler->NeedDispose())
+    if (this->callDispose)
     {
         PHASE_PRINT_TRACE1(Js::DisposePhase, _u("[Dispose] NeedDispose in ProbeStack: %d\n"), this->recycler->NeedDispose());
         this->recycler->FinishDisposeObjectsNow<FinishDisposeTimed>();
@@ -1829,8 +1848,7 @@ void ThreadContext::DisposeOnLeaveScript()
 {
     PHASE_PRINT_TRACE1(Js::DisposePhase, _u("[Dispose] NeedDispose in LeaveScriptStart: %d\n"), this->recycler->NeedDispose());
 
-    if (this->callDispose && this->recycler->NeedDispose()
-        && !recycler->IsCollectionDisabled())
+    if (this->callDispose && !recycler->IsCollectionDisabled())
     {
         this->recycler->FinishDisposeObjectsNow<FinishDispose>();
     }
@@ -2111,6 +2129,7 @@ ThreadContext::ExecuteRecyclerCollectionFunction(Recycler * recycler, Collection
         ret = this->ExecuteRecyclerCollectionFunctionCommon(recycler, function, flags);
         this->LeaveScriptEnd<false>(frameAddr);
 
+        // After OOM changed to fatal error, this throw still exists on allocation path
         if (this->callRootLevel != 0)
         {
             this->CheckScriptInterrupt();
@@ -2154,6 +2173,7 @@ ThreadContext::DisposeObjects(Recycler * recycler)
         GET_CURRENT_FRAME_ID(frameAddr);
 
         // We may need stack to call out from Dispose
+        // This code path is not in GC on allocation code path any more, it's OK to throw here
         this->ProbeStack(Js::Constants::MinStackCallout);
 
         this->LeaveScriptStart<false>(frameAddr);
@@ -2621,11 +2641,16 @@ ThreadContext::DoExpirableCollectModeStackWalk()
             if (javascriptFunction != nullptr && Js::ScriptFunction::Test(javascriptFunction))
             {
                 Js::ScriptFunction* scriptFunction = (Js::ScriptFunction*) javascriptFunction;
-                Js::FunctionEntryPointInfo* entryPointInfo =  scriptFunction->GetFunctionEntryPointInfo();
-                entryPointInfo->SetIsObjectUsed();
+
                 scriptFunction->GetFunctionBody()->MapEntryPoints([](int index, Js::FunctionEntryPointInfo* entryPoint){
                     entryPoint->SetIsObjectUsed();
                 });
+
+                // Make sure we marked the current one when iterating all entry points
+                Js::ProxyEntryPointInfo* entryPointInfo = scriptFunction->GetEntryPointInfo();
+                Assert(entryPointInfo == nullptr
+                    || !entryPointInfo->IsFunctionEntryPointInfo()
+                    || ((Js::FunctionEntryPointInfo*)entryPointInfo)->IsObjectUsed());
             }
         }
     }
@@ -4085,6 +4110,16 @@ ThreadContext::AsyncHostOperationEnd(bool wasInAsync, void * suspendRecord)
 
 #endif
 
+#if DBG
+void ThreadContext::CheckJsReentrancyOnDispose()
+{
+    if (!this->IsDisableImplicitCall())
+    {
+        AssertJsReentrancy();
+    }
+}
+#endif
+
 #ifdef RECYCLER_DUMP_OBJECT_GRAPH
 void DumpRecyclerObjectGraph()
 {
@@ -4813,6 +4848,7 @@ void JsReentLock::MutateArrayObject(Js::Var arrayObject)
         }
     }
 }
+
 
 void JsReentLock::MutateArrayObject()
 {

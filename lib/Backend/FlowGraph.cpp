@@ -317,7 +317,9 @@ FlowGraph::Build(void)
 
             Assert(leaveTarget->labelRefs.HasOne());
             IR::BranchInstr * brOnException = IR::BranchInstr::New(Js::OpCode::BrOnException, finallyLabel, instr->m_func);
-            leaveTarget->labelRefs.Head()->InsertBefore(brOnException);
+            IR::BranchInstr * leaveInstr = leaveTarget->labelRefs.Head();
+            brOnException->SetByteCodeOffset(leaveInstr);
+            leaveInstr->InsertBefore(brOnException);
 
             instrPrev = instr->m_prev;
         }
@@ -1845,6 +1847,10 @@ FlowGraph::Destroy(void)
             }
         }
         NEXT_BLOCK;
+    }
+#endif
+    if (fHasTry)
+    {
         FOREACH_BLOCK_ALL(block, this)
         {
             if (block->GetFirstInstr()->IsLabelInstr())
@@ -1859,8 +1865,6 @@ FlowGraph::Destroy(void)
             }
         } NEXT_BLOCK;
     }
-#endif
-
     this->func->isFlowGraphValid = false;
 }
 
@@ -3954,7 +3958,6 @@ bool FlowGraph::UnsignedCmpPeep(IR::Instr *cmpInstr)
     }
 
     IR::ByteCodeUsesInstr * bytecodeInstr = IR::ByteCodeUsesInstr::New(cmpInstr);
-    cmpInstr->InsertAfter(bytecodeInstr);
 
     if (cmpSrc1 != newSrc1)
     {
@@ -3993,6 +3996,7 @@ bool FlowGraph::UnsignedCmpPeep(IR::Instr *cmpInstr)
         }
     }
 
+    cmpInstr->InsertBefore(bytecodeInstr);
     return true;
 }
 
@@ -4610,13 +4614,9 @@ void
 BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
 {
     IR::LabelInstr * lastBranchTarget = nullptr;
-
-    // For the block we start processing from, we maintain a valueTable, we go over the instrs in the block
-    // If we find a Ld_A, we find if the src1 already has a value in the local valueTable, if not we use the value from the pred's valueTable merge
-    // For other instrs, we assign null value
-    GlobHashTable * localSymToValueMap = GlobHashTable::New(globOpt->alloc, 8);
-    BVSparse<JitArenaAllocator> currentPathDefines(globOpt->alloc);
     IR::Instr *currentInlineeEnd = nullptr, *unskippedInlineeEnd = nullptr;
+    GlobHashTable * localSymToValueMap = nullptr;
+    BVSparse<JitArenaAllocator> * currentPathDefines = nullptr;
 
     auto UpdateValueForCopyTypeInstr = [&](IR::Instr *instr) -> Value* {
         Value * dstValue = nullptr;
@@ -4688,6 +4688,50 @@ BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
 
     IR::Instr * instr = this->GetLastInstr();
 
+    // We have to first check the legality and only then allocate expensive data structures on the tempArena, because most block will have instructions we cant skip
+
+    while (instr)
+    {
+        if (!instr->IsBranchInstr() && !instr->IsLabelInstr() && !IsLegalOpcodeForPathDepBrFold(instr))
+        {
+            return;
+        }
+        if (instr->IsLabelInstr())
+        {
+            if (instr->AsLabelInstr()->m_isLoopTop)
+            {
+                // don't cross over to loops
+                return;
+            }
+        }
+        if (instr->IsBranchInstr())
+        {
+            IR::BranchInstr *branch = instr->AsBranchInstr();
+            if (branch->IsUnconditional())
+            {
+                if (!branch->GetTarget())
+                {
+                    return;
+                }
+                instr = branch->GetTarget();
+            }
+            else
+            {
+                // Found only legal instructions until a conditional branch, build expensive data structures and check provability
+                break;
+            }
+        }
+        else
+        {
+            instr = instr->m_next;
+        }
+    }
+
+    instr = this->GetLastInstr();
+    // Allocate hefty structures, we will not free them because OptBlock does a Reset on the tempAlloc
+    localSymToValueMap = GlobHashTable::New(globOpt->tempAlloc, 8);
+    currentPathDefines = JitAnew(globOpt->tempAlloc, BVSparse<JitArenaAllocator>, globOpt->tempAlloc);
+
     /* We start from the current instruction and go on scanning for legality, as long as it is legal to skip an instruction, skip.
      * When we see an unconditional branch, start scanning from the branchTarget
      * When we see a conditional branch, check if we can prove the branch target, if we can, adjust the flowgraph, and continue in the direction of the proven target
@@ -4702,6 +4746,14 @@ BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
         if (OpCodeAttr::HasDeadFallThrough(instr->m_opcode)) // BailOnNoProfile etc
         {
             return;
+        }
+        if (instr->IsLabelInstr())
+        {
+            if (instr->AsLabelInstr()->m_isLoopTop)
+            {
+                // don't cross over to loops
+                return;
+            }
         }
         if (instr->m_opcode == Js::OpCode::InlineeEnd)
         {
@@ -4719,7 +4771,7 @@ BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
             }
 
             IR::RegOpnd *dst = instr->GetDst()->AsRegOpnd();
-            currentPathDefines.Set(dst->GetStackSym()->m_id);
+            currentPathDefines->Set(dst->GetStackSym()->m_id);
 
             if (IsCopyTypeInstr(instr))
             {
@@ -4736,14 +4788,7 @@ BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
                 *localDstValue = nullptr;
             }
         }
-        if (instr->IsLabelInstr())
-        {
-            if (instr->AsLabelInstr()->m_isLoopTop)
-            {
-                // don't cross over to loops
-                return;
-            }
-        }
+
         if (instr->IsBranchInstr())
         {
             IR::BranchInstr* branch = instr->AsBranchInstr();
@@ -4774,7 +4819,7 @@ BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
                 }
             }
 
-            FOREACH_BITSET_IN_SPARSEBV(id, &currentPathDefines)
+            FOREACH_BITSET_IN_SPARSEBV(id, currentPathDefines)
             {
                 if (branchTarget->GetBasicBlock()->upwardExposedUses->Test(id))
                 {
@@ -4811,13 +4856,15 @@ BasicBlock::CheckLegalityAndFoldPathDepBranches(GlobOpt* globOpt)
             if (branchTarget != this->GetLastInstr()->GetNextRealInstrOrLabel())
             {
                 IR::Instr* lastInstr = this->GetLastInstr();
+                // We add an empty ByteCodeUses with correct bytecodeoffset, for correct info on a post-op bailout of the previous instr
+                IR::Instr* emptyByteCodeUse = IR::ByteCodeUsesInstr::New(lastInstr->m_func, lastInstr->GetByteCodeOffset());
+                lastInstr->InsertAfter(emptyByteCodeUse);
                 IR::BranchInstr * newBranch = IR::BranchInstr::New(Js::OpCode::Br, branchTarget, branchTarget->m_func);
-                newBranch->SetByteCodeOffset(lastInstr);
                 if (lastInstr->IsBranchInstr())
                 {
                     globOpt->ConvertToByteCodeUses(lastInstr);
                 }
-                this->GetLastInstr()->InsertAfter(newBranch);
+                emptyByteCodeUse->InsertAfter(newBranch);
                 globOpt->func->m_fg->AddEdge(this, branchTarget->GetBasicBlock());
                 this->IncrementDataUseCount();
             }

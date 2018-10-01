@@ -697,6 +697,10 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::PageAllocatorBase(Allo
 #endif
     minFreePageCount(0),
     isUsed(false),
+    waitingToEnterIdleDecommit(false),
+#if DBG
+    idleDecommitBackOffCount(0),
+#endif
     idleDecommitEnterCount(1),
     isClosed(false),
     stopAllocationOnOutOfMemory(stopAllocationOnOutOfMemory),
@@ -1948,10 +1952,13 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::DecommitNow(bool all)
     if (this->decommitStats != nullptr)
     {
         this->decommitStats->numDecommitCalls++;
-        Js::TickDelta delta = Js::Tick::Now() - this->decommitStats->lastLeaveDecommitRegion;
-        if (delta > this->decommitStats->maxDeltaBetweenDecommitRegionLeaveAndDecommit)
+        if (this->decommitStats->lastLeaveDecommitRegion.ToMicroseconds() > 0)
         {
-            this->decommitStats->maxDeltaBetweenDecommitRegionLeaveAndDecommit = delta;
+            Js::TickDelta delta = Js::Tick::Now() - this->decommitStats->lastLeaveDecommitRegion;
+            if (delta > this->decommitStats->maxDeltaBetweenDecommitRegionLeaveAndDecommit)
+            {
+                this->decommitStats->maxDeltaBetweenDecommitRegionLeaveAndDecommit = delta;
+            }
         }
     }
 #endif
@@ -1968,14 +1975,22 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::DecommitNow(bool all)
             int numZeroPagesFreed = 0;
 
             // There might be queued zero pages.  Drain them first
-
+            bool zeroPageQueueEmpty = false;
             while (true)
             {
                 FreePageEntry * freePageEntry = PopPendingZeroPage();
                 if (freePageEntry == nullptr)
                 {
+                    zeroPageQueueEmpty = true;
                     break;
                 }
+
+                // Back-off from decommit if we are trying to enter IdleDecommit again.
+                if (this->waitingToEnterIdleDecommit)
+                {
+                    break;
+                }
+
                 PAGE_ALLOC_TRACE_AND_STATS_0(_u("Freeing page from zero queue"));
                 TPageSegment * segment = freePageEntry->segment;
                 uint pageCount = freePageEntry->pageCount;
@@ -2018,6 +2033,7 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::DecommitNow(bool all)
 
             // Take the lock to make sure the recycler thread has finished zeroing out the pages after
             // we drained the queue
+            if(zeroPageQueueEmpty)
             {
                 AutoCriticalSection autoCS(&backgroundPageQueue->backgroundPageQueueCriticalSection);
                 this->hasZeroQueuedPages = false;
@@ -2096,12 +2112,18 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::DecommitNow(bool all)
 
             }
             pageToDecommit -= pageDecommitted;
+
+            // Back-off from decommit if we are trying to enter IdleDecommit again.
+            if (this->waitingToEnterIdleDecommit)
+            {
+                break;
+            }
         }
     }
 
-    // decommit pages that are empty
-
-    while (pageToDecommit > 0 && !emptySegments.Empty())
+    // decommit pages that are empty.
+    // back-off from decommit if we are trying to enter IdleDecommit again.
+    while (!this->waitingToEnterIdleDecommit && pageToDecommit > 0 && !emptySegments.Empty())
     {
         if (pageToDecommit >= maxAllocPageCount)
         {
@@ -2128,6 +2150,7 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::DecommitNow(bool all)
         }
     }
 
+    if(!this->waitingToEnterIdleDecommit)
     {
         typename DListBase<TPageSegment>::EditingIterator i(&segments);
 
@@ -2143,23 +2166,34 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::DecommitNow(bool all)
             i.MoveCurrentTo(&decommitSegments);
             pageToDecommit -= pageDecommitted;
 
+            // Back-off from decommit if we are trying to enter IdleDecommit again.
+            if (this->waitingToEnterIdleDecommit)
+            {
+                break;
+            }
         }
     }
 
-    Assert(pageToDecommit == 0);
-
-
-#if DBG_DUMP
-    Assert(this->freePageCount == newFreePageCount + decommitCount);
+    Assert(pageToDecommit == 0 || this->waitingToEnterIdleDecommit);
+#if DBG
+    if (pageToDecommit != 0 && this->waitingToEnterIdleDecommit)
+    {
+        this->idleDecommitBackOffCount++;
+    }
 #endif
 
-    this->freePageCount = newFreePageCount;
+#if DBG_DUMP
+    Assert(this->freePageCount == newFreePageCount + decommitCount + pageToDecommit);
+#endif
+
+    // If we had to back-off from decommiting then we may still have some free pages left to decommit.
+    this->freePageCount = newFreePageCount + pageToDecommit;
 
 #ifdef ENABLE_BASIC_TELEMETRY
     if (this->decommitStats != nullptr)
     {
         this->decommitStats->numPagesDecommitted += decommitCount;
-        this->decommitStats->numFreePageCount += newFreePageCount;
+        this->decommitStats->numFreePageCount += newFreePageCount + pageToDecommit;
     }
 #endif
 
@@ -2485,7 +2519,8 @@ PageAllocatorBase<TVirtualAlloc, TSegment, TPageSegment>::Check()
 #if ENABLE_BACKGROUND_PAGE_ZEROING
     if (CONFIG_FLAG(EnableBGFreeZero))
     {
-        Assert(!this->HasZeroQueuedPages());
+        // We may have backed-off from the idle decommit on the background thread.
+        Assert(!this->HasZeroQueuedPages() || this->waitingToEnterIdleDecommit);
     }
 #endif
     size_t currentFreePageCount = 0;

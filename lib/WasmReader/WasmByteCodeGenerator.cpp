@@ -11,6 +11,7 @@
 #include "EmptyWasmByteCodeWriter.h"
 #include "ByteCode/ByteCodeDumper.h"
 #include "AsmJsByteCodeDumper.h"
+#include "Language/InterpreterStackFrame.h"
 
 #if DBG_DUMP
 #define DebugPrintOp(op) if (DO_WASM_TRACE_BYTECODE) { PrintOpBegin(op); }
@@ -208,6 +209,7 @@ Js::AsmJsRetType WasmToAsmJs::GetAsmJsReturnType(WasmTypes::WasmType wasmType)
         return Js::AsmJsRetType::Float32x4;
 #endif
     default:
+        WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
         throw WasmCompilationException(_u("Unknown return type %u"), wasmType);
     }
 }
@@ -228,6 +230,7 @@ Js::AsmJsVarType WasmToAsmJs::GetAsmJsVarType(WasmTypes::WasmType wasmType)
         return Js::AsmJsVarType::Float32x4;
 #endif
     default:
+        WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
         throw WasmCompilationException(_u("Unknown var type %u"), wasmType);
     }
 }
@@ -427,6 +430,8 @@ void WasmModuleGenerator::GenerateFunctionHeader(uint32 index)
     readerInfo->m_funcInfo = wasmInfo;
     readerInfo->m_module = m_module;
 
+    Js::WasmLibrary::ResetFunctionBodyDefaultEntryPoint(body);
+
     Js::AsmJsFunctionInfo* info = body->GetAsmJsFunctionInfo();
     info->SetWasmReaderInfo(readerInfo);
     info->SetWebAssemblyModule(m_module);
@@ -607,10 +612,6 @@ void WasmBytecodeGenerator::EnregisterLocals()
     {
         WasmTypes::WasmType type = m_funcInfo->GetLocal(i);
         WasmRegisterSpace* regSpace = GetRegisterSpace(type);
-        if (regSpace == nullptr)
-        {
-            throw WasmCompilationException(_u("Unable to find local register space"));
-        }
         m_locals[i] = WasmLocal(regSpace->AcquireRegister(), type);
 
         // Zero only the locals not corresponding to formal parameters.
@@ -772,15 +773,15 @@ void WasmBytecodeGenerator::EmitExpr(WasmOp op)
         break;
     case wbNop:
         return;
-    case wbCurrentMemory:
+    case wbMemorySize:
     {
         SetUsesMemory(0);
         Js::RegSlot tempReg = GetRegisterSpace(WasmTypes::I32)->AcquireTmpRegister();
         info = EmitInfo(tempReg, WasmTypes::I32);
-        m_writer->AsmReg1(Js::OpCodeAsmJs::CurrentMemory_Int, tempReg);
+        m_writer->AsmReg1(Js::OpCodeAsmJs::MemorySize_Int, tempReg);
         break;
     }
-    case wbGrowMemory:
+    case wbMemoryGrow:
     {
         info = EmitGrowMemory();
         break;
@@ -1006,6 +1007,7 @@ void WasmBytecodeGenerator::EmitLoadConst(EmitInfo dst, WasmConstLitNode cnst)
     }
 #endif
     default:
+        WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
         throw WasmCompilationException(_u("Unknown type %u"), dst.type);
     }
 }
@@ -1229,6 +1231,7 @@ PolymorphicEmitInfo WasmBytecodeGenerator::EmitCall()
             }
             // Fall through
         default:
+            WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
             throw WasmCompilationException(_u("Unknown argument type %u"), info.type);
         }
 
@@ -1318,7 +1321,12 @@ PolymorphicEmitInfo WasmBytecodeGenerator::EmitCall()
             case WasmTypes::I64:
                 convertOp = Js::OpCodeAsmJs::Conv_VTL;
                 break;
+#ifdef ENABLE_WASM_SIMD
+            case WasmTypes::M128:
+                throw WasmCompilationException(_u("Return type: m128 not supported in import calls"));
+#endif
             default:
+                WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
                 throw WasmCompilationException(_u("Unknown call return type %u"), singleResType);
             }
             Js::RegSlot location = GetRegisterSpace(singleResType)->AcquireTmpRegister();
@@ -1832,6 +1840,7 @@ Js::OpCodeAsmJs WasmBytecodeGenerator::GetLoadOp(WasmTypes::WasmType wasmType)
             return Js::OpCodeAsmJs::Ld_Int;
         }
     default:
+        WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
         throw WasmCompilationException(_u("Unknown load operator %u"), wasmType);
     }
 }
@@ -1867,6 +1876,7 @@ Js::OpCodeAsmJs WasmBytecodeGenerator::GetReturnOp(WasmTypes::WasmType type)
             return Js::OpCodeAsmJs::Return_Int;
         }
     default:
+        WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
         throw WasmCompilationException(_u("Unknown return type %u"), type);
     }
     return retOp;
@@ -2052,7 +2062,8 @@ WasmRegisterSpace* WasmBytecodeGenerator::GetRegisterSpace(WasmTypes::WasmType t
         return mTypedRegisterAllocator.GetRegisterSpace(WAsmJs::SIMD);
 #endif
     default:
-        return nullptr;
+        WasmTypes::CompileAssertCasesNoFailFast<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
+        throw WasmCompilationException(_u("Unknown type %u"), type);
     }
 }
 

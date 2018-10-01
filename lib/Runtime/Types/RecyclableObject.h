@@ -304,7 +304,7 @@ namespace Js {
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext);
         virtual PropertyQueryFlags GetPropertyQuery(Var originalInstance, JavascriptString* propertyNameString, Var* value, PropertyValueInfo* info, ScriptContext* requestContext);
         virtual BOOL GetInternalProperty(Var instance, PropertyId internalPropertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext);
-        virtual BOOL GetAccessors(PropertyId propertyId, Var* getter, Var* setter, ScriptContext * requestContext);
+        _Check_return_ _Success_(return) virtual BOOL GetAccessors(PropertyId propertyId, _Outptr_result_maybenull_ Var* getter, _Outptr_result_maybenull_ Var* setter, ScriptContext * requestContext);
         virtual PropertyQueryFlags GetPropertyReferenceQuery(Var originalInstance, PropertyId propertyId, Var* value, PropertyValueInfo* info, ScriptContext* requestContext);
         virtual BOOL SetProperty(PropertyId propertyId, Var value, PropertyOperationFlags flags, PropertyValueInfo* info);
         virtual BOOL SetProperty(JavascriptString* propertyNameString, Var value, PropertyOperationFlags flags, PropertyValueInfo* info);
@@ -340,7 +340,6 @@ namespace Js {
         virtual BOOL IsProtoImmutable() const { return false; }
         virtual BOOL PreventExtensions() { return false; };     // Sets [[Extensible]] flag of instance to false
         virtual void ThrowIfCannotDefineProperty(PropertyId propId, const PropertyDescriptor& descriptor);
-        virtual BOOL GetDefaultPropertyDescriptor(PropertyDescriptor& descriptor);
         virtual BOOL Seal() { return false; }                   // Seals the instance, no additional property can be added or deleted
         virtual BOOL Freeze() { return false; }                 // Freezes the instance, no additional property can be added or deleted or written
         virtual BOOL IsSealed() { return false; }
@@ -370,9 +369,10 @@ namespace Js {
         virtual bool CanStorePropertyValueDirectly(PropertyId propertyId, bool allowLetConst) { Assert(false); return false; };
 #endif
 
-        virtual void RemoveFromPrototype(ScriptContext * requestContext) { AssertMsg(false, "Shouldn't call this implementation."); }
-        virtual void AddToPrototype(ScriptContext * requestContext) { AssertMsg(false, "Shouldn't call this implementation."); }
+        virtual void RemoveFromPrototype(ScriptContext * requestContext, bool * allProtoCachesInvalidated) { AssertMsg(false, "Shouldn't call this implementation."); }
+        virtual void AddToPrototype(ScriptContext * requestContext, bool * allProtoCachesInvalidated) { AssertMsg(false, "Shouldn't call this implementation."); }
         virtual void SetPrototype(RecyclableObject* newPrototype) { AssertMsg(false, "Shouldn't call this implementation."); }
+        virtual bool ClearProtoCachesWereInvalidated() { AssertMsg(false, "Shouldn't call this implementation."); return false; }
 
         virtual BOOL ToString(Js::Var* value, Js::ScriptContext* scriptContext) { AssertMsg(FALSE, "Do not use this function."); return false; }
 

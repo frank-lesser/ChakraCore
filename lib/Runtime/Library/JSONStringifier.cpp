@@ -330,7 +330,11 @@ JSONStringifier::ToJSON(_In_ JavascriptString* key, _In_ RecyclableObject* value
         Arguments args(2, values);
         args.Values[0] = valueObject;
         args.Values[1] = key;
-        return JavascriptFunction::CallFunction<true>(func, func->GetEntryPoint(), args);
+        BEGIN_SAFE_REENTRANT_CALL(this->scriptContext->GetThreadContext())
+        {
+            return JavascriptFunction::CallFunction<true>(func, func->GetEntryPoint(), args);
+        }
+        END_SAFE_REENTRANT_CALL;
     }
     return nullptr;
 }
@@ -625,7 +629,11 @@ JSONStringifier::CallReplacerFunction(_In_opt_ RecyclableObject* holder, _In_ Ja
     args.Values[1] = key;
     args.Values[2] = value;
 
-    return JavascriptFunction::CallFunction<true>(this->replacerFunction, this->replacerFunction->GetEntryPoint(), args);
+    BEGIN_SAFE_REENTRANT_CALL(this->scriptContext->GetThreadContext())
+    {
+        return JavascriptFunction::CallFunction<true>(this->replacerFunction, this->replacerFunction->GetEntryPoint(), args);
+    }
+    END_SAFE_REENTRANT_CALL;
 }
 
 void
@@ -669,9 +677,9 @@ JSONStringifier::CalculateStringElementLength(_In_ JavascriptString* str)
 
         // Some characters may require an escape sequence. We can use the escapeMapCount table
         // to determine how many extra characters are needed
-        if (currentCharacter < _countof(JSONString::escapeMapCount))
+        if (currentCharacter < _countof(LazyJSONString::escapeMapCount))
         {
-            escapedStrLength += JSONString::escapeMapCount[currentCharacter];
+            escapedStrLength += LazyJSONString::escapeMapCount[currentCharacter];
         }
     }
     if (escapedStrLength > UINT32_MAX)

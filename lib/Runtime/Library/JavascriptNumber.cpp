@@ -36,9 +36,13 @@ namespace Js
 
     Var JavascriptNumber::ToVarInPlace(int64 value, ScriptContext* scriptContext, JavascriptNumber *result)
     {
-        return InPlaceNew((double)value, scriptContext, result);
-    }
+        if (!TaggedInt::IsOverflow(value))
+        {
+            return TaggedInt::ToVarUnchecked(static_cast<int>(value));
+        }
 
+        return InPlaceNew(static_cast<double>(value), scriptContext, result);
+    }
 
     Var JavascriptNumber::ToVarMaybeInPlace(double value, ScriptContext* scriptContext, JavascriptNumber *result)
     {
@@ -673,7 +677,7 @@ namespace Js
         {
             return ToStringNan(scriptContext);
         }
-        if(value >= 1e21)
+        if(value >= 1e21 || value <= -1e21)
         {
             return ToStringRadix10(value, scriptContext);
         }
@@ -777,14 +781,22 @@ namespace Js
                 JavascriptFunction* func = intlExtensionObject->GetNumberToLocaleString();
                 if (func)
                 {
-                    return JavascriptString::FromVar(func->CallFunction(args));
+                    BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+                    {
+                        return JavascriptString::FromVar(func->CallFunction(args));
+                    }
+                    END_SAFE_REENTRANT_CALL
                 }
                 // Initialize Number.prototype.toLocaleString
                 scriptContext->GetLibrary()->InitializeIntlForNumberPrototype();
                 func = intlExtensionObject->GetNumberToLocaleString();
                 if (func)
                 {
-                    return JavascriptString::FromVar(func->CallFunction(args));
+                    BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+                    {
+                        return JavascriptString::FromVar(func->CallFunction(args));
+                    }
+                    END_SAFE_REENTRANT_CALL
                 }
             }
         }

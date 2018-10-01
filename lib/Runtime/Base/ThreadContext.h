@@ -57,7 +57,7 @@ public:
 
 class ThreadContext;
 
-class InterruptPoller _ABSTRACT
+class InterruptPoller
 {
     // Interface with a polling object located in the hosting layer.
 
@@ -98,8 +98,8 @@ protected:
         { \
             void * __frameAddr = nullptr; \
             GET_CURRENT_FRAME_ID(__frameAddr); \
-            Js::LeaveScriptObject<stackProbe, leaveForHost, isFPUControlRestoreNeeded> __leaveScriptObject(scriptContext, __frameAddr);
-
+            Js::LeaveScriptObject<stackProbe, leaveForHost, isFPUControlRestoreNeeded> __leaveScriptObject(scriptContext, __frameAddr); \
+            AutoReentrancyHandler autoReentrancyHandler(scriptContext->GetThreadContext());
 #define LEAVE_SCRIPT_END_EX(scriptContext) \
             if (scriptContext != nullptr) \
                 {   \
@@ -107,16 +107,19 @@ protected:
                 }\
         }
 
-#define LEAVE_SCRIPT_IF(scriptContext, condition, block) \
-        if (condition) \
+#define LEAVE_SCRIPT_IF_ACTIVE(scriptContext, externalCall) \
+        if (scriptContext->GetThreadContext()->IsScriptActive()) \
         { \
             BEGIN_LEAVE_SCRIPT(scriptContext); \
-            block \
+            externalCall \
             END_LEAVE_SCRIPT(scriptContext); \
         } \
         else \
         { \
-            block \
+            DECLARE_EXCEPTION_CHECK_DATA \
+            SAVE_EXCEPTION_CHECK \
+            externalCall \
+            RESTORE_EXCEPTION_CHECK \
         }
 
 #define ENTER_SCRIPT_IF(scriptContext, doCleanup, isCallRoot, hasCaller, condition, block) \
@@ -165,6 +168,17 @@ protected:
         Assert(!scriptContext->HasRecordedException()); \
         END_LEAVE_SCRIPT(scriptContext)
 
+#define BEGIN_SAFE_REENTRANT_CALL(threadContext) \
+    { \
+        AutoReentrancyHandler autoReentrancyHandler(threadContext);
+
+#define END_SAFE_REENTRANT_CALL }
+
+#define BEGIN_SAFE_REENTRANT_REGION(threadContext) \
+    { \
+        AutoReentrancySafeRegion autoReentrancySafeRegion(threadContext);
+
+#define END_SAFE_REENTRANT_REGION }
 // Keep in sync with CollectGarbageCallBackFlags in scriptdirect.idl
 
 enum RecyclerCollectCallBackFlags
@@ -308,6 +322,8 @@ private:
     }
 };
 
+class AutoReentrancyHandler;
+
 class ThreadContext sealed :
     public DefaultRecyclerCollectionWrapper,
     public JsUtil::DoublyLinkedListElement<ThreadContext>,
@@ -447,7 +463,7 @@ private:
     };
 
 public:
-    typedef JsUtil::BaseHashSet<const Js::PropertyRecord *, HeapAllocator, PrimeSizePolicy, const Js::PropertyRecord *,
+    typedef JsUtil::BaseHashSet<const Js::PropertyRecord *, HeapAllocator, PowerOf2SizePolicy, const Js::PropertyRecord *,
         Js::PropertyRecordStringHashComparer, JsUtil::SimpleHashedEntry, JsUtil::AsymetricResizeLock> PropertyMap;
     PropertyMap * propertyMap;
 
@@ -607,8 +623,11 @@ private:
 #if ENABLE_JS_REENTRANCY_CHECK
     bool noJsReentrancy;
 #endif
+private:
+    bool reentrancySafeOrHandled;
+    bool isInReentrancySafeRegion;
 
-    AllocationPolicyManager * allocationPolicyManager;
+    AllocationPolicyManager * allocationPolicyManager; 
 
     JsUtil::ThreadService threadService;
 #if ENABLE_NATIVE_CODEGEN
@@ -648,7 +667,7 @@ private:
     ThreadServiceWrapper* threadServiceWrapper;
     uint functionCount;
     uint sourceInfoCount;
-    void * tryCatchFrameAddr;
+    void * tryHandlerAddrOfReturnAddr;
     enum RedeferralState
     {
         InitialRedeferralState,
@@ -842,6 +861,21 @@ public:
 
     AllocationPolicyManager * GetAllocationPolicyManager() { return allocationPolicyManager; }
 
+    // used for diagnosing abnormally high number of closed, but still formally reachable script contexts
+    // at the time of failfast due to allocation limits.
+    // high number may indicate that context leaks have occured.
+    uint closedScriptContextCount;
+
+    enum VisibilityState : BYTE
+    {
+        Undefined = 0,
+        Visible = 1,
+        NotVisible = 2
+    };
+
+    // indicates the visibility state of the hosting application/window/tab if known.
+    VisibilityState visibilityState;
+
 #if ENABLE_NATIVE_CODEGEN
     PreReservedVirtualAllocWrapper * GetPreReservedVirtualAllocator() { return &preReservedVirtualAllocator; }
 #if DYNAMIC_INTERPRETER_THUNK || defined(ASMJS_PLAT)
@@ -977,6 +1011,7 @@ public:
     virtual void AsyncHostOperationEnd(bool wasInAsync, void *) override;
 #endif
 #if DBG
+    virtual void CheckJsReentrancyOnDispose() override;
     bool IsInAsyncHostOperation() const;
 #endif
 
@@ -1233,8 +1268,8 @@ public:
     uint EnterScriptStart(Js::ScriptEntryExitRecord *, bool doCleanup);
     void EnterScriptEnd(Js::ScriptEntryExitRecord *, bool doCleanup);
 
-    void * GetTryCatchFrameAddr() { return this->tryCatchFrameAddr; }
-    void SetTryCatchFrameAddr(void * frameAddr) { this->tryCatchFrameAddr = frameAddr; }
+    void * GetTryHandlerAddrOfReturnAddr() { return this->tryHandlerAddrOfReturnAddr; }
+    void SetTryHandlerAddrOfReturnAddr(void * addrOfReturnAddr) { this->tryHandlerAddrOfReturnAddr = addrOfReturnAddr; }
 
     template <bool leaveForHost>
     void LeaveScriptStart(void *);
@@ -1431,6 +1466,18 @@ public:
         }
     }
 
+    bool IsOldEntryPointInfo(Js::ProxyEntryPointInfo* entryPointInfo)
+    {
+        Js::FunctionEntryPointInfo* current = this->recyclableData->oldEntryPointInfo;
+        while (current != nullptr)
+        {
+            if (current == entryPointInfo)
+                return true;
+            current = current->nextEntryPoint;
+        }
+        return false;
+    }
+
     static bool IsOnStack(void const *ptr);
     _NOINLINE bool IsStackAvailable(size_t size, bool* isInterrupt = nullptr);
     _NOINLINE bool IsStackAvailableNoThrow(size_t size = Js::Constants::MinStackDefault);
@@ -1561,6 +1608,7 @@ public:
     template <class Fn>
     inline Js::Var ExecuteImplicitCall(Js::RecyclableObject * function, Js::ImplicitCallFlags flags, Fn implicitCall)
     {
+        AutoReentrancyHandler autoReentrancyHandler(this);
 
         Js::FunctionInfo::Attributes attributes = Js::FunctionInfo::GetAttributes(function);
 
@@ -1766,9 +1814,29 @@ public:
             Js::Throw::FatalJsReentrancyError();
         }
     }
+#else
+    void AssertJsReentrancy() {}
 #endif
 
 public:
+    void CheckAndResetReentrancySafeOrHandled()
+    {
+        AssertOrFailFast(reentrancySafeOrHandled || isInReentrancySafeRegion);
+        SetReentrancySafeOrHandled(false);
+    }
+
+    void SetReentrancySafeOrHandled(bool val) { reentrancySafeOrHandled = val; }
+    bool GetReentrancySafeOrHandled() { return reentrancySafeOrHandled; }
+    void SetIsInReentrancySafeRegion(bool val) { isInReentrancySafeRegion = val; }
+    bool GetIsInReentrancySafeRegion() { return isInReentrancySafeRegion; }
+
+    template <typename Fn>
+    Js::Var SafeReentrantCall(Fn fn)
+    {
+        AutoReentrancyHandler autoReentrancyHandler(this);
+        return fn();
+    }
+
     bool IsEntryPointToBuiltInOperationIdCacheInitialized()
     {
         return entryPointToBuiltInOperationIdCache.Count() != 0;
@@ -1838,11 +1906,13 @@ private:
         }
 
         virtual LPFILETIME GetLastScriptExecutionEndTime() const;
-        virtual bool TransmitTelemetry(RecyclerTelemetryInfo& rti);
+        virtual bool TransmitGCTelemetryStats(RecyclerTelemetryInfo& rti);
         virtual bool TransmitTelemetryError(const RecyclerTelemetryInfo& rti, const char * msg);
+        virtual bool TransmitHeapUsage(size_t totalHeapBytes, size_t usedHeapBytes, double heapUsedRatio);
         virtual bool ThreadContextRecyclerTelemetryHostInterface::IsThreadBound() const;
         virtual DWORD ThreadContextRecyclerTelemetryHostInterface::GetCurrentScriptThreadID() const;
         virtual bool IsTelemetryProviderEnabled() const;
+        virtual uint GetClosedContextCount() const;
 
     private:
         ThreadContext * tc;
@@ -1886,6 +1956,44 @@ private:
     bool m_operationCompleted;
     bool m_interruptDisableState;
     bool m_explicitCompletion;
+};
+
+class AutoReentrancyHandler
+{
+    ThreadContext * m_threadContext;
+    bool m_savedReentrancySafeOrHandled;
+
+public:
+    AutoReentrancyHandler(ThreadContext * threadContext)
+    {
+        m_threadContext = threadContext;
+        m_savedReentrancySafeOrHandled = threadContext->GetReentrancySafeOrHandled();
+        threadContext->SetReentrancySafeOrHandled(true);
+    }
+
+    ~AutoReentrancyHandler()
+    {
+        m_threadContext->SetReentrancySafeOrHandled(m_savedReentrancySafeOrHandled);
+    }
+};
+
+class AutoReentrancySafeRegion
+{
+    ThreadContext * m_threadContext;
+    bool m_savedIsInReentrancySafeRegion;
+
+public:
+    AutoReentrancySafeRegion(ThreadContext * threadContext)
+    {
+        m_threadContext = threadContext;
+        m_savedIsInReentrancySafeRegion = threadContext->GetIsInReentrancySafeRegion();
+        threadContext->SetIsInReentrancySafeRegion(true);
+    }
+
+    ~AutoReentrancySafeRegion()
+    {
+        m_threadContext->SetIsInReentrancySafeRegion(m_savedIsInReentrancySafeRegion);
+    }
 };
 
 #if ENABLE_JS_REENTRANCY_CHECK

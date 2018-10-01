@@ -126,19 +126,29 @@ namespace Js
             Var thunkArgs[] = { this, yieldData };
             Arguments arguments(_countof(thunkArgs), thunkArgs);
 
+            JavascriptExceptionObject *exception = nullptr;
+
             try
             {
-                result = JavascriptFunction::CallFunction<1>(this->scriptFunction, this->scriptFunction->GetEntryPoint(), arguments);
+                BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+                {
+                    result = JavascriptFunction::CallFunction<1>(this->scriptFunction, this->scriptFunction->GetEntryPoint(), arguments);
+                }
+                END_SAFE_REENTRANT_CALL
                 helper.DidNotThrow();
             }
             catch (const JavascriptException& err)
             {
-                Js::JavascriptExceptionObject* exceptionObj = err.GetAndClear();
-                if (!exceptionObj->IsGeneratorReturnException())
+                exception = err.GetAndClear();
+            }
+
+            if (exception != nullptr)
+            {
+                if (!exception->IsGeneratorReturnException())
                 {
-                    JavascriptExceptionOperators::DoThrow(exceptionObj, scriptContext);
+                    JavascriptExceptionOperators::DoThrowCheckClone(exception, scriptContext);
                 }
-                result = exceptionObj->GetThrownObject(nullptr);
+                result = exception->GetThrownObject(nullptr);
             }
         }
 

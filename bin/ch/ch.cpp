@@ -145,7 +145,7 @@ void __stdcall PrintChakraCoreVersion()
                 // Doesn't matter if you are on 32 bit or 64 bit,
                 // DWORD is always 32 bits, so first two revision numbers
                 // come from dwFileVersionMS, last two come from dwFileVersionLS
-                wprintf(_u("%s version %u.%u.%u.%u\n"),
+                wprintf(_u("%s version %lu.%lu.%lu.%lu\n"),
                     chakraDllName,
                     (verInfo->dwFileVersionMS >> 16) & 0xffff,
                     (verInfo->dwFileVersionMS >> 0) & 0xffff,
@@ -451,6 +451,10 @@ HRESULT RunScript(const char* fileName, LPCSTR fileContents, size_t fileLength, 
                 JsParseScriptAttributeNone,
                 parserStateCache,
                 nullptr);
+        }
+        else if (HostConfigFlags::flags.Module)
+        {
+            runScript = WScriptJsrt::ModuleEntryPoint(fileName, fileContents, fullPath);
         }
         else // bufferValue == nullptr && parserStateCache == nullptr
         {

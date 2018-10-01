@@ -720,7 +720,7 @@ BackwardPass::MergeSuccBlocksInfo(BasicBlock * block)
                               this->func->GetDebugNumberSet(debugStringBuffer),
                               block->GetBlockNum(), blockSucc->GetBlockNum());
 
-            auto fixupFrom = [block, blockSucc, this](Bucket<AddPropertyCacheBucket> &bucket)
+            auto fixupFrom = [block, blockSucc, upwardExposedUses, this](Bucket<AddPropertyCacheBucket> &bucket)
             {
                 AddPropertyCacheBucket *fromData = &bucket.element;
                 if (fromData->GetInitialType() == nullptr ||
@@ -729,10 +729,10 @@ BackwardPass::MergeSuccBlocksInfo(BasicBlock * block)
                     return;
                 }
 
-                this->InsertTypeTransitionsAtPriorSuccessors(block, blockSucc, bucket.value, fromData);
+                this->InsertTypeTransitionsAtPriorSuccessors(block, blockSucc, bucket.value, fromData, upwardExposedUses);
             };
 
-            auto fixupTo = [blockSucc, this](Bucket<AddPropertyCacheBucket> &bucket)
+            auto fixupTo = [blockSucc, upwardExposedUses, this](Bucket<AddPropertyCacheBucket> &bucket)
             {
                 AddPropertyCacheBucket *toData = &bucket.element;
                 if (toData->GetInitialType() == nullptr ||
@@ -741,7 +741,7 @@ BackwardPass::MergeSuccBlocksInfo(BasicBlock * block)
                     return;
                 }
 
-                this->InsertTypeTransitionAtBlock(blockSucc, bucket.value, toData);
+                this->InsertTypeTransitionAtBlock(blockSucc, bucket.value, toData, upwardExposedUses);
             };
 
             if (blockSucc->stackSymToFinalType != nullptr)
@@ -2232,6 +2232,13 @@ BackwardPass::DeadStoreTypeCheckBailOut(IR::Instr * instr)
         return;
     }
 
+    // By default, do not do this for stores, as it makes the presence of type checks unpredictable in the forward pass.
+    // For instance, we can't predict which stores may cause reallocation of aux slots.
+    if (!PHASE_ON(Js::DeadStoreTypeChecksOnStoresPhase, this->func) && instr->GetDst() && instr->GetDst()->IsSymOpnd())
+    {
+        return;
+    }
+
     IR::BailOutKind oldBailOutKind = instr->GetBailOutKind();
     if (!IR::IsTypeCheckBailOutKind(oldBailOutKind))
     {
@@ -2244,6 +2251,11 @@ BackwardPass::DeadStoreTypeCheckBailOut(IR::Instr * instr)
 
     IR::PropertySymOpnd *propertySymOpnd =
         (instr->GetDst() && instr->GetDst()->IsSymOpnd()) ? instr->GetDst()->AsPropertySymOpnd() : instr->GetSrc1()->AsPropertySymOpnd();
+
+    if (propertySymOpnd->TypeCheckRequired())
+    {
+        return;
+    }
 
     bool isTypeCheckProtected = false;
     IR::BailOutKind bailOutKind;
@@ -2839,7 +2851,10 @@ BackwardPass::ProcessBlock(BasicBlock * block)
         if(IsCollectionPass())
         {
 #ifndef _M_ARM
-            if (this->collectionPassSubPhase == CollectionPassSubPhase::FirstPass)
+            if (
+                   this->collectionPassSubPhase == CollectionPassSubPhase::FirstPass
+                && !this->func->IsSimpleJit()
+                )
             {
                 // In the collection pass we do multiple passes over loops. In these passes we keep
                 // track of sets of symbols, such that we can know whether or not they are used in
@@ -3232,7 +3247,11 @@ BackwardPass::ProcessBlock(BasicBlock * block)
         if (this->tag == Js::DeadStorePhase)
         {
 #ifndef _M_ARM
-            if(block->loop && !this->isLoopPrepass)
+            if(
+                   block->loop
+                && !this->isLoopPrepass
+                && !this->func->IsSimpleJit()
+                )
             {
                 // In the second pass, we mark instructions that we go by as being safe or unsafe.
                 //
@@ -3602,12 +3621,17 @@ BackwardPass::ProcessBlock(BasicBlock * block)
     NEXT_INSTR_BACKWARD_IN_BLOCK_EDITING;
 
 #ifndef _M_ARM
-    if (this->tag == Js::DeadStorePhase
+    if (
+           this->tag == Js::DeadStorePhase
+        // We don't do the masking in simplejit due to reduced perf concerns and the issues
+        // with handling try/catch structures with late-added blocks
+        && !this->func->IsSimpleJit()
         // We don't need the masking blocks in asmjs/wasm mode
         && !block->GetFirstInstr()->m_func->GetJITFunctionBody()->IsAsmJsMode()
         && !block->GetFirstInstr()->m_func->GetJITFunctionBody()->IsWasmFunction()
         && !block->isDead
-        && !block->isDeleted)
+        && !block->isDeleted
+        )
     {
         FOREACH_PREDECESSOR_BLOCK(blockPred, block)
         {
@@ -4590,7 +4614,7 @@ BackwardPass::ProcessNewScObject(IR::Instr* instr)
                     Assert(pBucket->GetInitialType() == ctorCache->GetType());
                     if (!this->IsPrePass())
                     {
-                        this->InsertTypeTransition(instr->m_next, objSym, pBucket);
+                        this->InsertTypeTransition(instr->m_next, objSym, pBucket, block->upwardExposedUses);
                     }
 #if DBG
                     pBucket->deadStoreUnavailableInitialType = pBucket->GetInitialType();
@@ -4890,8 +4914,8 @@ BackwardPass::UpdateArrayBailOutKind(IR::Instr *const instr)
     }
 
     IR::BailOutKind includeBailOutKinds = IR::BailOutInvalid;
-    if(!baseValueType.IsNotNativeArray() &&
-        (!baseValueType.IsLikelyNativeArray() || !instr->GetSrc1()->IsInt32()) &&
+    if (!baseValueType.IsNotNativeArray() &&
+        (!baseValueType.IsLikelyNativeArray() || instr->GetSrc1()->IsVar()) &&
         !currentBlock->noImplicitCallNativeArrayUses->IsEmpty() &&
         !(instr->GetBailOutKind() & IR::BailOutOnArrayAccessHelperCall))
     {
@@ -5168,7 +5192,7 @@ BackwardPass::ProcessPropertySymOpndUse(IR::PropertySymOpnd * opnd)
                     pBucket->GetFinalType() != nullptr &&
                     pBucket->GetFinalType() != pBucket->GetInitialType())
                 {
-                    this->InsertTypeTransition(this->currentInstr->m_next, baseSym, pBucket);
+                    this->InsertTypeTransition(this->currentInstr->m_next, baseSym, pBucket, block->upwardExposedUses);
                     pBucket->SetFinalType(pBucket->GetInitialType());
                 }
             }
@@ -5187,9 +5211,6 @@ BackwardPass::ProcessPropertySymOpndUse(IR::PropertySymOpnd * opnd)
 void
 BackwardPass::TrackObjTypeSpecProperties(IR::PropertySymOpnd *opnd, BasicBlock *block)
 {
-    StackSym *auxSlotPtrSym = nullptr;
-    bool auxSlotPtrUpwardExposed = false;
-
     Assert(tag == Js::DeadStorePhase);
     Assert(opnd->IsTypeCheckSeqCandidate());
 
@@ -5256,7 +5277,6 @@ BackwardPass::TrackObjTypeSpecProperties(IR::PropertySymOpnd *opnd, BasicBlock *
 #endif
 
         bucket->AddToGuardedPropertyOps(opnd->GetObjTypeSpecFldId());
-        auxSlotPtrUpwardExposed = PHASE_ON(Js::ReuseAuxSlotPtrPhase, this->func) && opnd->UsesAuxSlot() && !opnd->IsLoadedFromProto() && opnd->IsTypeChecked();
 
         if (opnd->NeedsMonoCheck())
         {
@@ -5303,12 +5323,6 @@ BackwardPass::TrackObjTypeSpecProperties(IR::PropertySymOpnd *opnd, BasicBlock *
                     bucket->SetGuardedPropertyOps(nullptr);
                     JitAdelete(this->tempAlloc, guardedPropertyOps);
                     block->stackSymToGuardedProperties->Clear(objSym->m_id);
-                    auxSlotPtrSym = opnd->GetAuxSlotPtrSym();
-                    if (auxSlotPtrSym)
-                    {
-                        this->currentBlock->upwardExposedUses->Clear(auxSlotPtrSym->m_id);
-                    }
-                    auxSlotPtrUpwardExposed = false;
                 }
             }
 #if DBG
@@ -5327,11 +5341,25 @@ BackwardPass::TrackObjTypeSpecProperties(IR::PropertySymOpnd *opnd, BasicBlock *
         opnd->SetGuardedPropOp(opnd->GetObjTypeSpecFldId());
     }
 
-    if (auxSlotPtrUpwardExposed)
+    if (opnd->UsesAuxSlot() && opnd->IsTypeCheckSeqParticipant() && !opnd->HasTypeMismatch() && !opnd->IsLoadedFromProto())
     {
-        // This is an upward-exposed use of the aux slot pointer.
-        auxSlotPtrSym = opnd->EnsureAuxSlotPtrSym(this->func);
-        this->currentBlock->upwardExposedUses->Set(auxSlotPtrSym->m_id);
+        bool auxSlotPtrUpwardExposed = false;
+        StackSym *auxSlotPtrSym = opnd->GetAuxSlotPtrSym();
+        if (opnd->IsAuxSlotPtrSymAvailable())
+        {    
+            // This is an upward-exposed use of the aux slot pointer.
+            Assert(auxSlotPtrSym);
+            auxSlotPtrUpwardExposed = this->currentBlock->upwardExposedUses->TestAndSet(auxSlotPtrSym->m_id);
+        }
+        else if (auxSlotPtrSym != nullptr)
+        {
+            // The aux slot pointer is not upward-exposed at this point.
+            auxSlotPtrUpwardExposed = this->currentBlock->upwardExposedUses->TestAndClear(auxSlotPtrSym->m_id);
+        }
+        if (!this->IsPrePass() && auxSlotPtrUpwardExposed)
+        {
+            opnd->SetProducesAuxSlotPtr(true);
+        }
     }
 }
 
@@ -5587,16 +5615,18 @@ BackwardPass::TrackAddPropertyTypes(IR::PropertySymOpnd *opnd, BasicBlock *block
 }
 
 void
-BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, int symId, AddPropertyCacheBucket *data)
+BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, int symId, AddPropertyCacheBucket *data, BVSparse<JitArenaAllocator>* upwardExposedUses)
 {
     StackSym *objSym = this->func->m_symTable->FindStackSym(symId);
     Assert(objSym);
-    this->InsertTypeTransition(instrInsertBefore, objSym, data);
+    this->InsertTypeTransition(instrInsertBefore, objSym, data, upwardExposedUses);
 }
 
 void
-BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, StackSym *objSym, AddPropertyCacheBucket *data)
+BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, StackSym *objSym, AddPropertyCacheBucket *data, BVSparse<JitArenaAllocator>* upwardExposedUses)
 {
+    Assert(!this->IsPrePass());
+
     IR::RegOpnd *baseOpnd = IR::RegOpnd::New(objSym, TyMachReg, this->func);
     baseOpnd->SetIsJITOptimizedReg(true);
 
@@ -5613,7 +5643,7 @@ BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, StackSym *objSy
     IR::Instr *adjustTypeInstr =
         IR::Instr::New(Js::OpCode::AdjustObjType, finalTypeOpnd, baseOpnd, initialTypeOpnd, this->func);
 
-    if (this->currentBlock->upwardExposedUses)
+    if (upwardExposedUses)
     {
         // If this type change causes a slot adjustment, the aux slot pointer (if any) will be reloaded here, so take it out of upwardExposedUses.
         int oldCount;
@@ -5627,7 +5657,10 @@ BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, StackSym *objSy
             StackSym *auxSlotPtrSym = baseOpnd->m_sym->GetAuxSlotPtrSym();
             if (auxSlotPtrSym)
             {
-                this->currentBlock->upwardExposedUses->Clear(auxSlotPtrSym->m_id);
+                if (upwardExposedUses->Test(auxSlotPtrSym->m_id))
+                {
+                    adjustTypeInstr->m_opcode = Js::OpCode::AdjustObjTypeReloadAuxSlotPtr;
+                }
             }
         }
     }
@@ -5636,7 +5669,7 @@ BackwardPass::InsertTypeTransition(IR::Instr *instrInsertBefore, StackSym *objSy
 }
 
 void
-BackwardPass::InsertTypeTransitionAfterInstr(IR::Instr *instr, int symId, AddPropertyCacheBucket *data)
+BackwardPass::InsertTypeTransitionAfterInstr(IR::Instr *instr, int symId, AddPropertyCacheBucket *data, BVSparse<JitArenaAllocator>* upwardExposedUses)
 {
     if (!this->IsPrePass())
     {
@@ -5645,11 +5678,11 @@ BackwardPass::InsertTypeTransitionAfterInstr(IR::Instr *instr, int symId, AddPro
         {
             // The instr with the bailout is something like a branch that may not fall through.
             // Insert the transitions instead at the beginning of each successor block.
-            this->InsertTypeTransitionsAtPriorSuccessors(this->currentBlock, nullptr, symId, data);
+            this->InsertTypeTransitionsAtPriorSuccessors(this->currentBlock, nullptr, symId, data, upwardExposedUses);
         }
         else
         {
-            this->InsertTypeTransition(instr->m_next, symId, data);
+            this->InsertTypeTransition(instr->m_next, symId, data, upwardExposedUses);
         }
     }
     // Note: we could probably clear this entry out of the table, but I don't know
@@ -5658,7 +5691,7 @@ BackwardPass::InsertTypeTransitionAfterInstr(IR::Instr *instr, int symId, AddPro
 }
 
 void
-BackwardPass::InsertTypeTransitionAtBlock(BasicBlock *block, int symId, AddPropertyCacheBucket *data)
+BackwardPass::InsertTypeTransitionAtBlock(BasicBlock *block, int symId, AddPropertyCacheBucket *data, BVSparse<JitArenaAllocator>* upwardExposedUses)
 {
     bool inserted = false;
     FOREACH_INSTR_IN_BLOCK(instr, block)
@@ -5681,7 +5714,7 @@ BackwardPass::InsertTypeTransitionAtBlock(BasicBlock *block, int symId, AddPrope
             }
             else
             {
-                this->InsertTypeTransition(instr, symId, data);
+                this->InsertTypeTransition(instr, symId, data, upwardExposedUses);
                 inserted = true;
                 break;
             }
@@ -5691,7 +5724,7 @@ BackwardPass::InsertTypeTransitionAtBlock(BasicBlock *block, int symId, AddPrope
     if (!inserted)
     {
         Assert(block->GetLastInstr()->m_next);
-        this->InsertTypeTransition(block->GetLastInstr()->m_next, symId, data);
+        this->InsertTypeTransition(block->GetLastInstr()->m_next, symId, data, upwardExposedUses);
     }
 }
 
@@ -5700,7 +5733,8 @@ BackwardPass::InsertTypeTransitionsAtPriorSuccessors(
     BasicBlock *block,
     BasicBlock *blockSucc,
     int symId,
-    AddPropertyCacheBucket *data)
+    AddPropertyCacheBucket *data,
+    BVSparse<JitArenaAllocator>* upwardExposedUses)
 {
     // For each successor of block prior to blockSucc, adjust the type.
     FOREACH_SUCCESSOR_BLOCK(blockFix, block)
@@ -5710,7 +5744,7 @@ BackwardPass::InsertTypeTransitionsAtPriorSuccessors(
             return;
         }
 
-        this->InsertTypeTransitionAtBlock(blockFix, symId, data);
+        this->InsertTypeTransitionAtBlock(blockFix, symId, data, upwardExposedUses);
     }
     NEXT_SUCCESSOR_BLOCK;
 }
@@ -5728,7 +5762,7 @@ BackwardPass::InsertTypeTransitionsAtPotentialKills()
         // Also do this for ctor cache updates, to avoid putting a type in the ctor cache that extends past
         // the end of the ctor that the cache covers.
         this->ForEachAddPropertyCacheBucket([&](int symId, AddPropertyCacheBucket *data)->bool {
-            this->InsertTypeTransitionAfterInstr(instr, symId, data);
+            this->InsertTypeTransitionAfterInstr(instr, symId, data, this->currentBlock->upwardExposedUses);
             return false;
         });
     }
@@ -5754,7 +5788,7 @@ BackwardPass::InsertTypeTransitionsAtPotentialKills()
                 if (this->TransitionUndoesObjectHeaderInlining(data))
                 {
                     // We're transitioning from inlined to non-inlined, so we can't push it up any farther.
-                    this->InsertTypeTransitionAfterInstr(instr, symId, data);
+                    this->InsertTypeTransitionAfterInstr(instr, symId, data, this->currentBlock->upwardExposedUses);
                 }
                 return false;
             });
@@ -7808,10 +7842,12 @@ BackwardPass::ProcessInlineeEnd(IR::Instr* instr)
     }
     if (this->tag == Js::BackwardPhase)
     {
-        if (!GlobOpt::DoInlineArgsOpt(instr->m_func))
+        // Commenting out to allow for argument length and argument[constant] optimization
+        // Will revisit in phase two
+        /*if (!GlobOpt::DoInlineArgsOpt(instr->m_func))
         {
             return;
-        }
+        }*/
 
         // This adds a use for function sym as part of InlineeStart & all the syms referenced by the args.
         // It ensure they do not get cleared from the copy prop sym map.

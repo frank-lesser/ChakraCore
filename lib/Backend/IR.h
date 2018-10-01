@@ -265,11 +265,6 @@ public:
     void            FreeSrc2();
     Opnd *          ReplaceSrc2(Opnd * newSrc);
     Instr *         HoistSrc2(Js::OpCode assignOpcode, RegNum regNum = RegNOREG, StackSym *newSym = nullptr);
-    Instr *         HoistIndirOffset(IndirOpnd *indirOpnd, RegNum regNum = RegNOREG);
-    Instr *         HoistSymOffset(SymOpnd *symOpnd, RegNum baseReg, uint32 offset, RegNum regNum = RegNOREG);
-    Instr *         HoistIndirOffsetAsAdd(IndirOpnd *orgOpnd, IR::Opnd *baseOpnd, int offset,  RegNum regNum);
-    Instr *         HoistSymOffsetAsAdd(SymOpnd *orgOpnd, IR::Opnd *baseOpnd, int offset,  RegNum regNum);
-    Instr *         HoistIndirIndexOpndAsAdd(IR::IndirOpnd *orgOpnd, IR::Opnd *baseOpnd, IR::Opnd *indexOpnd, RegNum regNum);
     IndirOpnd *     HoistMemRefAddress(MemRefOpnd *const memRefOpnd, const Js::OpCode loadOpCode);
     Opnd *          UnlinkSrc(Opnd *src);
     Opnd *          ReplaceSrc(Opnd *oldSrc, Opnd * newSrc);
@@ -293,6 +288,7 @@ public:
     IR::Instr *     GetNextRealInstr() const;
     IR::Instr *     GetNextRealInstrOrLabel() const;
     IR::Instr *     GetNextBranchOrLabel() const;
+    IR::Instr *     GetNextByteCodeInstr() const;
     IR::Instr *     GetPrevRealInstr() const;
     IR::Instr *     GetPrevRealInstrOrLabel() const;
     IR::LabelInstr *GetPrevLabelInstr() const;
@@ -371,7 +367,9 @@ public:
     bool            BinaryCalculatorT(T src1Const, T src2Const, int64 *pResult, bool checkWouldTrap);
     bool            UnaryCalculator(IntConstType src1Const, IntConstType *pResult, IRType type);
     IR::Instr*      GetNextArg();
-
+#if DBG
+    bool            ShouldEmitIntRangeCheck();
+#endif
     // Iterates argument chain
     template<class Fn>
     bool IterateArgInstrs(Fn callback)
@@ -581,7 +579,6 @@ public:
     // problems because we end up with an instruction losing atomicity in terms of its
     // bytecode use and generation lifetimes.
     void AggregateFollowingByteCodeUses();
-    void AggregatePrecedingByteCodeUses();
 
 private:
     void Aggregate(ByteCodeUsesInstr * byteCodeUsesInstr);

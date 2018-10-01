@@ -25,8 +25,6 @@ intptr_t const JnHelperMethodAddresses[] =
 // Because of order-of-initialization problems with the vtable address static field
 // and this array, we're going to have to fill these in as we go along.
 #include "JnHelperMethodList.h"
-#undef HELPERCALL
-
     NULL
 };
 
@@ -285,6 +283,7 @@ DECLSPEC_GUARDIGNORE  _NOINLINE intptr_t GetNonTableMethodAddress(ThreadContextI
 ///----------------------------------------------------------------------------
 intptr_t GetMethodOriginalAddress(ThreadContextInfo * context, JnHelperMethod helperMethod)
 {
+    AssertOrFailFast(helperMethod >= 0 && helperMethod < IR::JnHelperMethodCount);
     intptr_t address = GetHelperMethods()[static_cast<WORD>(helperMethod)];
     if (address == 0)
     {
@@ -302,8 +301,6 @@ char16 const * const JnHelperMethodNames[] =
 {
 #define HELPERCALL(Name, Address, Attributes) _u("") STRINGIZEW(Name) _u(""),
 #include "JnHelperMethodList.h"
-#undef HELPERCALL
-
     NULL
 };
 
@@ -465,7 +462,6 @@ static const BYTE JnHelperMethodAttributes[] =
 {
 #define HELPERCALL(Name, Address, Attributes) Attributes,
 #include "JnHelperMethodList.h"
-#undef HELPERCALL
 };
 
 // Returns true if the helper can throw non-OOM / non-SO exception.
@@ -478,5 +474,24 @@ bool IsInVariant(IR::JnHelperMethod helper)
 {
     return (JnHelperMethodAttributes[helper] & AttrInVariant) != 0;
 }
+
+bool CanBeReentrant(IR::JnHelperMethod helper)
+{
+    return (JnHelperMethodAttributes[helper] & AttrCanNotBeReentrant) == 0;
+}
+
+#ifdef DBG_DUMP
+struct ValidateHelperHeaders
+{
+    ValidateHelperHeaders()
+    {
+#define HELPERCALL(Name, Address, Attributes)
+#define HELPERCALLCHK(Name, Address, Attributes) \
+        Assert(JitHelperUtils::helper##Name##_implemented);
+#include "../Backend/JnHelperMethodList.h"
+    }
+};
+ValidateHelperHeaders validateHelperHeaders;
+#endif
 
 } //namespace HelperMethodAttributes

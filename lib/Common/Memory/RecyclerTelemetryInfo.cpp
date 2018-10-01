@@ -24,6 +24,7 @@ namespace Memory
 
     RecyclerTelemetryInfo::RecyclerTelemetryInfo(Recycler * recycler, RecyclerTelemetryHostInterface* hostInterface) :
         passCount(0),
+        perfTrackPassCount(0),
         hostInterface(hostInterface),
         gcPassStats(&HeapAllocator::Instance),
         recyclerStartTime(Js::Tick::Now()),
@@ -41,7 +42,7 @@ namespace Memory
             AssertOnValidThread(this, RecyclerTelemetryInfo::~RecyclerTelemetryInfo);
             if (this->gcPassStats.Empty() == false)
             {
-                this->hostInterface->TransmitTelemetry(*this);
+                this->hostInterface->TransmitGCTelemetryStats(*this);
                 this->FreeGCPassStats();
             }
         }
@@ -52,9 +53,29 @@ namespace Memory
         return this->recycler->GetRecyclerID();
     }
 
-    bool RecyclerTelemetryInfo::GetIsConcurrentEnabled() const
+    RecyclerFlagsTableSummary RecyclerTelemetryInfo::GetRecyclerConfigFlags() const
     {
-        return this->recycler->IsConcurrentEnabled();
+
+        // select set of config flags that we can pack into an uint32
+        RecyclerFlagsTableSummary flags = RecyclerFlagsTableSummary::None;
+
+        if (this->recycler->IsMemProtectMode())                    { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::IsMemProtectMode);                     }
+        if (this->recycler->IsConcurrentEnabled())                 { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::IsConcurrentEnabled);                  }
+        if (this->recycler->enableScanInteriorPointers)            { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::EnableScanInteriorPointers);           }
+        if (this->recycler->enableScanImplicitRoots)               { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::EnableScanImplicitRoots);              }
+        if (this->recycler->disableCollectOnAllocationHeuristics)  { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::DisableCollectOnAllocationHeuristics); }
+#ifdef RECYCLER_STRESS
+        if (this->recycler->recyclerStress)                        { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::RecyclerStress);                       }
+#if ENABLE_CONCURRENT_GC
+        if (this->recycler->recyclerBackgroundStress)              { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::RecyclerBackgroundStress);             }
+        if (this->recycler->recyclerConcurrentStress)              { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::RecyclerConcurrentStress);             }
+        if (this->recycler->recyclerConcurrentRepeatStress)        { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::RecyclerConcurrentRepeatStress);       }
+#endif
+#if ENABLE_PARTIAL_GC
+        if (this->recycler->recyclerPartialStress)                 { flags = static_cast<RecyclerFlagsTableSummary>(flags | RecyclerFlagsTableSummary::RecyclerPartialStress);                }
+#endif
+#endif
+        return flags;
     }
 
     bool RecyclerTelemetryInfo::ShouldStartTelemetryCapture() const
@@ -64,7 +85,6 @@ namespace Memory
             this->abortTelemetryCapture == false &&
             this->hostInterface->IsTelemetryProviderEnabled();
     }
-
 
     void RecyclerTelemetryInfo::FillInSizeData(IdleDecommitPageAllocator* allocator, AllocatorSizes* sizes) const
     {
@@ -90,7 +110,7 @@ namespace Memory
         return stats;
     }
 
-    void RecyclerTelemetryInfo::StartPass()
+    void RecyclerTelemetryInfo::StartPass(CollectionState collectionState)
     {
         this->inPassActiveState = false;
         if (this->ShouldStartTelemetryCapture())
@@ -128,8 +148,10 @@ namespace Memory
             {
                 this->inPassActiveState = true;
                 passCount++;
+                perfTrackPassCount++;
                 memset(stats, 0, sizeof(RecyclerTelemetryGCPassStats));
 
+                stats->startPassCollectionState = collectionState;
                 stats->isGCPassActive = true;
                 stats->passStartTimeTick = Js::Tick::Now();
                 GetSystemTimePreciseAsFileTime(&stats->passStartTimeFileTime);
@@ -137,6 +159,8 @@ namespace Memory
                 {
                     LPFILETIME ft = this->hostInterface->GetLastScriptExecutionEndTime();
                     stats->lastScriptExecutionEndTime = *ft;
+
+                    stats->closedContextCount = this->hostInterface->GetClosedContextCount();
                 }
 
                 stats->processCommittedBytes_start = RecyclerTelemetryInfo::GetProcessCommittedBytes();
@@ -151,11 +175,13 @@ namespace Memory
                 this->FillInSizeData(this->recycler->GetHeapInfo()->GetRecyclerWithBarrierPageAllocator(), &stats->recyclerWithBarrierPageAllocator_start);
 #endif
                 stats->startPassProcessingElapsedTime = Js::Tick::Now() - start;
+
+                stats->pinnedObjectCount = this->recycler->pinnedObjectMap.Count();
             }
         }
     }
 
-    void RecyclerTelemetryInfo::EndPass()
+    void RecyclerTelemetryInfo::EndPass(CollectionState collectionState)
     {
         if (!this->inPassActiveState)
         {
@@ -168,6 +194,10 @@ namespace Memory
         AssertOnValidThread(this, RecyclerTelemetryInfo::EndPass);
         RecyclerTelemetryGCPassStats* lastPassStats = this->GetLastPassStats();
 
+        lastPassStats->endPassCollectionState = collectionState;
+        lastPassStats->collectionStartReason = this->recycler->collectionStartReason;
+        lastPassStats->collectionFinishReason = this->recycler->collectionFinishReason;
+        lastPassStats->collectionStartFlags = this->recycler->collectionStartFlags;
         lastPassStats->isGCPassActive = false;
         lastPassStats->passEndTimeTick = Js::Tick::Now();
 
@@ -190,14 +220,28 @@ namespace Memory
 
         lastPassStats->endPassProcessingElapsedTime = Js::Tick::Now() - start;
 
-        if (ShouldTransmit() && this->hostInterface != nullptr)
+        // use separate events for perftrack specific data & general telemetry data
+        if (this->ShouldTransmitPerfTrackEvents())
         {
-            if (this->hostInterface->TransmitTelemetry(*this))
+            if (this->hostInterface->TransmitHeapUsage(bucketReporter.GetTotalStats()->totalByteCount, bucketReporter.GetTotalStats()->objectByteCount, bucketReporter.GetTotalStats()->UsedRatio()))
+            {
+                this->ResetPerfTrackCounts();
+            }
+        }
+
+        if (this->ShouldTransmitGCStats() && this->hostInterface != nullptr)
+        {
+            if (this->hostInterface->TransmitGCTelemetryStats(*this))
             {
                 this->lastTransmitTime = lastPassStats->passEndTimeTick;
                 Reset();
             }
         }
+    }
+
+    void RecyclerTelemetryInfo::ResetPerfTrackCounts()
+    {
+        this->perfTrackPassCount = 0;
     }
 
     void RecyclerTelemetryInfo::Reset()
@@ -220,11 +264,18 @@ namespace Memory
         }
     }
 
-    bool RecyclerTelemetryInfo::ShouldTransmit() const
+    bool RecyclerTelemetryInfo::ShouldTransmitGCStats() const
     {
         // for now, try to transmit telemetry when we have >= 16
         return (this->hostInterface != nullptr &&  this->passCount >= 16);
     }
+
+    bool RecyclerTelemetryInfo::ShouldTransmitPerfTrackEvents() const
+    {
+        // for now, try to transmit telemetry when we have >= 16
+        return (this->hostInterface != nullptr &&  this->perfTrackPassCount >= 128);
+    }
+
 
     void RecyclerTelemetryInfo::IncrementUserThreadBlockedCount(Js::TickDelta waitTime, RecyclerWaitReason caller)
     {
@@ -240,6 +291,41 @@ namespace Memory
         {
             AssertOnValidThread(this, RecyclerTelemetryInfo::IncrementUserThreadBlockedCount);
             lastPassStats->uiThreadBlockedTimes[caller] += waitTime;
+        }
+    }
+
+
+    void RecyclerTelemetryInfo::IncrementUserThreadBlockedCpuTimeUser(uint64 userMicroseconds, RecyclerWaitReason caller)
+    {
+        RecyclerTelemetryGCPassStats* lastPassStats = this->GetLastPassStats();
+#ifdef DBG
+        if (this->inPassActiveState)
+        {
+            AssertMsg(lastPassStats != nullptr && lastPassStats->isGCPassActive == true, "unexpected Value in  RecyclerTelemetryInfo::IncrementUserThreadBlockedCpuTimeUser");
+        }
+#endif
+
+        if (this->inPassActiveState && lastPassStats != nullptr)
+        {
+            AssertOnValidThread(this, RecyclerTelemetryInfo::IncrementUserThreadBlockedCpuTimeUser);
+            lastPassStats->uiThreadBlockedCpuTimesUser[caller] += userMicroseconds;
+        }
+    }
+
+    void RecyclerTelemetryInfo::IncrementUserThreadBlockedCpuTimeKernel(uint64 kernelMicroseconds, RecyclerWaitReason caller)
+    {
+        RecyclerTelemetryGCPassStats* lastPassStats = this->GetLastPassStats();
+#ifdef DBG
+        if (this->inPassActiveState)
+        {
+            AssertMsg(lastPassStats != nullptr && lastPassStats->isGCPassActive == true, "unexpected Value in  RecyclerTelemetryInfo::IncrementUserThreadBlockedCpuTimeKernel");
+        }
+#endif
+
+        if (this->inPassActiveState && lastPassStats != nullptr)
+        {
+            AssertOnValidThread(this, RecyclerTelemetryInfo::IncrementUserThreadBlockedCpuTimeKernel);
+            lastPassStats->uiThreadBlockedCpuTimesKernel[caller] += kernelMicroseconds;
         }
     }
 

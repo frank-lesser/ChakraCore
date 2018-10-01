@@ -8,8 +8,8 @@
 #include "DebugWriter.h"
 #include "RegexPattern.h"
 
-namespace Js
-{
+using namespace Js;
+
     JavascriptRegExp::JavascriptRegExp(UnifiedRegex::RegexPattern* pattern, DynamicType* type) :
         DynamicObject(type),
         pattern(pattern),
@@ -395,6 +395,7 @@ namespace Js
 
     JavascriptRegExp* JavascriptRegExp::CreateRegEx(Var aValue, Var options, ScriptContext *scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_CoerseRegex);
         // This is called as helper from OpCode::CoerseRegEx. If aValue is regex pattern /a/, CreatePattern converts
         // it to pattern "/a/" instead of "a". So if we know that aValue is regex, then just return the same object
         if (JavascriptRegExp::Is(aValue))
@@ -405,6 +406,7 @@ namespace Js
         {
             return CreateRegExNoCoerce(aValue, options, scriptContext);
         }
+        JIT_HELPER_END(Op_CoerseRegex);
     }
 
     JavascriptRegExp* JavascriptRegExp::CreateRegExNoCoerce(Var aValue, Var options, ScriptContext *scriptContext)
@@ -539,6 +541,10 @@ namespace Js
             {
                 builder->AppendChars(_u('m'));
             }
+            if (pattern->IsDotAll())
+            {
+                builder->AppendChars(_u('s'));
+            }
             if (pattern->IsUnicode())
             {
                 builder->AppendChars(_u('u'));
@@ -627,10 +633,10 @@ namespace Js
         return thisRegularExpression;
     }
 
-    Var JavascriptRegExp::OP_NewRegEx(Var aCompiledRegex, ScriptContext* scriptContext)
+    Var JavascriptRegExp::OP_NewRegEx(UnifiedRegex::RegexPattern* aCompiledRegex, ScriptContext* scriptContext)
     {
         JavascriptRegExp * pNewInstance =
-            RecyclerNew(scriptContext->GetRecycler(),JavascriptRegExp,((UnifiedRegex::RegexPattern*)aCompiledRegex),
+            RecyclerNew(scriptContext->GetRecycler(), JavascriptRegExp, aCompiledRegex,
             scriptContext->GetLibrary()->GetRegexType());
         return pNewInstance;
     }
@@ -946,6 +952,11 @@ namespace Js
                 APPEND_FLAG(PropertyIds::unicode, _u('u'));
             }
 
+            if (scriptConfig->IsES2018RegExDotAllEnabled())
+            {
+                APPEND_FLAG(PropertyIds::dotAll, _u('s'));
+            }
+
             if (scriptConfig->IsES6RegExStickyEnabled())
             {
                 APPEND_FLAG(PropertyIds::sticky, _u('y'));
@@ -1010,6 +1021,10 @@ namespace Js
             {
                 bs.Append(_u('m'));
             }
+            if(GetPattern()->IsDotAll())
+            {
+                bs.Append(_u('s'));
+            }
             if (GetPattern()->IsUnicode())
             {
                 bs.Append(_u('u'));
@@ -1048,7 +1063,7 @@ namespace Js
         Assert(!(callInfo.Flags & CallFlags_New)); \
         \
         ScriptContext* scriptContext = function->GetScriptContext(); \
-        if (ShouldApplyPrototypeWebWorkaround(args, scriptContext)) \
+        if (ShouldApplyPrototypeWebWorkaround(args, scriptContext) || args[0] == scriptContext->GetLibrary()->GetRegExpPrototype()) \
         {\
             return scriptContext->GetLibrary()->GetUndefined(); \
         }\
@@ -1062,6 +1077,7 @@ namespace Js
     DEFINE_FLAG_GETTER(EntryGetterMultiline, multiline, IsMultiline)
     DEFINE_FLAG_GETTER(EntryGetterSticky, sticky, IsSticky)
     DEFINE_FLAG_GETTER(EntryGetterUnicode, unicode, IsUnicode)
+    DEFINE_FLAG_GETTER(EntryGetterDotAll, dotAll, IsDotAll)
 
     JavascriptRegExp * JavascriptRegExp::BoxStackInstance(JavascriptRegExp * instance, bool deepCopy)
     {
@@ -1096,9 +1112,22 @@ namespace Js
     {
         DEFAULT_SPECIAL_PROPERTY_IDS,
         PropertyIds::unicode,
+        PropertyIds::dotAll,
         PropertyIds::sticky
     };
     PropertyId const JavascriptRegExp::specialPropertyIdsWithoutUnicode[] =
+    {
+        DEFAULT_SPECIAL_PROPERTY_IDS,
+        PropertyIds::dotAll,
+        PropertyIds::sticky
+    };
+    PropertyId const JavascriptRegExp::specialPropertyIdsWithoutDotAll[] =
+    {
+        DEFAULT_SPECIAL_PROPERTY_IDS,
+        PropertyIds::unicode,
+        PropertyIds::sticky
+    };
+    PropertyId const JavascriptRegExp::specialPropertyIdsWithoutDotAllOrUnicode[] =
     {
         DEFAULT_SPECIAL_PROPERTY_IDS,
         PropertyIds::sticky
@@ -1121,6 +1150,8 @@ namespace Js
         case PropertyIds::source:
         case PropertyIds::options:
             HAS_PROPERTY(!scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        case PropertyIds::dotAll:
+            HAS_PROPERTY(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled())
         case PropertyIds::unicode:
             HAS_PROPERTY(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled())
         case PropertyIds::sticky:
@@ -1193,6 +1224,8 @@ namespace Js
             GET_FLAG(IsGlobal)
         case PropertyIds::multiline:
             GET_FLAG(IsMultiline)
+        case PropertyIds::dotAll:
+            GET_FLAG(IsDotAll)
         case PropertyIds::ignoreCase:
             GET_FLAG(IsIgnoreCase)
         case PropertyIds::unicode:
@@ -1279,6 +1312,8 @@ namespace Js
         case PropertyIds::source:
         case PropertyIds::options:
             SET_PROPERTY(!scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        case PropertyIds::dotAll:
+            SET_PROPERTY(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::unicode:
             SET_PROPERTY(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::sticky:
@@ -1317,6 +1352,8 @@ namespace Js
         case PropertyIds::source:
         case PropertyIds::options:
             DELETE_PROPERTY(!scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        case PropertyIds::dotAll:
+            DELETE_PROPERTY(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::unicode:
             DELETE_PROPERTY(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::sticky:
@@ -1355,6 +1392,10 @@ namespace Js
         else if (BuiltInPropertyRecords::unicode.Equals(propertyNameString))
         {
             DELETE_PROPERTY(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        }
+        else if (BuiltInPropertyRecords::dotAll.Equals(propertyNameString))
+        {
+            DELETE_PROPERTY(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         }
         else if (BuiltInPropertyRecords::sticky.Equals(propertyNameString))
         {
@@ -1419,6 +1460,8 @@ namespace Js
             GET_SETTER(!scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::unicode:
             GET_SETTER(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        case PropertyIds::dotAll:
+            GET_SETTER(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::sticky:
             GET_SETTER(scriptConfig->IsES6RegExStickyEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         default:
@@ -1460,6 +1503,8 @@ namespace Js
             IS_ENUMERABLE(!scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::unicode:
             IS_ENUMERABLE(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        case PropertyIds::dotAll:
+            IS_ENUMERABLE(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::sticky:
             IS_ENUMERABLE(scriptConfig->IsES6RegExStickyEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         default:
@@ -1488,6 +1533,8 @@ namespace Js
             IS_CONFIGURABLE(!scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::unicode:
             IS_CONFIGURABLE(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
+        case PropertyIds::dotAll:
+            IS_CONFIGURABLE(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::sticky:
             IS_CONFIGURABLE(scriptConfig->IsES6RegExStickyEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         default:
@@ -1514,6 +1561,8 @@ namespace Js
         case PropertyIds::source:
         case PropertyIds::options:
             IS_WRITABLE(!scriptConfig->IsES6RegExPrototypePropertiesEnabled())
+        case PropertyIds::dotAll:
+            IS_WRITABLE(scriptConfig->IsES2018RegExDotAllEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled())
         case PropertyIds::unicode:
             IS_WRITABLE(scriptConfig->IsES6UnicodeExtensionsEnabled() && !scriptConfig->IsES6RegExPrototypePropertiesEnabled());
         case PropertyIds::sticky:
@@ -1556,6 +1605,11 @@ namespace Js
             specialPropertyCount += 1;
         }
 
+        if (GetScriptContext()->GetConfig()->IsES2018RegExDotAllEnabled())
+        {
+            specialPropertyCount += 1;
+        }
+
         return specialPropertyCount;
     }
 
@@ -1567,9 +1621,29 @@ namespace Js
 
     inline PropertyId const * JavascriptRegExp::GetSpecialPropertyIdsInlined() const
     {
-        return GetScriptContext()->GetConfig()->IsES6UnicodeExtensionsEnabled()
-            ? specialPropertyIdsAll
-            : specialPropertyIdsWithoutUnicode;
+        const ScriptConfiguration* config = GetScriptContext()->GetConfig();
+        if (config->IsES6UnicodeExtensionsEnabled())
+        {
+            if (config->IsES2018RegExDotAllEnabled())
+            {
+                return specialPropertyIdsAll;
+            }
+            else
+            {
+                return specialPropertyIdsWithoutDotAll;
+            }
+        }
+        else
+        {
+            if (config->IsES2018RegExDotAllEnabled())
+            {
+                return specialPropertyIdsWithoutUnicode;
+            }
+            else
+            {
+                return specialPropertyIdsWithoutDotAllOrUnicode;
+            }
+        }
     }
 
 #if ENABLE_TTD
@@ -1599,4 +1673,3 @@ namespace Js
         this->lastIndexVar = lastVar;
     }
 #endif
-} // namespace Js

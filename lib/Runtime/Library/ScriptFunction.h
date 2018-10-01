@@ -43,17 +43,6 @@ namespace Js
         }
         virtual Var GetComputedNameVar() const override { return this->computedNameVar; }
         virtual void SetComputedNameVar(Var computedNameVar) override { this->computedNameVar = computedNameVar; }
-
-#if ENABLE_TTD
-        virtual void MarkVisitKindSpecificPtrs(TTD::SnapshotExtractor* extractor)
-        {
-            __super::MarkVisitKindSpecificPtrs(extractor);
-            if (this->computedNameVar != nullptr)
-            {
-                extractor->MarkVisitVar(this->computedNameVar);
-            }
-        }
-#endif
     };
 
     template <class BaseClass>
@@ -82,7 +71,6 @@ namespace Js
         Field(ActivationObjectEx *) cachedScopeObj;
         Field(bool) hasInlineCaches;
 
-        JavascriptString * FormatToString(JavascriptString* inputString);
         static JavascriptString* GetComputedName(Var computedNameVar, ScriptContext * scriptContext);
         static bool GetSymbolName(Var computedNameVar, const char16** symbolName, charcount_t *length);
     protected:
@@ -97,11 +85,15 @@ namespace Js
         static ScriptFunction * OP_NewScFunc(FrameDisplay *environment, FunctionInfoPtrPtr infoRef);
         static ScriptFunction * OP_NewScFuncHomeObj(FrameDisplay *environment, FunctionInfoPtrPtr infoRef, Var homeObj);
 
+        static void CopyEntryPointInfoToThreadContextIfNecessary(ProxyEntryPointInfo* oldEntryPointInfo, ProxyEntryPointInfo* newEntryPointInfo);
+
         ProxyEntryPointInfo* GetEntryPointInfo() const;
         FunctionEntryPointInfo* GetFunctionEntryPointInfo() const
         {
             Assert(this->GetFunctionProxy()->IsDeferred() == FALSE);
-            return (FunctionEntryPointInfo*) this->GetEntryPointInfo();
+            ProxyEntryPointInfo* result = this->GetEntryPointInfo();
+            Assert(result->IsFunctionEntryPointInfo());
+            return (FunctionEntryPointInfo*)result;
         }
 
         FunctionProxy * GetFunctionProxy() const;
@@ -123,6 +115,8 @@ namespace Js
         JavascriptMethod UpdateUndeferredBody(FunctionBody* newFunctionInfo);
 
         virtual ScriptFunctionType * DuplicateType() override;
+        virtual void PrepareForConversionToNonPathType() override;
+        virtual void ReplaceTypeWithPredecessorType(DynamicType * previousType) override;
 
         virtual Var GetSourceString() const;
         virtual JavascriptString * EnsureSourceString();

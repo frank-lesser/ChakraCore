@@ -37,6 +37,9 @@ namespace Js
         case ArrayBufferAllocationType::MemAlloc:
             toReturn = library->CreateArrayBuffer(arrayBufferState->buffer, arrayBufferState->bufferLength);
             break;
+        case ArrayBufferAllocationType::External:
+            toReturn = static_cast<ExternalArrayBufferDetachedState*>(state)->Create(library);
+            break;
         default:
             AssertMsg(false, "Unknown allocationType of ArrayBufferDetachedStateBase ");
         }
@@ -214,14 +217,19 @@ namespace Js
         }
     }
 
+    void ArrayBuffer::ReportExternalMemoryFree()
+    {
+        Recycler* recycler = GetType()->GetLibrary()->GetRecycler();
+        recycler->ReportExternalMemoryFree(bufferLength);
+    }
+
     void ArrayBuffer::Detach()
     {
         Assert(!this->isDetached);
 
         // we are about to lose track of the buffer to another owner
         // report that we no longer own the memory
-        Recycler* recycler = GetType()->GetLibrary()->GetRecycler();
-        recycler->ReportExternalMemoryFree(bufferLength);
+        ReportExternalMemoryFree();
 
         this->buffer = nullptr;
         this->bufferLength = 0;
@@ -513,11 +521,17 @@ namespace Js
 
         if (scriptContext->GetConfig()->IsES6SpeciesEnabled())
         {
-            RecyclableObject* constructor = JavascriptOperators::SpeciesConstructor(arrayBuffer, scriptContext->GetLibrary()->GetArrayBufferConstructor(), scriptContext);
+            JavascriptFunction* defaultConstructor = scriptContext->GetLibrary()->GetArrayBufferConstructor();
+            RecyclableObject* constructor = JavascriptOperators::SpeciesConstructor(arrayBuffer, defaultConstructor, scriptContext);
+            AssertOrFailFast(JavascriptOperators::IsConstructor(constructor));
 
-            Js::Var constructorArgs[] = {constructor, JavascriptNumber::ToVar(byteLength, scriptContext)};
-            Js::CallInfo constructorCallInfo(Js::CallFlags_New, _countof(constructorArgs));
-            Js::Var newVar = JavascriptOperators::NewScObject(constructor, Js::Arguments(constructorCallInfo, constructorArgs), scriptContext);
+            bool isDefaultConstructor = constructor == defaultConstructor;
+            Js::Var newVar = JavascriptOperators::NewObjectCreationHelper_ReentrancySafe(constructor, isDefaultConstructor, scriptContext->GetThreadContext(), [=]()->Js::Var
+            {
+                Js::Var constructorArgs[] = { constructor, JavascriptNumber::ToVar(byteLength, scriptContext) };
+                Js::CallInfo constructorCallInfo(Js::CallFlags_New, _countof(constructorArgs));
+                return JavascriptOperators::NewScObject(constructor, Js::Arguments(constructorCallInfo, constructorArgs), scriptContext);
+            });
 
             if (!ArrayBuffer::Is(newVar)) // 24.1.4.3: 19.If new does not have an [[ArrayBufferData]] internal slot throw a TypeError exception.
             {
@@ -1060,9 +1074,30 @@ namespace Js
         /* See ProjectionArrayBuffer::Finalize */
     }
 
+    ArrayBuffer* ExternalArrayBufferDetachedState::Create(JavascriptLibrary* library)
+    {
+        return library->CreateExternalArrayBuffer(buffer, bufferLength);
+    }
+
     ExternalArrayBuffer::ExternalArrayBuffer(byte *buffer, uint32 length, DynamicType *type)
         : ArrayBuffer(buffer, length, type, true)
     {
+    }
+
+    ExternalArrayBuffer* ExternalArrayBuffer::Create(byte* buffer, uint32 length, DynamicType * type)
+    {
+        // This type does not own the external memory, so don't AddExternalMemoryUsage like other ArrayBuffer types do
+        return RecyclerNewFinalized(type->GetScriptContext()->GetRecycler(), ExternalArrayBuffer, buffer, length, type);
+    }
+
+    ArrayBufferDetachedStateBase* ExternalArrayBuffer::CreateDetachedState(BYTE* buffer, DECLSPEC_GUARD_OVERFLOW uint32 bufferLength)
+    {
+        return HeapNew(ExternalArrayBufferDetachedState, buffer, bufferLength);
+    };
+
+    void ExternalArrayBuffer::ReportExternalMemoryFree()
+    {
+        // This type does not own the external memory, so don't ReportExternalMemoryFree like other ArrayBuffer types do
     }
 
 #if ENABLE_TTD
@@ -1090,4 +1125,23 @@ namespace Js
         TTD::NSSnapObjects::StdExtractSetKindSpecificInfo<TTD::NSSnapObjects::SnapArrayBufferInfo*, TTD::NSSnapObjects::SnapObjectType::SnapArrayBufferObject>(objData, sabi);
     }
 #endif
+
+    ExternalArrayBufferDetachedState::ExternalArrayBufferDetachedState(BYTE* buffer, uint32 bufferLength)
+        : ArrayBufferDetachedStateBase(TypeIds_ArrayBuffer, buffer, bufferLength, ArrayBufferAllocationType::External)
+    {}
+
+    void ExternalArrayBufferDetachedState::ClearSelfOnly()
+    {
+        HeapDelete(this);
+    }
+
+    void ExternalArrayBufferDetachedState::DiscardState()
+    {
+        // Nothing to do as buffer is external
+    }
+
+    void ExternalArrayBufferDetachedState::Discard()
+    {
+        ClearSelfOnly();
+    }
 }

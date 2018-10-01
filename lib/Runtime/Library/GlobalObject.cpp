@@ -13,8 +13,8 @@
 #include "Types/SimpleDictionaryPropertyDescriptor.h"
 #include "Types/SimpleDictionaryTypeHandler.h"
 
-namespace Js
-{
+using namespace Js;
+
     GlobalObject * GlobalObject::New(ScriptContext * scriptContext)
     {
         SimpleDictionaryTypeHandler* globalTypeHandler = SimpleDictionaryTypeHandler::New(
@@ -594,10 +594,10 @@ namespace Js
         FastEvalMapString key(sourceString, sourceLen, moduleID, strictMode, isLibraryCode);
 
 
-
         // PropertyString's buffer references to PropertyRecord's inline buffer, if both PropertyString and PropertyRecord are collected
         // we'll leave the PropertyRecord's interior buffer pointer in the EvalMap. So do not use evalmap if we are evaluating PropertyString
         bool useEvalMap = !VirtualTableInfo<PropertyString>::HasVirtualTable(argString) && debugEvalScriptContext == nullptr; // Don't use the cache in case of debugEval
+        
         bool found = useEvalMap && scriptContext->IsInEvalMap(key, isIndirect, &pfuncScript);
         if (!found || (!isIndirect && pfuncScript->GetEnvironment() != &NullFrameDisplay))
         {
@@ -606,6 +606,11 @@ namespace Js
             if (isLibraryCode)
             {
                 grfscr |= fscrIsLibraryCode;
+            }
+
+            if (!(grfscr & fscrConsoleScopeEval))
+            {
+                grfscr |= fscrCanDeferFncParse;
             }
 
             pfuncScript = library->GetGlobalObject()->EvalHelper(scriptContext, argString->GetSz(), argString->GetLength(), moduleID,
@@ -699,14 +704,14 @@ namespace Js
                 bool successful = false;
                 if (JavascriptStackWalker::GetCaller(&pfuncCaller, scriptContext))
                 {
-                FunctionInfo* functionInfo = pfuncCaller->GetFunctionInfo();
-                if (functionInfo != nullptr && (functionInfo->IsLambda() || functionInfo->IsClassConstructor()))
-                {
-                    Var defaultInstance = (moduleID == kmodGlobal) ? JavascriptOperators::OP_LdRoot(scriptContext)->ToThis() : (Var)JavascriptOperators::GetModuleRoot(moduleID, scriptContext);
-                    varThis = JavascriptOperators::OP_GetThisScoped(environment, defaultInstance, scriptContext);
-                    UpdateThisForEval(varThis, moduleID, scriptContext, strictMode);
+                    FunctionInfo* functionInfo = pfuncCaller->GetFunctionInfo();
+                    if (functionInfo != nullptr && (functionInfo->IsLambda() || functionInfo->IsClassConstructor()))
+                    {
+                        Var defaultInstance = (moduleID == kmodGlobal) ? JavascriptOperators::OP_LdRoot(scriptContext)->ToThis() : (Var)JavascriptOperators::GetModuleRoot(moduleID, scriptContext);
+                        varThis = JavascriptOperators::OP_GetThisScoped(environment, defaultInstance, scriptContext);
+                        UpdateThisForEval(varThis, moduleID, scriptContext, strictMode);
                         successful = true;
-                }
+                    }
                 }
 
                 if (!successful)
@@ -760,7 +765,12 @@ namespace Js
             // Executing the eval causes the scope chain to escape.
             pfuncScript->InvalidateCachedScopeChain();
         }
-        Var varResult = CALL_FUNCTION(scriptContext->GetThreadContext(), pfuncScript, CallInfo(CallFlags_Eval, 1), varThis);
+        Var varResult = nullptr;
+        BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+        {
+            varResult = CALL_FUNCTION(scriptContext->GetThreadContext(), pfuncScript, CallInfo(CallFlags_Eval, 1), varThis);
+        }
+        END_SAFE_REENTRANT_CALL
         pfuncScript->SetEnvironment((FrameDisplay*)&NullFrameDisplay);
         return varResult;
     }
@@ -1159,6 +1169,7 @@ namespace Js
 
     Var GlobalObject::EntryParseInt(RecyclableObject* function, CallInfo callInfo, ...)
     {
+        JIT_HELPER_REENTRANT_HEADER(GlobalObject_ParseInt);
         PROBE_STACK(function->GetScriptContext(), Js::Constants::MinStackDefault);
 
         ARGUMENTS(args, callInfo);
@@ -1229,6 +1240,7 @@ namespace Js
 
         Var result = str->ToInteger(radix);
         return result;
+        JIT_HELPER_END(GlobalObject_ParseInt);
     }
 
     Var GlobalObject::EntryParseFloat(RecyclableObject* function, CallInfo callInfo, ...)
@@ -1539,7 +1551,6 @@ LHexError:
 
             bs->AppendChars(chw);
         }
-
         LEAVE_PINNED_SCOPE();   // src
 
         return bs;
@@ -1844,7 +1855,7 @@ LHexError:
             (this->hostObject && JavascriptOperators::GetProperty(this->hostObject, propertyId, value, requestContext, info));
     }
 
-    BOOL GlobalObject::GetAccessors(PropertyId propertyId, Var* getter, Var* setter, ScriptContext * requestContext)
+    _Check_return_ _Success_(return) BOOL GlobalObject::GetAccessors(PropertyId propertyId, _Outptr_result_maybenull_ Var* getter, _Outptr_result_maybenull_ Var* setter, ScriptContext* requestContext)
     {
         if (DynamicObject::GetAccessors(propertyId, getter, setter, requestContext))
         {
@@ -2353,4 +2364,3 @@ LHexError:
         TTD::NSSnapObjects::StdExtractSetKindSpecificInfo<void*, TTD::NSSnapObjects::SnapObjectType::SnapWellKnownObject>(objData, nullptr);
     }
 #endif
-}

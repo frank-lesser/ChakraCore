@@ -4,6 +4,7 @@
 //-------------------------------------------------------------------------------------------------------
 
 #include "Backend.h"
+#include "Core/CRC.h"
 
 #include "X64Encode.h"
 
@@ -1517,11 +1518,11 @@ EncoderMD::FixRelocListEntry(uint32 index, int totalBytesSaved, BYTE *buffStart,
                 // ptr points to imm32 offset of the instruction that needs to be adjusted
                 // offset is in top 28-bits, arg count in bottom 4
                 size_t field = *((size_t*) relocRecord.m_origPtr);
-                size_t offset = field >> 4;
+                size_t offset = field >> Js::InlineeCallInfo::inlineeStartOffsetShiftCount;
                 uint32 count = field & 0xf;
 
                 AssertMsg(offset < (size_t)(buffEnd - buffStart), "Inlinee entry offset out of range");
-                relocRecord.SetInlineOffset(((offset - totalBytesSaved) << 4) | count);
+                relocRecord.SetInlineOffset(((offset - totalBytesSaved) << Js::InlineeCallInfo::inlineeStartOffsetShiftCount) | count);
             }
             // adjust the ptr to the buffer itself
             relocRecord.m_ptr = (BYTE*) relocRecord.m_ptr - totalBytesSaved;
@@ -1637,7 +1638,7 @@ EncoderMD::ApplyRelocs(size_t codeBufferAddress_, size_t codeSize, uint * buffer
                     }
                 }
 
-                *bufferCRC = Encoder::CalculateCRC(*bufferCRC, pcrel);
+                *bufferCRC = CalculateCRC(*bufferCRC, pcrel);
 
                 break;
             }
@@ -1658,7 +1659,7 @@ EncoderMD::ApplyRelocs(size_t codeBufferAddress_, size_t codeSize, uint * buffer
                 {
                     Encoder::EnsureRelocEntryIntegrity(codeBufferAddress_, codeSize, (size_t)m_encoder->m_encodeBuffer, (size_t)relocAddress, sizeof(size_t), targetAddress, false);
                 }
-                *bufferCRC = Encoder::CalculateCRC(*bufferCRC, offset);
+                *bufferCRC = CalculateCRC(*bufferCRC, offset);
                 break;
             }
         case RelocTypeLabel:
@@ -1776,7 +1777,7 @@ EncoderMD::EncodeInlineeCallInfo(IR::Instr *instr, uint32 codeOffset)
     // than can fit in as many bits.
     const bool encodeResult = Js::InlineeCallInfo::Encode(inlineeCallInfo,
         instr->GetSrc1()->AsIntConstOpnd()->GetValue(), codeOffset);
-    Assert(encodeResult);
+    AssertOrFailFast(encodeResult);
 
     instr->GetSrc1()->AsIntConstOpnd()->SetValue(inlineeCallInfo);
 }

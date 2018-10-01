@@ -22,7 +22,8 @@ GlobOpt::CaptureCopyPropValue(BasicBlock * block, Sym * sym, Value * val, SListB
 void
 GlobOpt::CaptureValuesFromScratch(BasicBlock * block,
     SListBase<ConstantStackSymValue>::EditingIterator & bailOutConstValuesIter,
-    SListBase<CopyPropSyms>::EditingIterator & bailOutCopySymsIter)
+    SListBase<CopyPropSyms>::EditingIterator & bailOutCopySymsIter,
+    BVSparse<JitArenaAllocator>* argsToCapture)
 {
     Sym * sym = nullptr;
     Value * value = nullptr;
@@ -48,6 +49,11 @@ GlobOpt::CaptureValuesFromScratch(BasicBlock * block,
         block->globOptData.changedSyms->Set(sym->m_id);
     }
     NEXT_GLOBHASHTABLE_ENTRY;
+
+    if (argsToCapture)
+    {
+        block->globOptData.changedSyms->Or(argsToCapture);
+    }
 
     FOREACH_BITSET_IN_SPARSEBV(symId, block->globOptData.changedSyms)
     {
@@ -80,7 +86,8 @@ GlobOpt::CaptureValuesFromScratch(BasicBlock * block,
 void
 GlobOpt::CaptureValuesIncremental(BasicBlock * block,
     SListBase<ConstantStackSymValue>::EditingIterator & bailOutConstValuesIter,
-    SListBase<CopyPropSyms>::EditingIterator & bailOutCopySymsIter)
+    SListBase<CopyPropSyms>::EditingIterator & bailOutCopySymsIter,
+    BVSparse<JitArenaAllocator>* argsToCapture)
 {
     CapturedValues * currCapturedValues = block->globOptData.capturedValues;
     SListBase<ConstantStackSymValue>::Iterator iterConst(currCapturedValues ? &currCapturedValues->constantValues : nullptr);
@@ -89,6 +96,11 @@ GlobOpt::CaptureValuesIncremental(BasicBlock * block,
     bool hasCopyPropSym = currCapturedValues ? iterCopyPropSym.Next() : false;
 
     block->globOptData.changedSyms->Set(Js::Constants::InvalidSymID);
+
+    if (argsToCapture)
+    {
+        block->globOptData.changedSyms->Or(argsToCapture);
+    }
 
     FOREACH_BITSET_IN_SPARSEBV(symId, block->globOptData.changedSyms)
     {
@@ -225,7 +237,7 @@ GlobOpt::CaptureValuesIncremental(BasicBlock * block,
 
 
 void
-GlobOpt::CaptureValues(BasicBlock *block, BailOutInfo * bailOutInfo)
+GlobOpt::CaptureValues(BasicBlock *block, BailOutInfo * bailOutInfo, BVSparse<JitArenaAllocator>* argsToCapture)
 {
     if (!this->func->DoGlobOptsForGeneratorFunc())
     {
@@ -244,11 +256,11 @@ GlobOpt::CaptureValues(BasicBlock *block, BailOutInfo * bailOutInfo)
 
     if (!block->globOptData.capturedValues)
     {
-        CaptureValuesFromScratch(block, bailOutConstValuesIter, bailOutCopySymsIter);
+        CaptureValuesFromScratch(block, bailOutConstValuesIter, bailOutCopySymsIter, argsToCapture);
     }
     else
     {
-        CaptureValuesIncremental(block, bailOutConstValuesIter, bailOutCopySymsIter);
+        CaptureValuesIncremental(block, bailOutConstValuesIter, bailOutCopySymsIter, argsToCapture);
     }
 
     // attach capturedValues to bailOutInfo
@@ -494,7 +506,6 @@ GlobOpt::TrackCalls(IR::Instr * instr)
         if (this->currentBlock->globOptData.callSequence == nullptr)
         {
             this->currentBlock->globOptData.callSequence = JitAnew(this->alloc, SListBase<IR::Opnd *>);
-            this->currentBlock->globOptData.callSequence = this->currentBlock->globOptData.callSequence;
         }
         this->currentBlock->globOptData.callSequence->Prepend(this->alloc, instr->GetDst());
 
@@ -837,7 +848,7 @@ void GlobOpt::EndTrackingOfArgObjSymsForInlinee()
             // This means there are arguments object symbols in the current function which are not in the current block.
             // This could happen when one of the blocks has a throw and arguments object aliased in it and other blocks don't see it.
             // Rare case, abort stack arguments optimization in this case.
-            CannotAllocateArgumentsObjectOnStack();
+            CannotAllocateArgumentsObjectOnStack(this->currentBlock->globOptData.curFunc);
         }
         else
         {
@@ -891,6 +902,8 @@ void
 GlobOpt::FillBailOutInfo(BasicBlock *block, BailOutInfo * bailOutInfo)
 {
     AssertMsg(!this->isCallHelper, "Bail out can't be inserted the middle of CallHelper sequence");
+
+    BVSparse<JitArenaAllocator>* argsToCapture = nullptr;
 
     bailOutInfo->liveVarSyms = block->globOptData.liveVarSyms->CopyNew(this->func->m_alloc);
     bailOutInfo->liveFloat64Syms = block->globOptData.liveFloat64Syms->CopyNew(this->func->m_alloc);
@@ -971,7 +984,12 @@ GlobOpt::FillBailOutInfo(BasicBlock *block, BailOutInfo * bailOutInfo)
                     sym = opnd->GetStackSym();
                     Assert(this->currentBlock->globOptData.FindValue(sym));
                     // StackSym args need to be re-captured
-                    this->currentBlock->globOptData.SetChangedSym(sym->m_id);
+                    if (!argsToCapture)
+                    {
+                        argsToCapture = JitAnew(this->tempAlloc, BVSparse<JitArenaAllocator>, this->tempAlloc);
+                    }
+
+                    argsToCapture->Set(sym->m_id);
                 }
 
                 Assert(totalOutParamCount != 0);
@@ -1019,7 +1037,28 @@ GlobOpt::FillBailOutInfo(BasicBlock *block, BailOutInfo * bailOutInfo)
 
     // Save the constant values that we know so we can restore them directly.
     // This allows us to dead store the constant value assign.
-    this->CaptureValues(block, bailOutInfo);
+    this->CaptureValues(block, bailOutInfo, argsToCapture);
+}
+
+void
+GlobOpt::FillBailOutInfo(BasicBlock *block, _In_ IR::Instr * instr)
+{
+    AssertMsg(!this->isCallHelper, "Bail out can't be inserted the middle of CallHelper sequence");
+    Assert(instr->HasBailOutInfo());
+
+    if (this->isRecursiveCallOnLandingPad)
+    {
+        Assert(block->IsLandingPad());
+        Loop * loop = block->next->loop;
+        EnsureBailTarget(loop);
+        if (instr->GetBailOutInfo() != loop->bailOutInfo)
+        {
+            instr->ReplaceBailOutInfo(loop->bailOutInfo);
+        }
+        return;
+    }
+
+    FillBailOutInfo(block, instr->GetBailOutInfo());
 }
 
 IR::ByteCodeUsesInstr *
@@ -1351,30 +1390,16 @@ GlobOpt::MayNeedBailOnImplicitCall(IR::Instr const * instr, Value const * src1Va
 void
 GlobOpt::GenerateBailAfterOperation(IR::Instr * *const pInstr, IR::BailOutKind kind)
 {
-    Assert(pInstr);
+    Assert(pInstr && *pInstr);
 
     IR::Instr* instr = *pInstr;
-    Assert(instr);
-
-    IR::Instr * nextInstr = instr->GetNextRealInstrOrLabel();
-    uint32 currentOffset = instr->GetByteCodeOffset();
-    while (nextInstr->GetByteCodeOffset() == Js::Constants::NoByteCodeOffset ||
-        nextInstr->GetByteCodeOffset() == currentOffset)
-    {
-        nextInstr = nextInstr->GetNextRealInstrOrLabel();
-    }
-    // This can happen due to break block removal
-    while (nextInstr->GetByteCodeOffset() == Js::Constants::NoByteCodeOffset ||
-        nextInstr->GetByteCodeOffset() < currentOffset)
-    {
-        nextInstr = nextInstr->GetNextRealInstrOrLabel();
-    }
+    IR::Instr * nextInstr = instr->GetNextByteCodeInstr();
     IR::Instr * bailOutInstr = instr->ConvertToBailOutInstr(nextInstr, kind);
     if (this->currentBlock->GetLastInstr() == instr)
     {
         this->currentBlock->SetLastInstr(bailOutInstr);
     }
-    FillBailOutInfo(this->currentBlock, bailOutInstr->GetBailOutInfo());
+    FillBailOutInfo(this->currentBlock, bailOutInstr);
     *pInstr = bailOutInstr;
 }
 
@@ -1393,7 +1418,7 @@ GlobOpt::GenerateBailAtOperation(IR::Instr * *const pInstr, const IR::BailOutKin
     {
         this->currentBlock->SetLastInstr(bailOutInstr);
     }
-    FillBailOutInfo(currentBlock, bailOutInstr->GetBailOutInfo());
+    FillBailOutInfo(currentBlock, bailOutInstr);
     *pInstr = bailOutInstr;
 }
 

@@ -29,11 +29,14 @@ namespace Js
     bool IsValidCharCount(size_t charCount);
     const charcount_t k_InvalidCharCount = static_cast<charcount_t>(-1);
 
-    class JavascriptString _ABSTRACT : public RecyclableObject
+    class JavascriptString : public RecyclableObject
     {
         friend Lowerer;
         friend LowererMD;
         friend bool IsValidCharCount(size_t);
+
+        JavascriptString() = delete;
+        JavascriptString(JavascriptString&) = delete;
 
     private:
         Field(const char16*) m_pszValue;         // Flattened, '\0' terminated contents
@@ -77,7 +80,7 @@ namespace Js
         virtual void const * GetOriginalStringReference();  // Get the allocated object that owns the original full string buffer
 
 #if ENABLE_TTD
-        //Get the associated property id for this string if there is on (e.g. it is a propertystring otherwise return Js::PropertyIds::_none)
+        //Get the associated property id for this string if there is one (e.g. it is a propertystring otherwise return Js::PropertyIds::_none)
         virtual Js::PropertyId TryGetAssociatedPropertyId() const { return Js::PropertyIds::_none; }
 #endif
 
@@ -241,7 +244,9 @@ namespace Js
             static FunctionInfo ToUpperCase;
             static FunctionInfo Trim;
             static FunctionInfo TrimLeft;
+            static FunctionInfo TrimStart;
             static FunctionInfo TrimRight;
+            static FunctionInfo TrimEnd;
             static FunctionInfo Repeat;
             static FunctionInfo StartsWith;
             static FunctionInfo EndsWith;
@@ -284,8 +289,8 @@ namespace Js
         static Var EntryToString(RecyclableObject* function, CallInfo callInfo, ...);
         static Var EntryToUpperCase(RecyclableObject* function, CallInfo callInfo, ...);
         static Var EntryTrim(RecyclableObject* function, CallInfo callInfo, ...);
-        static Var EntryTrimLeft(RecyclableObject* function, CallInfo callInfo, ...);
-        static Var EntryTrimRight(RecyclableObject* function, CallInfo callInfo, ...);
+        static Var EntryTrimStart(RecyclableObject* function, CallInfo callInfo, ...);
+        static Var EntryTrimEnd(RecyclableObject* function, CallInfo callInfo, ...);
         static Var EntryRepeat(RecyclableObject* function, CallInfo callInfo, ...);
         static Var EntryStartsWith(RecyclableObject* function, CallInfo callInfo, ...);
         static Var EntryEndsWith(RecyclableObject* function, CallInfo callInfo, ...);

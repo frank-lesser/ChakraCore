@@ -656,7 +656,14 @@ namespace Js
         // Not in attribute map
         if (!(GetDataItemAttributes() & PropertyConfigurable))
         {
-            return !HasDataItem(arr, index); // CantDelete
+            if (HasDataItem(arr, index))
+            {
+                JavascriptError::ThrowCantDeleteIfStrictModeOrNonconfigurable(
+                    propertyOperationFlags, instance->GetScriptContext(), TaggedInt::ToString(index, instance->GetScriptContext())->GetString());
+
+                return false;
+            }
+            return true; // non-existing non-configurable property can be deleted
         }
         return arr->DirectDeleteItemAt<Var>(index);
     }
@@ -1152,7 +1159,7 @@ namespace Js
     }
 
     template <class T>
-    BOOL ES5ArrayTypeHandlerBase<T>::GetAccessors(DynamicObject* instance, PropertyId propertyId, Var* getter, Var* setter)
+    _Check_return_ _Success_(return) BOOL ES5ArrayTypeHandlerBase<T>::GetAccessors(DynamicObject* instance, PropertyId propertyId, _Outptr_result_maybenull_ Var* getter, _Outptr_result_maybenull_ Var* setter)
     {
         ScriptContext* scriptContext = instance->GetScriptContext();
 

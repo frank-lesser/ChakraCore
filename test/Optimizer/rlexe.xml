@@ -1462,7 +1462,7 @@
   <test>
     <default>
       <files>test146.js</files>
-      <compile-flags>-off:bailonnoprofile</compile-flags>
+      <compile-flags>-off:bailonnoprofile -off:earlyreferenceerrors</compile-flags>
     </default>
   </test>
   <test>
@@ -1485,6 +1485,17 @@
   </test>
   <test>
     <default>
+      <files>test150.js</files>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>test151.js</files>
+      <compile-flags>-off:usefixeddataprops -off:objtypespec</compile-flags>
+    </default>
+  </test>
+  <test>
+    <default>
       <files>IsIn_ArrayNoMissingValues.js</files>
       <baseline>IsIn_ArrayNoMissingValues.baseline</baseline>
       <compile-flags>-testtrace:BoundCheckElimination</compile-flags>
@@ -1502,7 +1513,7 @@
       <files>mul_rejit_bug.js</files>
       <baseline>mul_rejit_bug.baseline</baseline>
       <compile-flags>-mic:1 -oopjit- -bgJit- -off:simplejit -trace:rejit</compile-flags>
-      <tags>exclude_dynapogo,exclude_nonative</tags>
+      <tags>exclude_dynapogo,exclude_nonative,exclude_serialized</tags>
     </default>
   </test>
   <test>
@@ -1543,6 +1554,30 @@
       <files>bugsimplepathbrfoldgetter.js</files>
       <baseline>bugsimplepathbrfoldgetter.baseline</baseline>
       <tags>exclude_dynapogo,exclude_nonative</tags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>bcebug.js</files>
+      <compile-flags>-mic:1 -off:simplejit -bgjit- -lic:1</compile-flags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>rembug.js</files>
+      <compile-flags>-maxinterpretcount:1 -maxsimplejitruncount:1  -loopinterpretcount:1 -oopjit- -bgjit-</compile-flags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>pathdepbug.js</files>
+      <compile-flags>-maxinterpretcount:1 -maxsimplejitruncount:1 -off:aggressiveinttypespec</compile-flags>
+    </default>
+  </test>
+  <test>
+    <default>
+      <files>valuetypegap.js</files>
+      <compile-flags>-maxinterpretcount:1 -maxsimplejitruncount:1 -force:inline</compile-flags>
     </default>
   </test>
 </regress-exe>

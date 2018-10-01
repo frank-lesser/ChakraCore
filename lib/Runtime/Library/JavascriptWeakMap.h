@@ -42,7 +42,14 @@ namespace Js
         // its type and therefore without invalidating cache and JIT assumptions.
         //
         typedef JsUtil::BaseDictionary<WeakMapId, Var, Recycler, PowerOf2SizePolicy, RecyclerPointerComparer> WeakMapKeyMap;
+
+#if ENABLE_WEAK_REFERENCE_REGIONS
+        typedef JsUtil::WeakReferenceRegionKeyDictionary<RecyclableObject*, bool, RecyclerPointerComparer> KeySet;
+        typedef const RecyclerWeakReferenceRegionItem<RecyclableObject*>& WeakType;
+#else
         typedef JsUtil::WeaklyReferencedKeyDictionary<RecyclableObject, bool, RecyclerPointerComparer<const RecyclableObject*>> KeySet;
+        typedef const RecyclerWeakReference<RecyclableObject>* WeakType;
+#endif
 
         Field(KeySet) keySet;
 
@@ -70,7 +77,14 @@ namespace Js
         bool Has(RecyclableObject* key) const;
         void Set(RecyclableObject* key, Var value);
 
-        virtual void Finalize(bool isShutdown) override { Clear(); }
+        virtual void Finalize(bool isShutdown) override
+        {
+            if (!isShutdown)
+            {
+                Clear();
+            }
+        }
+
         virtual void Dispose(bool isShutdown) override { }
 
         virtual BOOL GetDiagTypeString(StringBuilder<ArenaAllocator>* stringBuilder, ScriptContext* requestContext) override;
@@ -97,7 +111,7 @@ namespace Js
         template <typename Fn>
         void Map(Fn fn)
         {
-            return keySet.Map([&](RecyclableObject* key, bool, const RecyclerWeakReference<RecyclableObject>*)
+            return keySet.Map([&](RecyclableObject* key, bool, WeakType)
             {
                 Var value = nullptr;
                 WeakMapKeyMap* keyMap = GetWeakMapKeyMapFromKey(key);

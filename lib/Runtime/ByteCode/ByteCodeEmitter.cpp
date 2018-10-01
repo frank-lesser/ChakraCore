@@ -1827,9 +1827,9 @@ void ByteCodeGenerator::InitScopeSlotArray(FuncInfo * funcInfo)
         {
             if (sym->NeedsSlotAlloc(this, funcInfo))
             {
-                    // All properties should get correct propertyId here.
-                    Assert(sym->HasScopeSlot()); // We can't allocate scope slot now. Any symbol needing scope slot must have allocated it before this point.
-                    setPropertyIdForScopeSlotArray(sym->GetScopeSlot(), sym->EnsurePosition(funcInfo));
+                // All properties should get correct propertyId here.
+                Assert(sym->HasScopeSlot()); // We can't allocate scope slot now. Any symbol needing scope slot must have allocated it before this point.
+                setPropertyIdForScopeSlotArray(sym->GetScopeSlot(), sym->EnsurePosition(funcInfo));
             }
         };
 
@@ -2438,7 +2438,7 @@ void ByteCodeGenerator::EmitGlobalBody(FuncInfo *funcInfo)
     // return value.
     ParseNode *pnode = funcInfo->root->pnodeBody;
     ParseNode *pnodeLastVal = funcInfo->root->AsParseNodeProg()->pnodeLastValStmt;
-    if (pnodeLastVal == nullptr)
+    if (pnodeLastVal == nullptr || pnodeLastVal->IsPatternDeclaration())
     {
         // We're not guaranteed to compute any values, so fix up the return register at the top
         // in case.
@@ -2859,7 +2859,7 @@ void ByteCodeGenerator::EmitOneFunction(ParseNodeFnc *pnodeFnc)
                 funcInfo->SetApplyEnclosesArgs(applyEnclosesArgs);
             }
         }
-
+        
         InitScopeSlotArray(funcInfo);
         FinalizeRegisters(funcInfo, byteCodeFunction);
         DebugOnly(Js::RegSlot firstTmpReg = funcInfo->varRegsCount);
@@ -4733,7 +4733,7 @@ void ByteCodeGenerator::EmitPropStore(Js::RegSlot rhsLocation, Symbol *sym, Iden
         }
         else
         {
-            this->EmitPatchableRootProperty(GetStFldOpCode(funcInfo, true, isLetDecl, isConstDecl, false), rhsLocation, propertyId, false, true, funcInfo);
+            this->EmitPatchableRootProperty(GetStFldOpCode(funcInfo, true, isLetDecl, isConstDecl, false, forceStrictModeForClassComputedPropertyName), rhsLocation, propertyId, false, true, funcInfo);
         }
     }
     else if (sym->GetIsFuncExpr())
@@ -5128,7 +5128,8 @@ void ByteCodeGenerator::EmitPropLoad(Js::RegSlot lhsLocation, Symbol *sym, Ident
                 opcode = Js::OpCode::LdUndef;
                 break;
             case Js::PropertyIds::__chakraLibrary:
-                if (CONFIG_FLAG(LdChakraLib)) {
+                if (CONFIG_FLAG(LdChakraLib) || CONFIG_FLAG(TestChakraLib))
+                {
                     opcode = Js::OpCode::LdChakraLib;
                 }
                 break;
@@ -5319,7 +5320,7 @@ void ByteCodeGenerator::EmitPropDelete(Js::RegSlot lhsLocation, Symbol *sym, Ide
         if (this->flags & (fscrEval | fscrImplicitThis))
         {
             this->m_writer.ScopedProperty(Js::OpCode::ScopedDeleteFld, lhsLocation,
-                funcInfo->FindOrAddReferencedPropertyId(propertyId));
+                funcInfo->FindOrAddReferencedPropertyId(propertyId), forceStrictModeForClassComputedPropertyName);
         }
         else
         {
@@ -5691,20 +5692,13 @@ void ByteCodeGenerator::RecordAllStringTemplateCallsiteConstants(FuncInfo* funcI
     funcInfo->stringTemplateCallsiteRegisterMap.Map([byteCodeFunction](ParseNodePtr pnode, Js::RegSlot location)
     {
         Js::ScriptContext* scriptContext = byteCodeFunction->GetScriptContext();
-        Js::JavascriptLibrary* library = scriptContext->GetLibrary();
-        Js::RecyclableObject* callsiteObject = library->TryGetStringTemplateCallsiteObject(pnode);
+        
+        Js::RecyclableObject* rawArray = ByteCodeGenerator::BuildArrayFromStringList(pnode->AsParseNodeStrTemplate()->pnodeStringRawLiterals, pnode->AsParseNodeStrTemplate()->countStringLiterals, scriptContext);
+        rawArray->Freeze();
 
-        if (callsiteObject == nullptr)
-        {
-            Js::RecyclableObject* rawArray = ByteCodeGenerator::BuildArrayFromStringList(pnode->AsParseNodeStrTemplate()->pnodeStringRawLiterals, pnode->AsParseNodeStrTemplate()->countStringLiterals, scriptContext);
-            rawArray->Freeze();
-
-            callsiteObject = ByteCodeGenerator::BuildArrayFromStringList(pnode->AsParseNodeStrTemplate()->pnodeStringLiterals, pnode->AsParseNodeStrTemplate()->countStringLiterals, scriptContext);
-            callsiteObject->SetPropertyWithAttributes(Js::PropertyIds::raw, rawArray, PropertyNone, nullptr);
-            callsiteObject->Freeze();
-
-            library->AddStringTemplateCallsiteObject(callsiteObject);
-        }
+        Js::RecyclableObject* callsiteObject = ByteCodeGenerator::BuildArrayFromStringList(pnode->AsParseNodeStrTemplate()->pnodeStringLiterals, pnode->AsParseNodeStrTemplate()->countStringLiterals, scriptContext);
+        callsiteObject->SetPropertyWithAttributes(Js::PropertyIds::raw, rawArray, PropertyNone, nullptr);
+        callsiteObject->Freeze();
 
         byteCodeFunction->RecordConstant(byteCodeFunction->MapRegSlot(location), callsiteObject);
     });
@@ -6638,6 +6632,9 @@ void EmitDestructuredArray(
 
 void EmitNameInvoke(Js::RegSlot lhsLocation,
     Js::RegSlot objectLocation,
+    Js::RegSlot computedPropIdArrLocation,
+    uint32 *computedIndex,
+    bool hasRest,
     ParseNodePtr nameNode,
     ByteCodeGenerator* byteCodeGenerator,
     FuncInfo* funcInfo)
@@ -6649,6 +6646,11 @@ void EmitNameInvoke(Js::RegSlot lhsLocation,
         Emit(pnode1, byteCodeGenerator, funcInfo, false/*isConstructorCall*/);
 
         byteCodeGenerator->Writer()->Element(Js::OpCode::LdElemI_A, lhsLocation, objectLocation, pnode1->location);
+        if (hasRest)
+        {
+            byteCodeGenerator->Writer()->Slot(Js::OpCode::StPropIdArrFromVar, pnode1->location, computedPropIdArrLocation, *computedIndex);
+            (*computedIndex)++;
+        }
         funcInfo->ReleaseLoc(pnode1);
     }
     else
@@ -6719,18 +6721,36 @@ void EmitDestructuredValueOrInitializer(ParseNodePtr lhsElementNode,
 
 void EmitDestructuredObjectMember(ParseNodePtr memberNode,
     Js::RegSlot rhsLocation,
+    Js::RegSlot propIdArrLocation,
+    Js::RegSlot computedPropIdArrLocation,
+    uint32 *computedIndex,
+    bool hasRest,
     ByteCodeGenerator *byteCodeGenerator,
     FuncInfo *funcInfo)
 {
-    Assert(memberNode->nop == knopObjectPatternMember);
+    Assert(memberNode->nop == knopObjectPatternMember || memberNode->nop == knopEllipsis);
 
     Js::RegSlot nameLocation = funcInfo->AcquireTmpRegister();
-    EmitNameInvoke(nameLocation, rhsLocation, memberNode->AsParseNodeBin()->pnode1, byteCodeGenerator, funcInfo);
+    ParseNodePtr lhsElementNode = nullptr;
 
-    // Imagine we are transforming
-    // {x:x1} = {} to x1 = {}.x  (here x1 is the second node of the member but that is our lhsnode)
+    if (memberNode->nop == knopObjectPatternMember)
+    {
+        EmitNameInvoke(nameLocation, rhsLocation, computedPropIdArrLocation, 
+            computedIndex, hasRest, memberNode->AsParseNodeBin()->pnode1, byteCodeGenerator, funcInfo);
 
-    ParseNodePtr lhsElementNode = memberNode->AsParseNodeBin()->pnode2;
+        // Imagine we are transforming
+        // {x:x1} = {} to x1 = {}.x  (here x1 is the second node of the member but that is our lhsnode)
+
+        lhsElementNode = memberNode->AsParseNodeBin()->pnode2;
+    }
+    else
+    {
+        // memberNode->nop == knopEllipsis, aka we are performing Rest operation
+        byteCodeGenerator->Writer()->Reg1(Js::OpCode::NewScObjectSimple, nameLocation);
+        byteCodeGenerator->Writer()->Reg4(Js::OpCode::Restify, rhsLocation, nameLocation, propIdArrLocation, computedPropIdArrLocation);
+        lhsElementNode = memberNode->AsParseNodeUni()->pnode1;
+    }
+
     ParseNodePtr init = nullptr;
     if (lhsElementNode->IsVarLetOrConst())
     {
@@ -6747,13 +6767,50 @@ void EmitDestructuredObjectMember(ParseNodePtr memberNode,
     funcInfo->ReleaseTmpRegister(nameLocation);
 }
 
+void EmitObjectPropertyIdsToArray(ByteCodeGenerator *byteCodeGenerator, 
+    Js::PropertyId *ids, 
+    ParseNodePtr memberNodes, 
+    uint32 staticCount, 
+    bool *hasComputedProps)
+{
+    uint32 index = 0;
+    Parser::ForEachItemInList(memberNodes, [&](ParseNodePtr current) {
+        if (current->nop != knopEllipsis)
+        {
+            ParseNodePtr nameNode = current->AsParseNodeBin()->pnode1;
+            Assert(nameNode != nullptr);
+            Assert(nameNode->nop == knopComputedName || nameNode->nop == knopStr);
+
+            if (nameNode->nop == knopStr)
+            {
+                if (index >= staticCount)
+                {
+                    Js::Throw::InternalError();
+                    return;
+                }
+                ids[index] = nameNode->AsParseNodeStr()->pid->GetPropertyId();
+                index++;
+            }
+            else
+            {
+                *hasComputedProps = true;
+            }
+        }
+    }); 
+}
+
 void EmitDestructuredObject(ParseNode *lhs,
     Js::RegSlot rhsLocationOrig,
     ByteCodeGenerator *byteCodeGenerator,
     FuncInfo *funcInfo)
 {
     Assert(lhs->nop == knopObjectPattern);
-    ParseNodePtr pnode1 = lhs->AsParseNodeUni()->pnode1;
+    ParseNodeObjLit *pnodeObjLit = lhs->AsParseNodeObjLit();
+    ParseNodePtr pnode1 = pnodeObjLit->pnode1;
+    uint32 staticCount = pnodeObjLit->staticCount;
+    uint32 computedCount = pnodeObjLit->computedCount;
+    bool hasRest = pnodeObjLit->hasRest;
+    bool hasComputedProps = false;
 
     byteCodeGenerator->StartStatement(lhs);
 
@@ -6766,19 +6823,51 @@ void EmitDestructuredObject(ParseNode *lhs,
 
     if (pnode1 != nullptr)
     {
-        Assert(pnode1->nop == knopList || pnode1->nop == knopObjectPatternMember);
-
-        ParseNodePtr current = pnode1;
-        while (current->nop == knopList)
+        Js::RegSlot propIdArrLocation = Js::Constants::NoRegister;
+        Js::RegSlot computedPropIdArrLocation = Js::Constants::NoRegister;
+        if (hasRest)
         {
-            ParseNodePtr memberNode = current->AsParseNodeBin()->pnode1;
-            EmitDestructuredObjectMember(memberNode, rhsLocation, byteCodeGenerator, funcInfo);
-            current = current->AsParseNodeBin()->pnode2;
+            uint extraAlloc = UInt32Math::Mul(staticCount, sizeof(Js::PropertyId));
+            uint auxSize = UInt32Math::Add(sizeof(Js::PropertyIdArray), extraAlloc);
+            Js::PropertyIdArray *propIds = AnewPlus(byteCodeGenerator->GetAllocator(), extraAlloc, Js::PropertyIdArray, staticCount, 0);
+
+            Assert(pnode1->nop == knopList || pnode1->nop == knopObjectPatternMember || pnode1->nop == knopEllipsis);
+
+            EmitObjectPropertyIdsToArray(byteCodeGenerator, propIds->elements, pnode1, staticCount, &hasComputedProps);
+
+            // Load static PropertyIdArray here
+            propIdArrLocation = funcInfo->AcquireTmpRegister();
+            byteCodeGenerator->Writer()->Auxiliary(Js::OpCode::LdPropIds, propIdArrLocation, propIds, auxSize, staticCount);
+
+            if (hasComputedProps)
+            {
+                computedPropIdArrLocation = funcInfo->AcquireTmpRegister();
+                byteCodeGenerator->Writer()->Reg1Unsigned1(Js::OpCode::NewPropIdArrForCompProps, computedPropIdArrLocation, computedCount);
+            }
+            else
+            {
+                computedPropIdArrLocation = propIdArrLocation;
+            }
         }
-        EmitDestructuredObjectMember(current, rhsLocation, byteCodeGenerator, funcInfo);
+
+        uint32 index = 0;
+        Parser::ForEachItemInList(pnode1, [&](ParseNodePtr memberNode) {
+            EmitDestructuredObjectMember(memberNode, rhsLocation, propIdArrLocation, computedPropIdArrLocation, 
+                &index, hasRest, byteCodeGenerator, funcInfo);
+        });
+
+        if (hasRest)
+        {
+            if (hasComputedProps)
+            {
+                funcInfo->ReleaseTmpRegister(computedPropIdArrLocation);
+            }
+            funcInfo->ReleaseTmpRegister(propIdArrLocation);
+        }
     }
 
     funcInfo->ReleaseTmpRegister(rhsLocation);
+    
     byteCodeGenerator->EndStatement(lhs);
 }
 
@@ -6835,7 +6924,7 @@ void EmitAssignment(
         {
             uint cacheId = funcInfo->FindOrAddInlineCacheId(lhs->AsParseNodeBin()->pnode1->location, propertyId, false, true);
             byteCodeGenerator->Writer()->PatchableProperty(
-                ByteCodeGenerator::GetStFldOpCode(funcInfo, false, false, false, false), rhsLocation, lhs->AsParseNodeBin()->pnode1->location, cacheId);
+                ByteCodeGenerator::GetStFldOpCode(funcInfo, false, false, false, false, byteCodeGenerator->forceStrictModeForClassComputedPropertyName), rhsLocation, lhs->AsParseNodeBin()->pnode1->location, cacheId);
         }
 
         break;
@@ -6893,7 +6982,6 @@ void EmitAssignment(
         break;
 
     default:
-        Assert(!PHASE_ON1(Js::EarlyReferenceErrorsPhase));
         byteCodeGenerator->Writer()->W1(Js::OpCode::RuntimeReferenceError, SCODE_CODE(JSERR_CantAssignTo));
         break;
     }
@@ -8252,7 +8340,19 @@ void EmitMemberNode(ParseNode *memberNode, Js::RegSlot objectLocation, ByteCodeG
         // Transparently pass the name expr
         // The Emit will replace this with a temp register if necessary to preserve the value.
         nameNode->location = nameNode->AsParseNodeUni()->pnode1->location;
+
+        // Save the previous value of the flag to be restored later.
+        bool prevFlag = byteCodeGenerator->forceStrictModeForClassComputedPropertyName;
+
+        // Strict mode must be enforced on the evaluation of computed property names inside  
+        // classes, thus enable the flag if the computed property name is a class member.
+        byteCodeGenerator->forceStrictModeForClassComputedPropertyName = isClassMember || prevFlag;
+
         EmitBinaryOpnds(nameNode, exprNode, byteCodeGenerator, funcInfo);
+
+        // Restore the flag's previous value.
+        byteCodeGenerator->forceStrictModeForClassComputedPropertyName = prevFlag;
+
         if (isFncDecl && !exprNode->AsParseNodeFnc()->IsClassConstructor())
         {
             EmitComputedFunctionNameVar(nameNode, exprNode->AsParseNodeFnc(), byteCodeGenerator);
@@ -8279,7 +8379,18 @@ void EmitMemberNode(ParseNode *memberNode, Js::RegSlot objectLocation, ByteCodeG
             (isClassMember ? Js::OpCode::InitClassMemberSetComputedName : Js::OpCode::InitSetElemI) :
             (isClassMember ? Js::OpCode::InitClassMemberComputedName : Js::OpCode::InitComputedProperty);
 
-        byteCodeGenerator->Writer()->Element(setOp, exprNode->location, objectLocation, nameNode->location, true);
+        // Save the previous value of the flag to be restored later.
+        bool prevFlag = byteCodeGenerator->forceStrictModeForClassComputedPropertyName;
+        byteCodeGenerator->forceStrictModeForClassComputedPropertyName = isClassMember || prevFlag;
+
+        // Strict mode must be enforced on the evaluation of computed property names inside  
+        // classes, thus enable the flag if the computed property name is a class member.
+        byteCodeGenerator->Writer()->Element(setOp, exprNode->location, objectLocation, nameNode->location, true,
+            byteCodeGenerator->forceStrictModeForClassComputedPropertyName);
+        
+        // Restore the flag's previous value.
+        byteCodeGenerator->forceStrictModeForClassComputedPropertyName = prevFlag;
+
 
         funcInfo->ReleaseLoc(exprNode);
         funcInfo->ReleaseLoc(nameNode);
@@ -8358,6 +8469,16 @@ void EmitMemberNode(ParseNode *memberNode, Js::RegSlot objectLocation, ByteCodeG
     }
 }
 
+void EmitObjectSpreadNode(ParseNode *spreadNode, Js::RegSlot objectLocation, ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo)
+{
+    Js::RegSlot fromObjectLocation;
+    ParseNode *exprNode = spreadNode->AsParseNodeUni()->pnode1;
+    Emit(exprNode, byteCodeGenerator, funcInfo, false);
+    fromObjectLocation = exprNode->location;
+    byteCodeGenerator->Writer()->Reg2(Js::OpCode::SpreadObjectLiteral, fromObjectLocation, objectLocation);
+    funcInfo->ReleaseLoc(exprNode);
+}
+
 void EmitClassInitializers(ParseNode *memberList, Js::RegSlot objectLocation, ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo, ParseNode* parentNode, bool isObjectEmpty)
 {
     if (memberList != nullptr)
@@ -8392,14 +8513,14 @@ void EmitObjectInitializers(ParseNode *memberList, Js::RegSlot objectLocation, B
     typedef JsUtil::BaseHashSet<Js::PropertyId, ArenaAllocator, PowerOf2SizePolicy> PropertyIdSet;
     PropertyIdSet* propertyIds = Anew(byteCodeGenerator->GetAllocator(), PropertyIdSet, byteCodeGenerator->GetAllocator(), 17);
 
-    bool hasComputedName = false;
+    bool hasComputedNameOrSpread = false;
     if (memberList != nullptr)
     {
         while (memberList->nop == knopList)
         {
-            if (memberList->AsParseNodeBin()->pnode1->AsParseNodeBin()->pnode1->nop == knopComputedName)
+            if (memberList->AsParseNodeBin()->pnode1->nop == knopEllipsis || memberList->AsParseNodeBin()->pnode1->AsParseNodeBin()->pnode1->nop == knopComputedName)
             {
-                hasComputedName = true;
+                hasComputedNameOrSpread = true;
                 break;
             }
 
@@ -8412,7 +8533,7 @@ void EmitObjectInitializers(ParseNode *memberList, Js::RegSlot objectLocation, B
             memberList = memberList->AsParseNodeBin()->pnode2;
         }
 
-        if (memberList->AsParseNodeBin()->pnode1->nop != knopComputedName && !hasComputedName)
+        if (memberList->nop != knopEllipsis && memberList->AsParseNodeBin()->pnode1->nop != knopComputedName && !hasComputedNameOrSpread)
         {
             propertyId = memberList->AsParseNodeBin()->pnode1->AsParseNodeStr()->pid->GetPropertyId();
             if (!byteCodeGenerator->GetScriptContext()->IsNumericPropertyId(propertyId, &value))
@@ -8445,7 +8566,7 @@ void EmitObjectInitializers(ParseNode *memberList, Js::RegSlot objectLocation, B
         unsigned int argIndex = 0;
         while (memberList->nop == knopList)
         {
-            if (memberList->AsParseNodeBin()->pnode1->AsParseNodeBin()->pnode1->nop == knopComputedName)
+            if (memberList->AsParseNodeBin()->pnode1->nop == knopEllipsis || memberList->AsParseNodeBin()->pnode1->AsParseNodeBin()->pnode1->nop == knopComputedName)
             {
                 break;
             }
@@ -8458,7 +8579,7 @@ void EmitObjectInitializers(ParseNode *memberList, Js::RegSlot objectLocation, B
             memberList = memberList->AsParseNodeBin()->pnode2;
         }
 
-        if (memberList->AsParseNodeBin()->pnode1->nop != knopComputedName && !hasComputedName)
+        if (memberList->nop != knopEllipsis && memberList->AsParseNodeBin()->pnode1->nop != knopComputedName && !hasComputedNameOrSpread)
         {
             propertyId = memberList->AsParseNodeBin()->pnode1->AsParseNodeStr()->pid->GetPropertyId();
             if (!byteCodeGenerator->GetScriptContext()->IsNumericPropertyId(propertyId, &value) && propertyIds->Remove(propertyId))
@@ -8487,20 +8608,35 @@ void EmitObjectInitializers(ParseNode *memberList, Js::RegSlot objectLocation, B
         while (memberList->nop == knopList)
         {
             ParseNode *memberNode = memberList->AsParseNodeBin()->pnode1;
-
-            if (memberNode->AsParseNodeBin()->pnode1->nop == knopComputedName)
+            if (memberNode->nop == knopEllipsis) 
             {
-                useStore = true;
+                byteCodeGenerator->StartSubexpression(memberNode);
+                EmitObjectSpreadNode(memberNode, objectLocation, byteCodeGenerator, funcInfo);
+                byteCodeGenerator->EndSubexpression(memberNode);
             }
+            else
+            {
+                if (memberNode->AsParseNodeBin()->pnode1->nop == knopComputedName)
+                {
+                    useStore = true;
+                }
 
-            byteCodeGenerator->StartSubexpression(memberNode);
-            EmitMemberNode(memberNode, objectLocation, byteCodeGenerator, funcInfo, nullptr, useStore);
-            byteCodeGenerator->EndSubexpression(memberNode);
+                byteCodeGenerator->StartSubexpression(memberNode);
+                EmitMemberNode(memberNode, objectLocation, byteCodeGenerator, funcInfo, nullptr, useStore);
+                byteCodeGenerator->EndSubexpression(memberNode);
+            }
             memberList = memberList->AsParseNodeBin()->pnode2;
         }
 
         byteCodeGenerator->StartSubexpression(memberList);
-        EmitMemberNode(memberList, objectLocation, byteCodeGenerator, funcInfo, nullptr, useStore);
+        if (memberList->nop == knopEllipsis)
+        {
+            EmitObjectSpreadNode(memberList, objectLocation, byteCodeGenerator, funcInfo);
+        }
+        else
+        {
+            EmitMemberNode(memberList, objectLocation, byteCodeGenerator, funcInfo, nullptr, useStore);
+        }
         byteCodeGenerator->EndSubexpression(memberList);
     }
 }
@@ -9140,12 +9276,16 @@ void ByteCodeGenerator::EmitInvertedLoop(ParseNodeLoop* outerLoop, ParseNodeFor*
     this->m_writer.Br(afterInvertedLoop);
     this->m_writer.MarkLabel(invertedLoopLabel);
 
-    // Emit a zero trip test for the original outer-loop
-    Js::ByteCodeLabel zeroTrip = this->m_writer.DefineLabel();
-    ParseNode* testNode = this->GetParser()->CopyPnode(outerLoop->AsParseNodeFor()->pnodeCond);
-    EmitBooleanExpression(testNode, zeroTrip, afterInvertedLoop, this, funcInfo, true, false);
-    this->m_writer.MarkLabel(zeroTrip);
-    funcInfo->ReleaseLoc(testNode);
+    // Emit a zero trip test for the original outer-loop if the outer-loop
+    // has a condition
+    if (outerLoop->AsParseNodeFor()->pnodeCond)
+    {
+        Js::ByteCodeLabel zeroTrip = this->m_writer.DefineLabel();
+        ParseNode* testNode = this->GetParser()->CopyPnode(outerLoop->AsParseNodeFor()->pnodeCond);
+        EmitBooleanExpression(testNode, zeroTrip, afterInvertedLoop, this, funcInfo, true, false);
+        this->m_writer.MarkLabel(zeroTrip);
+        funcInfo->ReleaseLoc(testNode);
+    }
 
     // emit inverted
     Emit(invertedLoop->pnodeInit, this, funcInfo, false);
@@ -10036,13 +10176,16 @@ void TrackMemberNodesInObjectForIntConstants(ByteCodeGenerator *byteCodeGenerato
     while (memberList != nullptr)
     {
         ParseNodePtr memberNode = memberList->nop == knopList ? memberList->AsParseNodeBin()->pnode1 : memberList;
-        ParseNodePtr memberNameNode = memberNode->AsParseNodeBin()->pnode1;
-        ParseNodePtr memberValNode = memberNode->AsParseNodeBin()->pnode2;
-
-        if (memberNameNode->nop != knopComputedName && memberValNode->nop == knopInt)
+        if (memberNode->nop != knopEllipsis)
         {
-            Js::PropertyId propertyId = memberNameNode->AsParseNodeStr()->pid->GetPropertyId();
-            TrackIntConstantsOnGlobalUserObject(byteCodeGenerator, true, propertyId);
+            ParseNodePtr memberNameNode = memberNode->AsParseNodeBin()->pnode1;
+            ParseNodePtr memberValNode = memberNode->AsParseNodeBin()->pnode2;
+
+            if (memberNameNode->nop != knopComputedName && memberValNode->nop == knopInt)
+            {
+                Js::PropertyId propertyId = memberNameNode->AsParseNodeStr()->pid->GetPropertyId();
+                TrackIntConstantsOnGlobalUserObject(byteCodeGenerator, true, propertyId);
+            }
         }
 
         memberList = memberList->nop == knopList ? memberList->AsParseNodeBin()->pnode2 : nullptr;
@@ -10240,7 +10383,7 @@ void Emit(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator, FuncInfo *func
     case knopEllipsis:
     {
         Emit(pnode->AsParseNodeUni()->pnode1, byteCodeGenerator, funcInfo, false);
-        // Transparently pass the location of the array.
+        // Transparently pass the location of the object or array.
         pnode->location = pnode->AsParseNodeUni()->pnode1->location;
         break;
     }
@@ -10507,7 +10650,7 @@ void Emit(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator, FuncInfo *func
                 Js::PropertyId propertyId = pexpr->AsParseNodeBin()->pnode2->AsParseNodeName()->PropertyIdFromNameNode();
                 funcInfo->AcquireLoc(pnode);
                 byteCodeGenerator->Writer()->Property(Js::OpCode::DeleteFld, pnode->location, pexpr->AsParseNodeBin()->pnode1->location,
-                    funcInfo->FindOrAddReferencedPropertyId(propertyId));
+                    funcInfo->FindOrAddReferencedPropertyId(propertyId), byteCodeGenerator->forceStrictModeForClassComputedPropertyName);
             }
 
             break;
@@ -11565,7 +11708,6 @@ void Emit(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator, FuncInfo *func
             byteCodeGenerator->StartStatement(pnodeCatch);
             byteCodeGenerator->Writer()->Empty(Js::OpCode::Nop);
             byteCodeGenerator->EndStatement(pnodeCatch);
-
             if (funcInfo->byteCodeFunction->IsCoroutine())
             {
                 byteCodeGenerator->tryScopeRecordsList.LinkToEnd(&tryRecForCatch);
@@ -11718,7 +11860,7 @@ void Emit(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator, FuncInfo *func
         break;
     }
 
-    if (fReturnValue && IsExpressionStatement(pnode, byteCodeGenerator->GetScriptContext()))
+    if (fReturnValue && IsExpressionStatement(pnode, byteCodeGenerator->GetScriptContext()) && !pnode->IsPatternDeclaration())
     {
         // If this statement may produce the global function's return value, copy its result to the return register.
         // fReturnValue implies global function, which implies that "return" is a parse error.

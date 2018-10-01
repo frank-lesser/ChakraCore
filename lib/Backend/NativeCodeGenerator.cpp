@@ -399,8 +399,10 @@ private:
 //static
 void NativeCodeGenerator::Jit_TransitionFromSimpleJit(void *const framePointer)
 {
+    JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(TransitionFromSimpleJit);
     TransitionFromSimpleJit(
         Js::ScriptFunction::FromVar(Js::JavascriptCallStackLayout::FromFramePointer(framePointer)->functionObject));
+    JIT_HELPER_END(TransitionFromSimpleJit);
 }
 
 //static
@@ -1190,6 +1192,15 @@ NativeCodeGenerator::CodeGen(PageAllocator * pageAllocator, CodeGenWorkItem* wor
 
     workItem->GetEntryPoint()->SetCodeGenRecorded((Js::JavascriptMethod)jitWriteData.thunkAddress, (Js::JavascriptMethod)jitWriteData.codeAddress, jitWriteData.codeSize, (void *)this);
 
+#if DBG_DUMP
+    if (PHASE_DUMP(Js::EncoderPhase, workItem->GetFunctionBody()) && Js::Configuration::Global.flags.Verbose && !JITManager::GetJITManager()->IsOOPJITEnabled())
+    {
+        workItem->GetEntryPoint()->DumpNativeOffsetMaps();
+        workItem->GetEntryPoint()->DumpNativeThrowSpanSequence();
+        Output::Flush();
+    }
+#endif
+
     if (jitWriteData.hasBailoutInstr != FALSE)
     {
         body->SetHasBailoutInstrInJittedCode(true);
@@ -1484,10 +1495,9 @@ NativeCodeGenerator::CheckAsmJsCodeGenThunk(Js::RecyclableObject* function, Js::
             call NativeCodeGenerator::CheckAsmJsCodeGen
 #ifdef _CONTROL_FLOW_GUARD
             // verify that the call target is valid
-            push eax
             mov  ecx, eax
             call[__guard_check_icall_fptr]
-            pop eax
+            mov  eax, ecx
 #endif
             pop ebp
             jmp  eax
@@ -1513,10 +1523,9 @@ NativeCodeGenerator::CheckCodeGenThunk(Js::RecyclableObject* function, Js::CallI
         call NativeCodeGenerator::CheckCodeGen
 #ifdef _CONTROL_FLOW_GUARD
         // verify that the call target is valid
-        push eax
         mov  ecx, eax
         call[__guard_check_icall_fptr]
-        pop eax
+        mov  eax, ecx
 #endif
         pop ebp
         jmp  eax
@@ -1556,8 +1565,7 @@ NativeCodeGenerator::GetCheckCodeGenFunction(Js::JavascriptMethod codeAddress)
     return nullptr;
 }
 
-
-Js::Var
+Js::JavascriptMethod
 NativeCodeGenerator::CheckAsmJsCodeGen(Js::ScriptFunction * function)
 {
     Assert(function);
@@ -1568,6 +1576,7 @@ NativeCodeGenerator::CheckAsmJsCodeGen(Js::ScriptFunction * function)
     Assert(scriptContext->GetThreadContext()->IsScriptActive());
     Assert(scriptContext->GetThreadContext()->IsInScript());
 
+    AssertOrFailFastMsg(!functionBody->IsWasmFunction() || functionBody->GetByteCodeCount() > 0, "Wasm function should be parsed by now");
     // Load the entry point here to validate it got changed afterwards
 
     Js::FunctionEntryPointInfo* entryPoint = function->GetFunctionEntryPointInfo();
@@ -1584,15 +1593,16 @@ NativeCodeGenerator::CheckAsmJsCodeGen(Js::ScriptFunction * function)
         {
             Output::Print(_u("Codegen not done yet for function: %s, Entrypoint is CheckAsmJsCodeGenThunk\n"), function->GetFunctionBody()->GetDisplayName());
         }
-        return reinterpret_cast<Js::Var>(functionBody->GetOriginalEntryPoint());
+        return functionBody->GetOriginalEntryPoint();
     }
     if (PHASE_TRACE1(Js::AsmjsEntryPointInfoPhase))
     {
         Output::Print(_u("CodeGen Done for function: %s, Changing Entrypoint to Full JIT\n"), function->GetFunctionBody()->GetDisplayName());
     }
     // we will need to set the functionbody external and asmjs entrypoint to the fulljit entrypoint
-    return reinterpret_cast<Js::Var>(CheckCodeGenDone(functionBody, entryPoint, function));
+    return CheckCodeGenDone(functionBody, entryPoint, function);
 }
+
 
 Js::JavascriptMethod
 NativeCodeGenerator::CheckCodeGen(Js::ScriptFunction * function)
@@ -1791,12 +1801,12 @@ NativeCodeGenerator::PrioritizedButNotYetProcessed(JsUtil::Job *const job)
     ASSERT_THREAD();
     Assert(job);
 
-#ifdef BGJIT_STATS
     CodeGenWorkItem *const codeGenWorkItem = static_cast<CodeGenWorkItem *>(job);
     if(codeGenWorkItem->Type() == JsFunctionType && codeGenWorkItem->IsInJitQueue())
     {
+#ifdef BGJIT_STATS
         codeGenWorkItem->GetScriptContext()->interpretedCallsHighPri++;
-
+#endif
         if(codeGenWorkItem->GetJitMode() == ExecutionMode::FullJit)
         {
             QueuedFullJitWorkItem *const queuedFullJitWorkItem = codeGenWorkItem->GetQueuedFullJitWorkItem();
@@ -1806,7 +1816,6 @@ NativeCodeGenerator::PrioritizedButNotYetProcessed(JsUtil::Job *const job)
             }
         }
     }
-#endif
 }
 
 
@@ -2839,7 +2848,7 @@ NativeCodeGenerator::GatherCodeGenData(
                 inlineCache->TryGetFixedMethodFromCache(functionBody, ldFldInlineCacheIndex, &fixedFunctionObject);
             }
 
-            if (fixedFunctionObject && !fixedFunctionObject->GetFunctionInfo()->IsDeferred() && fixedFunctionObject->GetFunctionBody() != inlineeFunctionBody)
+            if (fixedFunctionObject && fixedFunctionObject->GetFunctionInfo() != inlineeFunctionBody->GetFunctionInfo())
             {
                 fixedFunctionObject = nullptr;
             }
@@ -2919,26 +2928,29 @@ NativeCodeGenerator::GatherCodeGenData(
 
             if (PHASE_ENABLED(InlineCallbacksPhase, functionBody))
             {
-                Js::FunctionInfo *const callbackInfo = inliningDecider.InlineCallback(functionBody, profiledCallSiteId, recursiveInlineDepth);
-                if (callbackInfo != nullptr)
+                if (!isJitTimeDataComputed)
                 {
-                    Js::FunctionBody *const callbackBody = callbackInfo->GetFunctionBody();
-                    if (callbackBody != nullptr && callbackBody != functionBody)
+                    Js::FunctionInfo *const callbackInfo = inliningDecider.InlineCallback(functionBody, profiledCallSiteId, recursiveInlineDepth);
+                    if (callbackInfo != nullptr)
                     {
-                        Js::FunctionCodeGenJitTimeData * callbackJitTimeData = jitTimeData->AddCallbackInlinee(recycler, profiledCallSiteId, callbackInfo);
-                        Js::FunctionCodeGenRuntimeData * callbackRuntimeData = IsInlinee ? runtimeData->EnsureCallbackInlinee(recycler, profiledCallSiteId, callbackBody) : functionBody->EnsureCallbackInlineeCodeGenRuntimeData(recycler, profiledCallSiteId, callbackBody);
+                        Js::FunctionBody *const callbackBody = callbackInfo->GetFunctionBody();
+                        if (callbackBody != nullptr && callbackBody != functionBody)
+                        {
+                            Js::FunctionCodeGenJitTimeData * callbackJitTimeData = jitTimeData->AddCallbackInlinee(recycler, profiledCallSiteId, callbackInfo);
+                            Js::FunctionCodeGenRuntimeData * callbackRuntimeData = IsInlinee ? runtimeData->EnsureCallbackInlinee(recycler, profiledCallSiteId, callbackBody) : functionBody->EnsureCallbackInlineeCodeGenRuntimeData(recycler, profiledCallSiteId, callbackBody);
 
-                        GatherCodeGenData<true>(
-                            recycler,
-                            topFunctionBody,
-                            callbackBody,
-                            entryPoint,
-                            inliningDecider,
-                            objTypeSpecFldInfoList,
-                            callbackJitTimeData,
-                            callbackRuntimeData);
+                            GatherCodeGenData<true>(
+                                recycler,
+                                topFunctionBody,
+                                callbackBody,
+                                entryPoint,
+                                inliningDecider,
+                                objTypeSpecFldInfoList,
+                                callbackJitTimeData,
+                                callbackRuntimeData);
 
-                        AddInlineCacheStats(jitTimeData, callbackJitTimeData);
+                            AddInlineCacheStats(jitTimeData, callbackJitTimeData);
+                        }
                     }
                 }
             }
@@ -3434,41 +3446,7 @@ NativeCodeGenerator::SetProfilerFromNativeCodeGen(NativeCodeGenerator * nativeCo
 void
 NativeCodeGenerator::ProfilePrint()
 {
-    Js::ScriptContextProfiler *codegenProfiler = this->backgroundCodeGenProfiler;
-    if (Js::Configuration::Global.flags.Verbose)
-    {
-        //Print individual CodegenProfiler information in verbose mode
-        while (codegenProfiler)
-        {
-            codegenProfiler->ProfilePrint(Js::Configuration::Global.flags.Profile.GetFirstPhase());
-            codegenProfiler = codegenProfiler->next;
-        }
-    }
-    else
-    {
-        //Merge all the codegenProfiler for single snapshot.
-        Js::ScriptContextProfiler* mergeToProfiler = codegenProfiler;
-
-        // find the first initialized profiler
-        while (mergeToProfiler != nullptr && !mergeToProfiler->IsInitialized())
-        {
-            mergeToProfiler = mergeToProfiler->next;
-        }
-        if (mergeToProfiler != nullptr)
-        {
-            // merge the rest profiler to the above initialized profiler
-            codegenProfiler = mergeToProfiler->next;
-            while (codegenProfiler)
-            {
-                if (codegenProfiler->IsInitialized())
-                {
-                    mergeToProfiler->ProfileMerge(codegenProfiler);
-                }
-                codegenProfiler = codegenProfiler->next;
-            }
-            mergeToProfiler->ProfilePrint(Js::Configuration::Global.flags.Profile.GetFirstPhase());
-        }
-    }
+    this->backgroundCodeGenProfiler->ProfilePrint();
 }
 
 void

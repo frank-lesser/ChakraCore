@@ -4,7 +4,7 @@
 //-------------------------------------------------------------------------------------------------------
 #include "RuntimeLibraryPch.h"
 
-#include "DataStructures/BigInt.h"
+#include "DataStructures/BigUInt.h"
 #include "Library/EngineInterfaceObject.h"
 #include "Library/IntlEngineInterfaceExtensionObject.h"
 
@@ -747,6 +747,7 @@ case_2:
         Var value;
         if (pThis->GetItemAt(idxPosition, &value))
         {
+            value = BreakSpeculation(value);
             return value;
         }
         else
@@ -795,7 +796,7 @@ case_2:
             return scriptContext->GetLibrary()->GetNaN();
         }
 
-        return TaggedInt::ToVarUnchecked(pThis->GetItem(idxPosition));
+        return BreakSpeculation(TaggedInt::ToVarUnchecked(pThis->GetItem(idxPosition)));
     }
 
     Var JavascriptString::EntryCodePointAt(RecyclableObject* function, CallInfo callInfo, ...)
@@ -1296,6 +1297,8 @@ case_2:
 
     Var JavascriptString::EntryLocaleCompare(RecyclableObject* function, CallInfo callInfo, ...)
     {
+        using namespace PlatformAgnostic;
+
         PROBE_STACK(function->GetScriptContext(), Js::Constants::MinStackDefault);
 
         ARGUMENTS(args, callInfo);
@@ -1343,7 +1346,11 @@ case_2:
                 JavascriptFunction* func = intlExtensionObject->GetStringLocaleCompare();
                 if (func)
                 {
-                    return func->CallFunction(args);
+                    BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+                    {
+                        return func->CallFunction(args);
+                    }
+                    END_SAFE_REENTRANT_CALL
                 }
 
                 // String.prototype.localeCompare/Intl.Collator was not initialized yet, so we need to manually initialize it here
@@ -1351,7 +1358,11 @@ case_2:
                 func = intlExtensionObject->GetStringLocaleCompare();
                 if (func)
                 {
-                    return func->CallFunction(args);
+                    BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+                    {
+                        return func->CallFunction(args);
+                    }
+                    END_SAFE_REENTRANT_CALL
                 }
             }
         }
@@ -1363,25 +1374,18 @@ case_2:
         const char16* pThatStr = pThat->GetString();
         int thatStrCount = pThat->GetLength();
 
-        // xplat-todo: doing a locale-insensitive compare here
-        // but need to move locale-specific string comparison to
-        // platform agnostic interface
-#ifdef ENABLE_GLOBALIZATION
-        LCID lcid = GetUserDefaultLCID();
-        int result = CompareStringW(lcid, NULL, pThisStr, thisStrCount, pThatStr, thatStrCount );
-        if (result == 0)
+        int result = UnicodeText::LogicalStringCompare(pThisStr, thisStrCount, pThatStr, thatStrCount);
+
+        // LogicalStringCompare will return -2 if CompareStringEx fails.
+        if (result == -2)
         {
             // TODO there is no spec on the error thrown here.
             // When the support for HR errors is implemented replace this with the same error reported by v5.8
             JavascriptError::ThrowRangeError(function->GetScriptContext(),
                 VBSERR_InternalError /* TODO-ERROR: _u("Failed compare operation")*/ );
         }
-        return JavascriptNumber::ToVar(result-2, scriptContext);
-#else // !ENABLE_GLOBALIZATION
-        // no ICU / or external support for localization. Use c-lib
-        const int result = wcscmp(pThisStr, pThatStr);
-        return JavascriptNumber::ToVar(result > 0 ? 1 : result == 0 ? 0 : -1, scriptContext);
-#endif
+
+        return JavascriptNumber::ToVar(result, scriptContext);
     }
 
 
@@ -1846,6 +1850,9 @@ case_2:
         {
             idxEnd = idxStart;
         }
+
+        pThis = (JavascriptString*)BreakSpeculation(pThis);
+
         return SubstringCore(pThis, idxStart, idxEnd - idxStart, scriptContext);
     }
 
@@ -1965,6 +1972,8 @@ case_2:
             return pThis;
         }
 
+        pThis = (JavascriptString*)BreakSpeculation(pThis);
+
         return SubstringCore(pThis, idxStart, idxEnd - idxStart, scriptContext);
     }
 
@@ -2020,6 +2029,8 @@ case_2:
             //return the string if we need to substr entire span
             return pThis;
         }
+
+        pThis = (JavascriptString*)BreakSpeculation(pThis);
 
         Assert(0 <= idxStart && idxStart <= idxEnd && idxEnd <= len);
         return SubstringCore(pThis, idxStart, idxEnd - idxStart, scriptContext);
@@ -2079,11 +2090,6 @@ case_2:
             return mainString;
         }
 
-        if (maxLength > JavascriptString::MaxCharLength)
-        {
-            JavascriptError::ThrowRangeError(scriptContext, JSERR_OutOfBoundString);
-        }
-
         JavascriptString * fillerString = nullptr;
         if (args.Info.Count > 2 && !JavascriptOperators::IsUndefinedObject(args[2], scriptContext))
         {
@@ -2096,6 +2102,11 @@ case_2:
             {
                 return mainString;
             }
+        }
+
+        if (maxLength > JavascriptString::MaxCharLength)
+        {
+            JavascriptError::ThrowRangeError(scriptContext, JSERR_OutOfBoundString);
         }
 
         if (fillerString == nullptr)
@@ -2234,15 +2245,15 @@ case_2:
 
         ScriptContext* scriptContext = pThis->type->GetScriptContext();
         ApiError error = ApiError::NoError;
-        const char16 *pThisSz = pThis->GetSz();
         charcount_t pThisLength = pThis->GetLength();
 
         if (useInvariant)
         {
+            const char16 *pThisString = pThis->GetString();
             bool isAscii = true;
             for (charcount_t i = 0; i < pThisLength; i++)
             {
-                if (pThisSz[i] >= 0x80)
+                if (pThisString[i] >= 0x80)
                 {
                     isAscii = false;
                     break;
@@ -2255,7 +2266,7 @@ case_2:
                 const char16 diffBetweenCases = 32;
                 for (charcount_t i = 0; i < pThisLength; i++)
                 {
-                    char16 cur = pThisSz[i];
+                    char16 cur = pThisString[i];
                     if (toUpper)
                     {
                         if (cur >= _u('a') && cur <= _u('z'))
@@ -2373,7 +2384,7 @@ case_2:
         return TrimLeftRightHelper<true /*trimLeft*/, true /*trimRight*/>(pThis, scriptContext);
     }
 
-    Var JavascriptString::EntryTrimLeft(RecyclableObject* function, CallInfo callInfo, ...)
+    Var JavascriptString::EntryTrimStart(RecyclableObject* function, CallInfo callInfo, ...)
     {
         PROBE_STACK(function->GetScriptContext(), Js::Constants::MinStackDefault);
 
@@ -2394,8 +2405,7 @@ case_2:
         return TrimLeftRightHelper< true /*trimLeft*/, false /*trimRight*/>(pThis, scriptContext);
     }
 
-
-    Var JavascriptString::EntryTrimRight(RecyclableObject* function, CallInfo callInfo, ...)
+    Var JavascriptString::EntryTrimEnd(RecyclableObject* function, CallInfo callInfo, ...)
     {
         PROBE_STACK(function->GetScriptContext(), Js::Constants::MinStackDefault);
 
@@ -2469,6 +2479,13 @@ case_2:
                 Assert(idxEnd >= 0);
             }
         }
+
+        if (idxStart == 0 && idxEnd == len - 1)
+        {
+            AssertMsg(scriptContext == arg->GetScriptContext(), "Should have already marshaled the string in cross site thunk");
+            return arg;
+        }
+
         return SubstringCore(arg, idxStart, idxEnd - idxStart + 1, scriptContext);
     }
 
@@ -2658,7 +2675,6 @@ case_2:
                 return scriptContext->GetLibrary()->GetTrue();
             }
         }
-
         LEAVE_PINNED_SCOPE();   //  pSearch
         LEAVE_PINNED_SCOPE();  //  pThis
 
@@ -2875,15 +2891,15 @@ case_2:
 
         if (pch < pchEnd)
         {
-        switch (*pch)
-        {
-        case '-':
-            isNegative = true;
-            // Fall through.
-        case '+':
+            switch (*pch)
+            {
+            case '-':
+                isNegative = true;
+                // Fall through.
+            case '+':
                 pch++;
-            break;
-        }
+                break;
+            }
         }
 
         if (0 == radix)
@@ -2953,7 +2969,7 @@ case_2:
             return JavascriptNumber::ToVar(value, this->GetScriptContext());
         }
 
-        BigInt bi;
+        BigUInt bi;
         for ( ; pch < pchEnd ; pch++)
         {
             char16 ch = *pch;
@@ -3348,6 +3364,7 @@ case_2:
         return builder.ToString();
     }
 
+
     int JavascriptString::IndexOfUsingJmpTable(JmpTable jmpTable, const char16* inputStr, charcount_t len, const char16* searchStr, int searchLen, int position)
     {
         int result = -1;
@@ -3531,7 +3548,7 @@ case_2:
                 // Quick check for first character.
                 if (stringSz[i] == substringSz[0])
                 {
-                    if (substringLen == 1 || wmemcmp(stringSz + i + 1, substringSz + 1, substringLen - 1) == 0)
+                    if (substringLen == 1 || wmemcmp(stringSz + i + 1, substringSz + 1, (substringLen - 1)) == 0)
                     {
                         return i + start;
                     }

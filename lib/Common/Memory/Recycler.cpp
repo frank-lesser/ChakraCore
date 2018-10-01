@@ -191,6 +191,7 @@ Recycler::Recycler(AllocationPolicyManager * policyManager, IdleDecommitPageAllo
     allowDispose(false),
     inDisposeWrapper(false),
     hasDisposableObject(false),
+    hasNativeGCHost(false),
     tickCountNextDispose(0),
     transientPinnedObject(nullptr),
     pinnedObjectMap(1024, HeapAllocator::GetNoMemProtectInstance()),
@@ -938,6 +939,18 @@ Recycler::SetIsInScript(bool isInScript)
 }
 
 bool
+Recycler::HasNativeGCHost() const
+{
+    return this->hasNativeGCHost;
+}
+
+void
+Recycler::SetHasNativeGCHost()
+{
+    this->hasNativeGCHost = true;
+}
+
+bool
 Recycler::NeedOOMRescan() const
 {
     return this->needOOMRescan;
@@ -1680,7 +1693,7 @@ Recycler::ScanStack()
 
     BEGIN_DUMP_OBJECT(this, _u("Registers"));
     // We will not scan interior pointers on stack if we are not in script or we are in mem-protect mode.
-    if (!this->isInScript || this->IsMemProtectMode())
+    if (!this->HasNativeGCHost() && (!this->isInScript || this->IsMemProtectMode()))
     {
         if (doSpecialMark)
         {
@@ -1699,7 +1712,7 @@ Recycler::ScanStack()
     {
         // We may have interior pointers on the stack such as pointers in the middle of the character buffers backing a JavascriptString or SubString object.
         // To prevent UAFs of these buffers after the GC we will always do MarkInterior for the pointers on stack. This is necessary only when we are doing a
-        // GC while running a script as that is when the possiblity of a UAF after GC exists.
+        // GC while running a script or when we have a host who allocates objects on the Chakra heap.
         if (doSpecialMark)
         {
             ScanMemoryInline<true, true /* forceInterior */>(this->savedThreadContext.GetRegisters(), sizeof(void*) * SavedRegisterState::NumRegistersToSave
@@ -1715,7 +1728,7 @@ Recycler::ScanStack()
 
     BEGIN_DUMP_OBJECT(this, _u("Stack"));
     // We will not scan interior pointers on stack if we are not in script or we are in mem-protect mode.
-    if (!this->isInScript || this->IsMemProtectMode())
+    if (!this->HasNativeGCHost() && (!this->isInScript || this->IsMemProtectMode()))
     {
         if (doSpecialMark)
         {
@@ -1732,7 +1745,7 @@ Recycler::ScanStack()
     {
         // We may have interior pointers on the stack such as pointers in the middle of the character buffers backing a JavascriptString or SubString object.
         // To prevent UAFs of these buffers after the GC we will always do MarkInterior for the pointers on stack. This is necessary only when we are doing a
-        // GC while running a script as that is when the possiblity of a UAF after GC exists.
+        // GC while running a script or when we have a host who allocates objects on the Chakra heap.
         if (doSpecialMark)
         {
             ScanMemoryInline<true, true /* forceInterior */>((void**)stackTop, stackScanned
@@ -3447,44 +3460,50 @@ bool
 Recycler::FinishDisposeObjectsWrapped()
 {
     const BOOL allowDisposeFlag = flags & CollectOverride_AllowDispose;
-    if (allowDisposeFlag && this->NeedDispose())
+
+    if (allowDisposeFlag)
     {
-        if ((flags & CollectHeuristic_TimeIfScriptActive) == CollectHeuristic_TimeIfScriptActive)
+        // Disposing objects can have reentrancy, make sure there is no reentrancy lock when calling Dispose
+        DebugOnly(collectionWrapper->CheckJsReentrancyOnDispose());
+        if (this->NeedDispose())
         {
-            if (!this->NeedDisposeTimed())
+            if ((flags & CollectHeuristic_TimeIfScriptActive) == CollectHeuristic_TimeIfScriptActive)
             {
-                return false;
+                if (!this->NeedDisposeTimed())
+                {
+                    return false;
+                }
             }
-        }
 
-        this->allowDispose = true;
-        this->inDisposeWrapper = true;
+            this->allowDispose = true;
+            this->inDisposeWrapper = true;
 
 #ifdef RECYCLER_TRACE
-        if (GetRecyclerFlagsTable().Trace.IsEnabled(Js::RecyclerPhase))
-        {
-            Output::Print(_u("%04X> RC(%p): %s\n"), this->mainThreadId, this, _u("Process delayed dispose object"));
-        }
+            if (GetRecyclerFlagsTable().Trace.IsEnabled(Js::RecyclerPhase))
+            {
+                Output::Print(_u("%04X> RC(%p): %s\n"), this->mainThreadId, this, _u("Process delayed dispose object"));
+            }
 #endif
 
-        collectionWrapper->DisposeObjects(this);
+            collectionWrapper->DisposeObjects(this);
 
-        // Dispose may get into message loop and cause a reentrant GC. If those don't allow reentrant
-        // it will get added to a pending collect request.
+            // Dispose may get into message loop and cause a reentrant GC. If those don't allow reentrant
+            // it will get added to a pending collect request.
 
-        // FinishDisposedObjectsWrapped/DisposeObjectsWrapped is called at a place that might not be during a collection
-        // and won't check NeedExhaustiveRepeatCollect(), need to check it here to honor those requests
+            // FinishDisposedObjectsWrapped/DisposeObjectsWrapped is called at a place that might not be during a collection
+            // and won't check NeedExhaustiveRepeatCollect(), need to check it here to honor those requests
 
-         if (!this->CollectionInProgress() && NeedExhaustiveRepeatCollect() && ((flags & CollectOverride_NoExhaustiveCollect) != CollectOverride_NoExhaustiveCollect))
-        {
+            if (!this->CollectionInProgress() && NeedExhaustiveRepeatCollect() && ((flags & CollectOverride_NoExhaustiveCollect) != CollectOverride_NoExhaustiveCollect))
+            {
 #ifdef RECYCLER_TRACE
-            CaptureCollectionParam((CollectionFlags)(flags & ~CollectMode_Partial), true);
+                CaptureCollectionParam((CollectionFlags)(flags & ~CollectMode_Partial), true);
 #endif
-            DoCollectWrapped((CollectionFlags)(flags & ~CollectMode_Partial));
-        }
+                DoCollectWrapped((CollectionFlags)(flags & ~CollectMode_Partial));
+            }
 
-        this->inDisposeWrapper = false;
-        return true;
+            this->inDisposeWrapper = false;
+            return true;
+        }
     }
     return false;
 }
@@ -4901,6 +4920,13 @@ bool Recycler::AbortConcurrent(bool restoreState)
         }
         else
         {
+            // If we are shutting down and the wait for concurrent thread failed we fail fast
+            // to avoid any use-after-free of the objects in the HeapAllocator's private heap.
+            if (!restoreState)
+            {
+                AssertOrFailFastMsg(ret != WAIT_FAILED, "Wait for concurrent thread failed in AbortConcurrent.");
+            }
+
             // Even if we weren't asked to restore states, we need to clean up the pending guest arena
             CleanupPendingUnroot();
 
@@ -4987,7 +5013,7 @@ Recycler::FinalizeConcurrent(bool restoreState)
         SetThreadPriority(this->concurrentThread, THREAD_PRIORITY_NORMAL);
         // In case the thread already died, wait for that too
         DWORD fRet = WaitForMultipleObjectsEx(2, handle, FALSE, INFINITE, FALSE);
-        AssertMsg(fRet != WAIT_FAILED, "Check handles passed to WaitForMultipleObjectsEx.");
+        AssertOrFailFastMsg(fRet != WAIT_FAILED, "Wait for concurrent thread failed. Check handles passed to WaitForMultipleObjectsEx.");
     }
 
     // Shutdown parallel threads and return the handle for them so the caller can
@@ -5686,6 +5712,22 @@ Recycler::FinishConcurrentCollectWrapped(CollectionFlags flags)
     return collected;
 }
 
+
+ /**
+  *  Compute ft1 - ft2, return result as a uint64
+  */
+uint64 DiffFileTimes(LPFILETIME ft1, LPFILETIME ft2)
+{
+    ULARGE_INTEGER ul1;
+    ULARGE_INTEGER ul2;
+    ul1.HighPart = ft1->dwHighDateTime;
+    ul1.LowPart = ft1->dwLowDateTime;
+    ul2.HighPart = ft2->dwHighDateTime;
+    ul2.LowPart = ft2->dwLowDateTime;
+    ULONGLONG result = ul1.QuadPart - ul2.QuadPart;
+    return result;
+}
+
 BOOL
 Recycler::WaitForConcurrentThread(DWORD waitTime, RecyclerWaitReason caller)
 {
@@ -5700,8 +5742,22 @@ Recycler::WaitForConcurrentThread(DWORD waitTime, RecyclerWaitReason caller)
     }
 
 #ifdef ENABLE_BASIC_TELEMETRY
-    bool isBlockingMainThread = this->telemetryStats.IsOnScriptThread();
-    Js::Tick start = Js::Tick::Now();
+    bool isBlockingMainThread = false;
+    Js::Tick start;
+    FILETIME kernelTime1;
+    FILETIME userTime1;
+    HANDLE hProcess = GetCurrentProcess();
+    if (this->telemetryStats.ShouldStartTelemetryCapture())
+    {
+        isBlockingMainThread = this->telemetryStats.IsOnScriptThread();
+        if (isBlockingMainThread)
+        {
+            start = Js::Tick::Now();
+            FILETIME creationTime;
+            FILETIME exitTime;
+            GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime1, &userTime1);
+        }
+    }
 #endif
 
     DWORD ret = WaitForSingleObject(concurrentWorkDoneEvent, waitTime);
@@ -5711,7 +5767,24 @@ Recycler::WaitForConcurrentThread(DWORD waitTime, RecyclerWaitReason caller)
     {
         Js::Tick end = Js::Tick::Now();
         Js::TickDelta elapsed = end - start;
+
+        FILETIME creationTime;
+        FILETIME exitTime;
+        FILETIME kernelTime2;
+        FILETIME userTime2;
+
+        GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime2, &userTime2);
+        uint64 kernelTime = DiffFileTimes(&kernelTime2 , &kernelTime1);
+        uint64 userTime = DiffFileTimes(&userTime2, &userTime1);
+
+        // userTime & kernelTime reported from GetProcessTimes is the number of 100-nanosecond ticks
+        // for consistency convert to microseconds.
+        kernelTime = kernelTime / 10;
+        userTime = userTime / 10;
+
         this->telemetryStats.IncrementUserThreadBlockedCount(elapsed.ToMicroseconds(), caller);
+        this->telemetryStats.IncrementUserThreadBlockedCpuTimeUser(userTime, caller);
+        this->telemetryStats.IncrementUserThreadBlockedCpuTimeKernel(kernelTime, caller);
     }
 #endif
 
@@ -5797,7 +5870,7 @@ Recycler::FinishConcurrentCollect(CollectionFlags flags)
 
     const DWORD waitTime = forceInThread? INFINITE : RecyclerHeuristic::FinishConcurrentCollectWaitTime(this->GetRecyclerFlagsTable());
     GCETW(GC_FINISHCONCURRENTWAIT_START, (this, waitTime));
-    const BOOL waited = WaitForConcurrentThread(waitTime);
+    const BOOL waited = WaitForConcurrentThread(waitTime, RecyclerWaitReason::FinishConcurrentCollect);
     GCETW(GC_FINISHCONCURRENTWAIT_STOP, (this, !waited));
     if (!waited)
     {
@@ -5947,12 +6020,12 @@ Recycler::FinishTransferSwept(CollectionFlags flags)
     SetCollectionState(CollectionStateTransferSwept);
 
 #if ENABLE_BACKGROUND_PAGE_FREEING
-        if (CONFIG_FLAG(EnableBGFreeZero))
-        {
-            // We should have zeroed all the pages in the background thread
-            Assert(!autoHeap.HasZeroQueuedPages());
-            autoHeap.FlushBackgroundPages();
-        }
+    if (CONFIG_FLAG(EnableBGFreeZero))
+    {
+        // We should have zeroed all the pages in the background thread
+        Assert(!autoHeap.HasZeroQueuedPages());
+        autoHeap.FlushBackgroundPages();
+    }
 #endif
 
     GCETW(GC_FLUSHZEROPAGE_STOP, (this));

@@ -73,7 +73,7 @@ namespace Js
 #else
             dstSlots[i] = srcSlots[i];
 #endif
-            Assert(!ThreadContext::IsOnStack(dstSlots[i]));
+            Assert(!ThreadContext::IsOnStack(dstSlots[i]) || TaggedInt::Is(dstSlots[i]));
         }
 
         if (propertyCount > inlineSlotCapacity)
@@ -106,7 +106,7 @@ namespace Js
                 Assert(!ThreadContext::IsOnStack(instance->auxSlots[i]));
                 auxSlots[i] = instance->auxSlots[i];
 #endif
-                Assert(!ThreadContext::IsOnStack(auxSlots[i]));
+                Assert(!ThreadContext::IsOnStack(auxSlots[i]) || TaggedInt::Is(dstSlots[i]));
             }
         }
 
@@ -207,6 +207,12 @@ namespace Js
     bool DynamicObject::HasNonEmptyObjectArray() const
     {
         return HasObjectArray() && GetObjectArrayOrFlagsAsArray()->GetLength() > 0;
+    }
+
+    // Check if a Var is either a JavascriptArray* or ES5Array*.
+    bool DynamicObject::IsAnyTypedArray(const Var aValue)
+    {
+        return TypedArrayBase::Is(JavascriptOperators::GetTypeId(aValue));
     }
 
     // Check if a typeId is of any array type (JavascriptArray or ES5Array).
@@ -526,6 +532,11 @@ namespace Js
         return RecyclerNew(GetRecycler(), DynamicType, this->GetDynamicType());
     }
 
+    void DynamicObject::PrepareForConversionToNonPathType()
+    {
+        // Nothing to do in base class
+    }
+
     /*
     *   DynamicObject::IsTypeHandlerCompatibleForObjectHeaderInlining
     *   -   Checks if the TypeHandlers are compatible for transition from oldTypeHandler to newTypeHandler
@@ -585,11 +596,11 @@ namespace Js
 
     void DynamicObject::ChangeType()
     {
+        // Allocation won't throw any more, otherwise we should use AutoDisableInterrupt to guard here
         AutoDisableInterrupt autoDisableInterrupt(this->GetScriptContext()->GetThreadContext());
-        
+
         Assert(!GetDynamicType()->GetIsShared() || GetTypeHandler()->GetIsShared());
         this->type = this->DuplicateType();
-        
         autoDisableInterrupt.Completed();
     }
 
@@ -895,6 +906,13 @@ namespace Js
 
     bool DynamicObject::TryCopy(DynamicObject* from)
     {
+#if ENABLE_TTD
+        if (from->GetScriptContext()->ShouldPerformRecordOrReplayAction())
+        {
+            return false;
+        }
+#endif
+
         if (PHASE_OFF1(ObjectCopyPhase))
         {
             return false;

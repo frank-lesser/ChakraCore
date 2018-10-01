@@ -164,7 +164,11 @@ WebAssemblyInstance::CreateInstance(WebAssemblyModule * module, Var importObject
         WasmScriptFunction* start = environment.GetWasmFunction(startFuncIdx);
         Js::CallInfo info(Js::CallFlags_New, 1);
         Js::Arguments startArg(info, (Var*)&start);
-        Js::JavascriptFunction::CallFunction<true>(start, start->GetEntryPoint(), startArg);
+        BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+        {
+            Js::JavascriptFunction::CallFunction<true>(start, start->GetEntryPoint(), startArg);
+        }
+        END_SAFE_REENTRANT_CALL
     }
 
     return newInstance;
@@ -187,31 +191,20 @@ void WebAssemblyInstance::CreateWasmFunctions(WebAssemblyModule * wasmModule, Sc
         funcObj->SetSignature(body->GetAsmJsFunctionInfo()->GetWasmSignature());
         funcObj->SetEnvironment(frameDisplay);
 
-        // Todo:: need to fix issue #2452 before we can do this,
-        // otherwise we'll change the type of the functions and cause multiple instance to not share jitted code
-        //Wasm::WasmSignature* sig = wasmFuncInfo->GetSignature();
-        //funcObj->SetPropertyWithAttributes(PropertyIds::length, JavascriptNumber::ToVar(sig->GetParamCount(), ctx), PropertyNone, nullptr);
-        //funcObj->SetPropertyWithAttributes(PropertyIds::name, JavascriptConversion::ToString(JavascriptNumber::ToVar(i, ctx), ctx), PropertyNone, nullptr);
+        Wasm::WasmSignature* sig = wasmFuncInfo->GetSignature();
+        funcObj->SetPropertyWithAttributes(PropertyIds::length, JavascriptNumber::ToVar(sig->GetParamCount(), ctx), PropertyNone, nullptr);
+        funcObj->SetPropertyWithAttributes(PropertyIds::name, JavascriptConversion::ToString(JavascriptNumber::ToVar(i, ctx), ctx), PropertyNone, nullptr);
 
         env->SetWasmFunction(i, funcObj);
 
-        if (PHASE_ENABLED(WasmDeferredPhase, body))
+        FunctionEntryPointInfo* entrypointInfo = (FunctionEntryPointInfo*)funcObj->GetEntryPointInfo();
+        AssertOrFailFast(entrypointInfo->GetIsAsmJSFunction());
+        AssertOrFailFast(!funcObj->IsCrossSiteObject());
+        funcObj->SetEntryPoint(Js::AsmJsExternalEntryPoint);
+        entrypointInfo->jsMethod = funcObj->GetFunctionInfo()->GetOriginalEntryPoint();
+        if (!PHASE_ENABLED(WasmDeferredPhase, body))
         {
-            // if we still have WasmReaderInfo we haven't yet parsed
-            if (body->GetAsmJsFunctionInfo()->GetWasmReaderInfo())
-            {
-                WasmLibrary::SetWasmEntryPointToInterpreter(funcObj, true);
-            }
-        }
-        else
-        {
-            AsmJsFunctionInfo* info = body->GetAsmJsFunctionInfo();
-            if (info->GetWasmReaderInfo())
-            {
-                WasmLibrary::SetWasmEntryPointToInterpreter(funcObj, false);
-                WAsmJs::JitFunctionIfReady(funcObj);
-                info->SetWasmReaderInfo(nullptr);
-            }
+            WAsmJs::JitFunctionIfReady(funcObj);
         }
     }
 }
@@ -272,17 +265,20 @@ Var WebAssemblyInstance::CreateExportObject(WebAssemblyModule * wasmModule, Scri
                 case Wasm::WasmTypes::I32:
                     obj = JavascriptNumber::ToVar(cnst.i32, scriptContext);
                     break;
+                case Wasm::WasmTypes::I64:
+                    JavascriptError::ThrowTypeErrorVar(wasmModule->GetScriptContext(), WASMERR_InvalidTypeConversion, _u("i64"), _u("Var"));
                 case Wasm::WasmTypes::F32:
                     obj = JavascriptNumber::New(cnst.f32, scriptContext);
                     break;
                 case Wasm::WasmTypes::F64:
                     obj = JavascriptNumber::New(cnst.f64, scriptContext);
                     break;
-                case Wasm::WasmTypes::I64:
-                    JavascriptError::ThrowTypeError(wasmModule->GetScriptContext(), WASMERR_InvalidTypeConversion);
+#ifdef ENABLE_WASM_SIMD
+                case Wasm::WasmTypes::M128:
+                    JavascriptError::ThrowTypeErrorVar(wasmModule->GetScriptContext(), WASMERR_InvalidTypeConversion, _u("m128"), _u("Var"));
+#endif
                 default:
-                    Assert(UNREACHED);
-                    break;
+                    Wasm::WasmTypes::CompileAssertCases<Wasm::WasmTypes::I32, Wasm::WasmTypes::I64, Wasm::WasmTypes::F32, Wasm::WasmTypes::F64, WASM_M128_CHECK_TYPE>();
                 }
             }
             JavascriptOperators::OP_SetProperty(exportsNamespace, propertyRecord->GetPropertyId(), obj, scriptContext);
@@ -412,9 +408,12 @@ void WebAssemblyInstance::LoadImports(
             case Wasm::WasmTypes::I32: cnst.i32 = JavascriptConversion::ToInt32(prop, ctx); break;
             case Wasm::WasmTypes::F32: cnst.f32 = (float)JavascriptConversion::ToNumber(prop, ctx); break;
             case Wasm::WasmTypes::F64: cnst.f64 = JavascriptConversion::ToNumber(prop, ctx); break;
-            case Wasm::WasmTypes::I64: Js::JavascriptError::ThrowTypeError(ctx, WASMERR_InvalidTypeConversion);
+            case Wasm::WasmTypes::I64: Js::JavascriptError::ThrowTypeErrorVar(ctx, WASMERR_InvalidTypeConversion, _u("Var"), _u("i64"));
+#ifdef ENABLE_WASM_SIMD
+            case Wasm::WasmTypes::M128: Js::JavascriptError::ThrowTypeErrorVar(ctx, WASMERR_InvalidTypeConversion, _u("Var"), _u("m128"));
+#endif
             default:
-                Js::Throw::InternalError();
+                Wasm::WasmTypes::CompileAssertCases<Wasm::WasmTypes::I32, Wasm::WasmTypes::I64, Wasm::WasmTypes::F32, Wasm::WasmTypes::F64, WASM_M128_CHECK_TYPE>();
             }
             env->SetGlobalValue(global, cnst);
             break;

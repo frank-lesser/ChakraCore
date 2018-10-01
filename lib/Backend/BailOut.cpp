@@ -506,6 +506,13 @@ uint32 BailOutRecord::GetArgumentsObjectOffset()
     return argumentsObjectOffset;
 }
 
+Js::FunctionEntryPointInfo *BailOutRecord::GetFunctionEntryPointInfo() const
+{
+    Js::EntryPointInfo* result = this->globalBailOutRecordTable->entryPointInfo;
+    AssertOrFailFast(result->IsFunctionEntryPointInfo());
+    return (Js::FunctionEntryPointInfo*)result;
+}
+
 Js::Var BailOutRecord::EnsureArguments(Js::InterpreterStackFrame * newInstance, Js::JavascriptCallStackLayout * layout, Js::ScriptContext* scriptContext, Js::Var* pArgumentsObject) const
 {
     Assert(globalBailOutRecordTable->hasStackArgOpt);
@@ -1044,10 +1051,12 @@ BailOutRecord::BailOutInlinedCommon(Js::JavascriptCallStackLayout * layout, Bail
     Js::ScriptFunction * innerMostInlinee = nullptr;
     BailOutInlinedHelper(layout, currentBailOutRecord, bailOutOffset, returnAddress, bailOutKind, registerSaves, &bailOutReturnValue, &innerMostInlinee, false, branchValue);
 
-    bool * hasBailOutBit = layout->functionObject->GetScriptContext()->GetThreadContext()->GetHasBailedOutBitPtr();
-    if (hasBailOutBit != nullptr && bailOutRecord->ehBailoutData)
+    bool * hasBailedOutBitPtr = layout->functionObject->GetScriptContext()->GetThreadContext()->GetHasBailedOutBitPtr();
+    Assert(!bailOutRecord->ehBailoutData || hasBailedOutBitPtr ||
+        bailOutRecord->ehBailoutData->ht == Js::HandlerType::HT_Finally /* When we bailout from inlinee in non exception finally, we maynot see hasBailedOutBitPtr*/);
+    if (hasBailedOutBitPtr && bailOutRecord->ehBailoutData)
     {
-        *hasBailOutBit = true;
+        *hasBailedOutBitPtr = true;
     }
     Js::Var result = BailOutCommonNoCodeGen(layout, currentBailOutRecord, currentBailOutRecord->bailOutOffset, returnAddress, bailOutKind, branchValue,
         registerSaves, &bailOutReturnValue);
@@ -1087,11 +1096,14 @@ BailOutRecord::BailOutFromLoopBodyInlinedCommon(Js::JavascriptCallStackLayout * 
     BailOutReturnValue bailOutReturnValue;
     Js::ScriptFunction * innerMostInlinee = nullptr;
     BailOutInlinedHelper(layout, currentBailOutRecord, bailOutOffset, returnAddress, bailOutKind, registerSaves, &bailOutReturnValue, &innerMostInlinee, true, branchValue);
-    bool * hasBailOutBit = layout->functionObject->GetScriptContext()->GetThreadContext()->GetHasBailedOutBitPtr();
-    if (hasBailOutBit != nullptr && bailOutRecord->ehBailoutData)
+    bool * hasBailedOutBitPtr = layout->functionObject->GetScriptContext()->GetThreadContext()->GetHasBailedOutBitPtr();
+    Assert(!bailOutRecord->ehBailoutData || hasBailedOutBitPtr ||
+        bailOutRecord->ehBailoutData->ht == Js::HandlerType::HT_Finally /* When we bailout from inlinee in non exception finally, we maynot see hasBailedOutBitPtr*/);
+    if (hasBailedOutBitPtr && bailOutRecord->ehBailoutData)
     {
-        *hasBailOutBit = true;
+        *hasBailedOutBitPtr = true;
     }
+
     uint32 result = BailOutFromLoopBodyHelper(layout, currentBailOutRecord, currentBailOutRecord->bailOutOffset,
         bailOutKind, nullptr, registerSaves, &bailOutReturnValue);
     ScheduleLoopBodyCodeGen(Js::ScriptFunction::FromVar(layout->functionObject), innerMostInlinee, currentBailOutRecord, bailOutKind);
@@ -1701,7 +1713,27 @@ void BailOutRecord::ScheduleFunctionCodeGen(Js::ScriptFunction * function, Js::S
     BailOutRecord * bailOutRecordNotConst = (BailOutRecord *)(void *)bailOutRecord;
     bailOutRecordNotConst->bailOutCount++;
 
-    Js::FunctionEntryPointInfo *entryPointInfo = function->GetFunctionEntryPointInfo();
+    Js::FunctionEntryPointInfo *entryPointInfo = bailOutRecord->GetFunctionEntryPointInfo();
+
+#if DBG
+    // BailOutRecord is not recycler-allocated, so make sure something the recycler can see was keeping the entry point info alive.
+    // We expect the entry point to be kept alive as follows:
+    // 1. The function's current type might still have the same entry point info as when we entered the function (easy case)
+    // 2. The function might have moved to a successor path type, which still keeps the previous type and its entry point info alive
+    // 3. The entry point info might be held by the ThreadContext (QueueFreeOldEntryPointInfoIfInScript):
+    //   a. If the entry point info was replaced on the type that used to hold it (ScriptFunction::ChangeEntryPoint)
+    //   b. If the function's last-added property was deleted and it moved to a previous type (ScriptFunction::ReplaceTypeWithPredecessorType)
+    //   c. If the function's path type got replaced with a dictionary, then all previous entry point infos in that path are queued on the ThreadContext (ScriptFunction::PrepareForConversionToNonPathType)
+    bool foundEntryPoint = false;
+    executeFunction->MapEntryPointsUntil([&](int index, Js::FunctionEntryPointInfo* info)
+    {
+        foundEntryPoint = info == entryPointInfo;
+        return foundEntryPoint;
+    });
+    foundEntryPoint = foundEntryPoint || function->GetScriptContext()->GetThreadContext()->IsOldEntryPointInfo(entryPointInfo);
+    Assert(foundEntryPoint);
+#endif
+
     uint8 callsCount = entryPointInfo->callsCount > 255 ? 255 : static_cast<uint8>(entryPointInfo->callsCount);
     RejitReason rejitReason = RejitReason::None;
     bool reThunk = false;
@@ -2230,7 +2262,7 @@ void BailOutRecord::ScheduleFunctionCodeGen(Js::ScriptFunction * function, Js::S
         if (bailOutRecord->IsForLoopTop() && IR::IsTypeCheckBailOutKind(bailOutRecord->bailOutKind))
         {
             // Disable FieldPRE if we're triggering a type check rejit due to a bailout at the loop top.
-            // Most likely this was caused by a CheckFixedFld that was hoisted from a branch block where 
+            // Most likely this was caused by a CheckFixedFld that was hoisted from a branch block where
             // only certain types flowed, to the loop top, where more types (different or non-equivalent)
             // were flowing in.
             profileInfo->DisableFieldPRE();
@@ -2645,6 +2677,7 @@ void BailOutRecord::CheckPreemptiveRejit(Js::FunctionBody* executeFunction, IR::
 
 Js::Var BailOutRecord::BailOutForElidedYield(void * framePointer)
 {
+    JIT_HELPER_REENTRANT_HEADER(NoSaveRegistersBailOutForElidedYield);
     Js::JavascriptCallStackLayout * const layout = Js::JavascriptCallStackLayout::FromFramePointer(framePointer);
     Js::ScriptFunction ** functionRef = (Js::ScriptFunction **)&layout->functionObject;
     Js::ScriptFunction * function = *functionRef;
@@ -2689,6 +2722,7 @@ Js::Var BailOutRecord::BailOutForElidedYield(void * framePointer)
     }
 
     return aReturn;
+    JIT_HELPER_END(NoSaveRegistersBailOutForElidedYield);
 }
 
 BranchBailOutRecord::BranchBailOutRecord(uint32 trueBailOutOffset, uint32 falseBailOutOffset, Js::RegSlot resultByteCodeReg, IR::BailOutKind kind, Func * bailOutFunc)
@@ -2875,3 +2909,4 @@ void  GlobalBailOutRecordDataTable::AddOrUpdateRow(JitArenaAllocator *allocator,
     rowToInsert->regSlot = regSlot;
     *lastUpdatedRowIndex = length++;
 }
+

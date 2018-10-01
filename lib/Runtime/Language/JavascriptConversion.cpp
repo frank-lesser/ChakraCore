@@ -9,8 +9,8 @@
 #include "Library/DateImplementation.h"
 #include "Library/JavascriptDate.h"
 
-namespace Js
-{
+using namespace Js;
+
     static const double k_2to16 = 65536.0;
     static const double k_2to31 = 2147483648.0;
     static const double k_2to32 = 4294967296.0;
@@ -285,6 +285,10 @@ CommonNumber:
             // For all other types, convert the key into a string and use that as the property name
             JavascriptString * propName = JavascriptConversion::ToString(key, scriptContext);
             propName->GetPropertyRecord(propertyRecord);
+            if (PropertyString::Is(propName))
+            {
+                propertyString = PropertyString::UnsafeFromVar(propName);
+            }
         }
 
         if (propString)
@@ -556,12 +560,14 @@ CommonNumber:
 
     JavascriptString *JavascriptConversion::CoerseString(Var aValue, ScriptContext* scriptContext, const char16* apiNameForErrorMsg)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_CoerseString);
         if (!JavascriptConversion::CheckObjectCoercible(aValue, scriptContext))
         {
             JavascriptError::ThrowTypeError(scriptContext, JSERR_This_NullOrUndefined, apiNameForErrorMsg);
         }
 
         return ToString(aValue, scriptContext);
+        JIT_HELPER_END(Op_CoerseString);
     }
 
     //----------------------------------------------------------------------------
@@ -585,6 +591,7 @@ CommonNumber:
     //----------------------------------------------------------------------------
     JavascriptString *JavascriptConversion::ToString(Var aValue, ScriptContext* scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_ConvString);
         Assert(scriptContext->GetThreadContext()->IsScriptActive());
 
         BOOL fPrimitiveOnly = false;
@@ -665,6 +672,7 @@ CommonNumber:
                 }
             }
         }
+        JIT_HELPER_END(Op_ConvString);
     }
 
     JavascriptString *JavascriptConversion::ToLocaleString(Var aValue, ScriptContext* scriptContext)
@@ -710,7 +718,10 @@ CommonNumber:
                 if (JavascriptConversion::IsCallable(value))
                 {
                     RecyclableObject* toLocaleStringFunction = RecyclableObject::FromVar(value);
-                    Var aResult = CALL_FUNCTION(scriptContext->GetThreadContext(), toLocaleStringFunction, CallInfo(1), aValue);
+                    Var aResult = scriptContext->GetThreadContext()->ExecuteImplicitCall(toLocaleStringFunction, Js::ImplicitCall_ToPrimitive, [=]()->Js::Var
+                    {
+                        return CALL_FUNCTION(scriptContext->GetThreadContext(), toLocaleStringFunction, CallInfo(1), aValue);
+                    });
                     if (JavascriptString::Is(aResult))
                     {
                         return JavascriptString::UnsafeFromVar(aResult);
@@ -800,19 +811,24 @@ CommonNumber:
 
     void JavascriptConversion::ToFloat_Helper(Var aValue, float *pResult, ScriptContext* scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_ConvFloat_Helper);
         *pResult = (float)ToNumber_Full(aValue, scriptContext);
+        JIT_HELPER_END(Op_ConvFloat_Helper);
     }
 
     void JavascriptConversion::ToNumber_Helper(Var aValue, double *pResult, ScriptContext* scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_ConvNumber_Helper);
         Assert(Js::JavascriptStackWalker::ValidateTopJitFrame(scriptContext));
         *pResult = ToNumber_Full(aValue, scriptContext);
+        JIT_HELPER_END(Op_ConvNumber_Helper);
     }
 
     // Used for the JIT's float type specialization
     // Convert aValue to double, but only allow primitives.  Return false otherwise.
     BOOL JavascriptConversion::ToNumber_FromPrimitive(Var aValue, double *pResult, BOOL allowUndefined, ScriptContext* scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_ConvNumber_FromPrimitive);
         Assert(Js::JavascriptStackWalker::ValidateTopJitFrame(scriptContext));
         Assert(!TaggedNumber::Is(aValue));
         RecyclableObject *obj = RecyclableObject::FromVar(aValue);
@@ -829,6 +845,7 @@ CommonNumber:
 
         *pResult = ToNumber_Full(aValue, scriptContext);
         return true;
+        JIT_HELPER_END(Op_ConvNumber_FromPrimitive);
     }
 
     //----------------------------------------------------------------------------
@@ -970,6 +987,7 @@ CommonNumber:
     //----------------------------------------------------------------------------
     int32 JavascriptConversion::ToInt32_Full(Var aValue, ScriptContext* scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Conv_ToInt32_Full);
         Assert(Js::JavascriptStackWalker::ValidateTopJitFrame(scriptContext));
         AssertMsg(!TaggedInt::Is(aValue), "Should be detected");
 
@@ -1074,6 +1092,7 @@ CommonNumber:
             AssertMsg(FALSE, "wrong call in ToInteger32_Full, no dynamic objects should get here.");
             JavascriptError::ThrowError(scriptContext, VBSERR_OLENoPropOrMethod);
         }
+        JIT_HELPER_END(Conv_ToInt32_Full);
     }
 
     // a strict version of ToInt32 conversion that returns false for non int32 values like, inf, NaN, undef
@@ -1212,6 +1231,7 @@ CommonNumber:
     //----------------------------------------------------------------------------
     uint32 JavascriptConversion::ToUInt32_Full(Var aValue, ScriptContext* scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Conv_ToUInt32_Full);
         AssertMsg(!TaggedInt::Is(aValue), "Should be detected");
         ScriptContext * objectScriptContext = RecyclableObject::Is(aValue) ? RecyclableObject::UnsafeFromVar(aValue)->GetScriptContext() : nullptr;
         BOOL fPrimitiveOnly = false;
@@ -1272,12 +1292,19 @@ CommonNumber:
                 }
             }
         }
+        JIT_HELPER_END(Conv_ToUInt32_Full);
     }
+    // Unable to put JIT_HELPER macro in .inl file, do instantiation here
+    JIT_HELPER_TEMPLATE(Conv_ToUInt32, Conv_ToUInt32)
+    JIT_HELPER_TEMPLATE(Conv_ToBoolean, Conv_ToBoolean)
 
     uint32 JavascriptConversion::ToUInt32(double T1)
     {
+        JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Conv_ToUInt32Core);
+        JIT_HELPER_SAME_ATTRIBUTES(Conv_ToInt32Core, Conv_ToUInt32Core);
         // Same as doing ToInt32 and reinterpret the bits as uint32
         return (uint32)JavascriptMath::ToInt32Core(T1);
+        JIT_HELPER_END(Conv_ToUInt32Core);
     }
 
     //----------------------------------------------------------------------------
@@ -1386,7 +1413,9 @@ CommonNumber:
 
     JavascriptString * JavascriptConversion::ToPrimitiveString(Var aValue, ScriptContext * scriptContext)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_ConvPrimitiveString);
         return ToString(ToPrimitive<JavascriptHint::None>(aValue, scriptContext), scriptContext);
+        JIT_HELPER_END(Op_ConvPrimitiveString);
     }
 
     double JavascriptConversion::LongToDouble(__int64 aValue)
@@ -1434,4 +1463,3 @@ CommonNumber:
         return NumberUtilities::TryToInt64(length);
     }
 
-} // namespace Js

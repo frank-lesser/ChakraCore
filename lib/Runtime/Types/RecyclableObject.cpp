@@ -39,6 +39,10 @@ namespace Js
         info->prop = prop;
         info->propertyRecordUsageCache = propertyRecordUsageCache;
         SetCacheInfo(info, polymorphicInlineCache, allowResizing);
+        if (propertyRecordUsageCache && propertyRecordUsageCache->ShouldDisableWriteCache())
+        {
+            info->ClearInfoFlag(CacheInfoFlag::enableStoreFieldCacheFlag);
+        }
     }
 
     void PropertyValueInfo::SetCacheInfo(_Out_ PropertyValueInfo* info, _In_ PolymorphicInlineCache *const polymorphicInlineCache, bool allowResizing)
@@ -313,13 +317,6 @@ namespace Js
         // Do nothing
     }
 
-    BOOL RecyclableObject::GetDefaultPropertyDescriptor(PropertyDescriptor& descriptor)
-    {
-        // By default, when GetOwnPropertyDescriptor is called for a nonexistent property,
-        // return undefined.
-        return false;
-    }
-
     HRESULT RecyclableObject::QueryObjectInterface(REFIID riid, void **ppvObj)
     {
         Assert(!this->GetScriptContext()->GetThreadContext()->IsScriptActive());
@@ -489,7 +486,7 @@ namespace Js
         return false;
     }
 
-    BOOL RecyclableObject::GetAccessors(PropertyId propertyId, Var* getter, Var* setter, ScriptContext * requestContext)
+    _Check_return_ _Success_(return) BOOL RecyclableObject::GetAccessors(PropertyId propertyId, _Outptr_result_maybenull_ Var* getter, _Outptr_result_maybenull_ Var* setter, ScriptContext * requestContext)
     {
         return false;
     }

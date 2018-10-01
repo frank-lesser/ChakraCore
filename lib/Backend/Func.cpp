@@ -58,6 +58,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     m_bailoutReturnValueSym(nullptr),
     m_hasBailedOutSym(nullptr),
     m_inlineeFrameStartSym(nullptr),
+    inlineeStart(nullptr),
     m_regsUsed(0),
     m_fg(nullptr),
     m_labelCount(0),
@@ -72,6 +73,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     hasInstrNumber(false),
     maintainByteCodeOffset(true),
     frameSize(0),
+    topFunc(parentFunc ? parentFunc->topFunc : this),
     parentFunc(parentFunc),
     argObjSyms(nullptr),
     m_nonTempLocalVars(nullptr),
@@ -91,6 +93,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     hasInlinee(false),
     thisOrParentInlinerHasArguments(false),
     hasStackArgs(false),
+    hasArgLenAndConstOpt(false),
     hasImplicitParamLoad(false),
     hasThrow(false),
     hasNonSimpleParams(false),
@@ -109,6 +112,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     isTJLoopBody(false),
     m_nativeCodeDataSym(nullptr),
     isFlowGraphValid(false),
+    legalizePostRegAlloc(false),
 #if DBG
     m_callSiteCount(0),
 #endif
@@ -185,7 +189,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
 
     if (m_workItem->Type() == JsFunctionType &&
         GetJITFunctionBody()->DoBackendArgumentsOptimization() &&
-        !GetJITFunctionBody()->HasTry())
+        (!GetJITFunctionBody()->HasTry() || this->DoOptimizeTry()))
     {
         // doBackendArgumentsOptimization bit is set when there is no eval inside a function
         // as determined by the bytecode generator.
@@ -262,7 +266,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
         ObjTypeSpecFldInfo * info = GetWorkItem()->GetJITTimeInfo()->GetObjTypeSpecFldInfo(i);
         if (info != nullptr)
         {
-            Assert(info->GetObjTypeSpecFldId() < GetTopFunc()->GetWorkItem()->GetJITTimeInfo()->GetGlobalObjTypeSpecFldInfoCount());
+            AssertOrFailFast(info->GetObjTypeSpecFldId() < GetTopFunc()->GetWorkItem()->GetJITTimeInfo()->GetGlobalObjTypeSpecFldInfoCount());
             GetTopFunc()->m_globalObjTypeSpecFldInfoArray[info->GetObjTypeSpecFldId()] = info;
         }
     }
@@ -299,8 +303,10 @@ Func::Codegen(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     Js::ScriptContextProfiler *const codeGenProfiler, const bool isBackgroundJIT)
 {
     bool rejit;
+    int rejitCounter = 0;
     do
     {
+        Assert(rejitCounter < 25);
         Func func(alloc, workItem, threadContextInfo,
             scriptContextInfo, outputData, epInfo, runtimeInfo,
             polymorphicInlineCacheInfo, codeGenAllocators, 
@@ -332,6 +338,8 @@ Func::Codegen(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
             case RejitReason::DisableStackArgOpt:
                 outputData->disableStackArgOpt = TRUE;
                 break;
+            case RejitReason::DisableStackArgLenAndConstOpt:
+                break;
             case RejitReason::DisableSwitchOptExpectingInteger:
             case RejitReason::DisableSwitchOptExpectingString:
                 outputData->disableSwitchOpt = TRUE;
@@ -358,6 +366,7 @@ Func::Codegen(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
             }
 
             rejit = true;
+            rejitCounter++;
         }
         // Either the entry point has a reference to the number now, or we failed to code gen and we
         // don't need to numbers, we can flush the completed page now.
@@ -1314,6 +1323,11 @@ Func::EndPhase(Js::Phase tag, bool dump)
     }
 #endif
 
+    if (tag == Js::RegAllocPhase)
+    {
+        this->legalizePostRegAlloc = true;
+    }
+
 #if DBG
     if (tag == Js::LowererPhase)
     {
@@ -1350,28 +1364,6 @@ Func::EndPhase(Js::Phase tag, bool dump)
     }
     this->m_alloc->MergeDelayFreeList();
 #endif
-}
-
-Func const *
-Func::GetTopFunc() const
-{
-    Func const * func = this;
-    while (!func->IsTopFunc())
-    {
-        func = func->parentFunc;
-    }
-    return func;
-}
-
-Func *
-Func::GetTopFunc()
-{
-    Func * func = this;
-    while (!func->IsTopFunc())
-    {
-        func = func->parentFunc;
-    }
-    return func;
 }
 
 StackSym *
@@ -1572,6 +1564,7 @@ Func::GetOrCreateSingleTypeGuard(intptr_t typeAddr)
 void
 Func::EnsureEquivalentTypeGuards()
 {
+    AssertMsg(!PHASE_OFF(Js::EquivObjTypeSpecPhase, this), "Why do we have equivalent type guards if we don't do equivalent object type spec?");
     if (this->equivalentTypeGuards == nullptr)
     {
         this->equivalentTypeGuards = JitAnew(this->m_alloc, EquivalentTypeGuardList, this->m_alloc);

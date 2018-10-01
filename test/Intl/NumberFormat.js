@@ -155,15 +155,19 @@ const tests = [
         }
     },
     {
-        name: "Negative 0",
+        name: "Negative 0 (https://github.com/tc39/ecma402/issues/219)",
         body() {
             assert.areEqual(
                 0,
                 new Intl.NumberFormat(undefined, { minimumFractionDigits: -0 }).resolvedOptions().minimumFractionDigits,
                 "Passing -0 for minimumFractionDigits should get normalized to 0 by DefaultNumberOption"
             );
-            // This assert may need to change in the future, pending any decision made on https://github.com/tc39/ecma402/issues/219
-            assert.areEqual("0", (-0).toLocaleString(), "-0 should be formatted as 0");
+
+            assert.areEqual("-0", (-0).toLocaleString(), "-0 should be treated as a negative number (toLocaleString)");
+            assert.areEqual("-0", new Intl.NumberFormat().format(-0), "-0 should be treated as a negative number (NumberFormat.prototype.format)");
+            if (WScript.Platform.INTL_LIBRARY === "icu") {
+                assert.areEqual("-0", new Intl.NumberFormat().formatToParts(-0).map(v => v.value).join(""), "-0 should be treated as a negative number (NumberFormat.prototype.formatToParts)");
+            }
         }
     },
     {
@@ -190,7 +194,7 @@ const tests = [
                     // real formatToParts support was only added with ICU 61
                     assert.areEqual(1, actualParts.length, `formatToParts(${n}) stub implementation should return only one part`);
                     const literal = actualParts[0];
-                    assert.areEqual("literal", literal.type, `formatToParts(${n}) stub implementation should return a literal part`);
+                    assert.areEqual("unknown", literal.type, `formatToParts(${n}) stub implementation should return an unknown part`);
                     assert.areEqual(nf.format(n), literal.value, `formatToParts(${n}) stub implementation should return one part whose value matches the fully formatted number`);
                     return;
                 }
@@ -203,6 +207,12 @@ const tests = [
             }
 
             assertParts("en-US", undefined, 1000, [
+                { type: "integer" , value: "1" },
+                { type: "group", value: "," },
+                { type: "integer", value: "000" }
+            ]);
+            assertParts("en-US", undefined, -1000, [
+                { type: "minusSign", value: "-" },
                 { type: "integer" , value: "1" },
                 { type: "group", value: "," },
                 { type: "integer", value: "000" }

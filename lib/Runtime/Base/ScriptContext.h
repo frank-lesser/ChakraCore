@@ -578,7 +578,6 @@ namespace Js
         CacheAllocator enumeratorCacheAllocator;
 
         ArenaAllocator* interpreterArena;
-        ArenaAllocator* guestArena;
 
 #ifdef ENABLE_SCRIPT_DEBUGGING
         ArenaAllocator* diagnosticArena;
@@ -1291,23 +1290,25 @@ private:
 
         HRESULT TryDeserializeParserState(
             _In_ ULONG grfscr,
+            _In_ uint sourceCRC,
             _In_ charcount_t cchLength,
             _In_ SRCINFO *srcInfo,
             _In_ Js::Utf8SourceInfo* utf8SourceInfo,
             _Inout_ uint& sourceIndex,
             _In_ bool isCesu8,
             _In_opt_ NativeModule* nativeModule,
-            _Out_ Js::ParseableFunctionInfo ** func,
-            _Out_ byte** parserStateCacheBuffer,
+            _Outptr_ Js::ParseableFunctionInfo ** func,
+            _Outptr_result_buffer_(*parserStateCacheByteCount) byte** parserStateCacheBuffer,
             _Out_ DWORD* parserStateCacheByteCount,
             _In_ Js::SimpleDataCacheWrapper* pDataCache);
 
         HRESULT TrySerializeParserState(
-            _In_ LPCUTF8 pszSrc,
+            _In_ uint sourceCRC,
+            _In_reads_bytes_(cbLength) LPCUTF8 pszSrc,
             _In_ size_t cbLength,
             _In_ SRCINFO *srcInfo,
             _In_ Js::ParseableFunctionInfo* func,
-            _In_ byte* parserStateCacheBuffer,
+            _In_reads_bytes_(parserStateCacheByteCount) byte* parserStateCacheBuffer,
             _In_ DWORD parserStateCacheByteCount,
             _In_ Js::SimpleDataCacheWrapper* pDataCache);
 
@@ -1316,7 +1317,7 @@ private:
             __in Js::Utf8SourceInfo* utf8SourceInfo,
             __in SRCINFO *srcInfo,
             __in BOOL fOriginalUTF8Code,
-            __in LPCUTF8 pszSrc,
+            _In_reads_bytes_(cbLength) LPCUTF8 pszSrc,
             __in size_t cbLength,
             __in ULONG grfscr,
             __in CompileScriptException *pse,
@@ -1376,13 +1377,6 @@ private:
         bool EnsureInterpreterArena(ArenaAllocator **);
         void ReleaseInterpreterArena();
 
-        ArenaAllocator* GetGuestArena() const
-        {
-            return guestArena;
-        }
-
-        void ReleaseGuestArena();
-
         Recycler* GetRecycler() const { return recycler; }
         RecyclerJavascriptNumberAllocator * GetNumberAllocator() { return &numberAllocator; }
 #if ENABLE_NATIVE_CODEGEN
@@ -1439,12 +1433,8 @@ private:
         BOOL IsNativeAddress(void * codeAddr);
 #endif
 
-        uint SaveSourceCopy(Utf8SourceInfo* sourceInfo, int cchLength, bool isCesu8);
-        bool SaveSourceCopy(Utf8SourceInfo* const sourceInfo, int cchLength, bool isCesu8, uint * index);
-
         uint SaveSourceNoCopy(Utf8SourceInfo* sourceInfo, int cchLength, bool isCesu8);
 
-        void CloneSources(ScriptContext* sourceContext);
         Utf8SourceInfo* GetSource(uint sourceIndex);
 
         uint SourceCount() const { return (uint)sourceList->Count(); }
@@ -1536,8 +1526,6 @@ private:
 
         void FreeFunctionEntryPoint(Js::JavascriptMethod codeAddress, Js::JavascriptMethod thunkAddress);
 
-    private:
-        uint CloneSource(Utf8SourceInfo* info);
     public:
         void RegisterProtoInlineCache(InlineCache *pCache, PropertyId propId);
         void InvalidateProtoCaches(const PropertyId propertyId);

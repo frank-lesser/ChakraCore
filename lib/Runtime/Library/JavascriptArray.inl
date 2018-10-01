@@ -892,7 +892,7 @@ SECOND_PASS:
                         else if (!HasNoMissingValues())
                         {
                             // Have we overwritten all the missing values?
-                            if (!ScanForMissingValues<T>(0, startOffset))
+                            if (!ScanForMissingValues<T>(0, startOffset) && !ScanForMissingValues<T>(startOffset + length, current->length))
                             {
                                 SetHasNoMissingValues();
                             }
@@ -907,7 +907,7 @@ SECOND_PASS:
             {
                 isInlineSegment = JavascriptArray::IsInlineSegment(startSeg, this);
                 // startIndex is in between prev and startIndex
-                current = SparseArraySegment<T>::template AllocateSegmentImpl<false>(recycler, startIndex, length, (SparseArraySegmentBase*)nullptr);
+                current = SparseArraySegment<T>::template AllocateSegmentImpl<false>(recycler, startIndex, length, nullptr);
                 LinkSegments((Js::SparseArraySegment<T>*)startPrev, current);
                 if (current == head)
                 {

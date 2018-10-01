@@ -437,16 +437,16 @@ WasmOp WasmBinaryReader::ReadExpr()
         break;
     case wbNop:
         break;
-    case wbCurrentMemory:
-    case wbGrowMemory:
+    case wbMemorySize:
+    case wbMemoryGrow:
     {
         // Reserved value currently unused
         uint8 reserved = ReadConst<uint8>();
         if (reserved != 0)
         {
-            ThrowDecodingError(op == wbCurrentMemory
-                ? _u("current_memory reserved value must be 0")
-                : _u("grow_memory reserved value must be 0")
+            ThrowDecodingError(op == wbMemorySize
+                ? _u("memory.size reserved value must be 0")
+                : _u("memory.grow reserved value must be 0")
             );
         }
         break;
@@ -692,6 +692,8 @@ void WasmBinaryReader::ConstNode()
         m_funcState.count += Simd::VEC_WIDTH;
         break;
 #endif
+    default:
+        WasmTypes::CompileAssertCases<Wasm::WasmTypes::I32, Wasm::WasmTypes::I64, Wasm::WasmTypes::F32, Wasm::WasmTypes::F64, WASM_M128_CHECK_TYPE>();
     }
 }
 
@@ -1065,6 +1067,24 @@ void WasmBinaryReader::ReadGlobalSection()
     for (uint32 i = 0; i < numGlobals; ++i)
     {
         WasmTypes::WasmType type = ReadWasmType(len);
+        
+        if (!WasmTypes::IsLocalType(type))
+        {
+            ThrowDecodingError(_u("Invalid global type %u"), type);
+        }
+        switch (type)
+        {
+        case WasmTypes::I32: break; // Handled
+        case WasmTypes::I64: break; // Handled
+        case WasmTypes::F32: break; // Handled
+        case WasmTypes::F64: break; // Handled
+#ifdef ENABLE_WASM_SIMD
+        case WasmTypes::M128: ThrowDecodingError(_u("m128 globals not supported"));
+#endif
+        default:
+            WasmTypes::CompileAssertCases<WasmTypes::I32, WasmTypes::I64, WasmTypes::F32, WasmTypes::F64, WASM_M128_CHECK_TYPE>();
+        }
+        
         bool isMutable = ReadMutableValue();
         WasmNode globalNode = ReadInitExpr();
         GlobalReferenceTypes::Type refType = GlobalReferenceTypes::Const;
@@ -1259,6 +1279,7 @@ LEBType WasmBinaryReader::LEB128(uint32 &length)
 
     if (sign && (shift < (sizeof(LEBType) * 8)) && (0x40 & b))
     {
+#pragma prefast(suppress:26453)
         result |= ((~(LEBType)0) << shift);
     }
     return result;
