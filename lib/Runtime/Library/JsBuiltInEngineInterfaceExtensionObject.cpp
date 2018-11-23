@@ -40,22 +40,36 @@
     } \
 
 #define FUNCTIONKIND_VALUES(VALUE) \
-VALUE(Array, values, false) \
-VALUE(Array, keys, false) \
-VALUE(Array, entries, false) \
-VALUE(Array, indexOf, false) \
-VALUE(Array, filter, false) \
-VALUE(Array, flat, false) \
-VALUE(Array, flatMap, false) \
-VALUE(Array, forEach, false) \
-VALUE(Object, fromEntries, true)
+VALUE(Array, values, Prototype) \
+VALUE(Array, keys, Prototype) \
+VALUE(Array, entries, Prototype) \
+VALUE(Array, indexOf, Prototype) \
+VALUE(Array, filter, Prototype) \
+VALUE(Array, flat, Prototype) \
+VALUE(Array, flatMap, Prototype) \
+VALUE(Array, forEach, Prototype) \
+VALUE(Array, some, Prototype) \
+VALUE(Array, sort, Prototype) \
+VALUE(Array, every, Prototype) \
+VALUE(Array, includes, Prototype) \
+VALUE(Array, reduce, Prototype) \
+VALUE(Object, fromEntries, Constructor) \
+VALUE(Math, max, Object) \
+VALUE(Math, min, Object)
 
 enum class FunctionKind
 {
-#define VALUE(ClassName, methodName, isStatic) ClassName##_##methodName,
-    FUNCTIONKIND_VALUES(VALUE)
+#define VALUE(ClassName, methodName, propertyType) ClassName##_##methodName,
+    FUNCTIONKIND_VALUES(VALUE) 
 #undef VALUE
     Max
+};
+
+enum class IsPropertyTypeStatic : bool
+{
+    Prototype = false,
+    Constructor = true,
+    Object = true
 };
 
 namespace Js
@@ -105,8 +119,8 @@ namespace Js
         JavascriptLibrary* library = scriptContext->GetLibrary();
         JavascriptString * methodName = JavascriptString::NewWithSz(_u("ArrayIterator"), scriptContext);
         auto arrayIterator = JavascriptOperators::GetProperty(library->GetChakraLib(), JavascriptOperators::GetPropertyId(methodName, scriptContext), scriptContext);
-        library->arrayIteratorPrototype = DynamicObject::FromVar(JavascriptOperators::GetProperty(DynamicObject::FromVar(arrayIterator), PropertyIds::prototype, scriptContext));
-        library->arrayIteratorPrototypeBuiltinNextFunction = JavascriptFunction::FromVar(JavascriptOperators::GetProperty(library->arrayIteratorPrototype, PropertyIds::next, scriptContext));
+        library->arrayIteratorPrototype = VarTo<DynamicObject>(JavascriptOperators::GetProperty(VarTo<DynamicObject>(arrayIterator), PropertyIds::prototype, scriptContext));
+        library->arrayIteratorPrototypeBuiltinNextFunction = VarTo<JavascriptFunction>(JavascriptOperators::GetProperty(library->arrayIteratorPrototype, PropertyIds::next, scriptContext));
     }
 
     void JsBuiltInEngineInterfaceExtensionObject::InjectJsBuiltInLibraryCode(ScriptContext * scriptContext)
@@ -194,7 +208,7 @@ namespace Js
 
     bool JsBuiltInEngineInterfaceExtensionObject::InitializeJsBuiltInNativeInterfaces(DynamicObject * builtInNativeInterfaces, DeferredTypeHandlerBase * typeHandler, DeferredInitializeMode mode)
     {
-        int initSlotCapacity = 4; // for register{ChakraLibrary}Function, FunctionKind, and GetIteratorPrototype
+        int initSlotCapacity = 6; // for register{ChakraLibrary}Function, FunctionKind, POSITIVE_INFINITY, NEGATIVE_INFINITY, and GetIteratorPrototype
 
         typeHandler->Convert(builtInNativeInterfaces, mode, initSlotCapacity);
 
@@ -203,11 +217,13 @@ namespace Js
 
         DynamicObject * functionKindObj = library->CreateObject();
 
-#define VALUE(ClassName, methodName, isStatic) library->AddMember(functionKindObj, PropertyIds::ClassName##_##methodName, JavascriptNumber::ToVar((int)FunctionKind::ClassName##_##methodName, scriptContext));
+#define VALUE(ClassName, methodName, propertyType) library->AddMember(functionKindObj, PropertyIds::ClassName##_##methodName, JavascriptNumber::ToVar((int)FunctionKind::ClassName##_##methodName, scriptContext));
         FUNCTIONKIND_VALUES(VALUE)
 #undef VALUE
 
         library->AddMember(builtInNativeInterfaces, PropertyIds::FunctionKind, functionKindObj);
+        library->AddMember(builtInNativeInterfaces, PropertyIds::POSITIVE_INFINITY, library->GetPositiveInfinite());
+        library->AddMember(builtInNativeInterfaces, PropertyIds::NEGATIVE_INFINITY, library->GetNegativeInfinite());
 
         library->AddFunctionToLibraryObject(builtInNativeInterfaces, Js::PropertyIds::registerChakraLibraryFunction, &JsBuiltInEngineInterfaceExtensionObject::EntryInfo::JsBuiltIn_RegisterChakraLibraryFunction, 2);
         library->AddFunctionToLibraryObject(builtInNativeInterfaces, Js::PropertyIds::registerFunction, &JsBuiltInEngineInterfaceExtensionObject::EntryInfo::JsBuiltIn_RegisterFunction, 2);
@@ -254,15 +270,15 @@ namespace Js
     {
         EngineInterfaceObject_CommonFunctionProlog(function, callInfo);
 
-        AssertOrFailFast(args.Info.Count >= 3 && JavascriptString::Is(args.Values[1]) && ScriptFunction::Is(args.Values[2]));
+        AssertOrFailFast(args.Info.Count >= 3 && VarIs<JavascriptString>(args.Values[1]) && VarIs<ScriptFunction>(args.Values[2]));
 
         JavascriptLibrary * library = scriptContext->GetLibrary();
 
-        JavascriptString* methodName = JavascriptString::UnsafeFromVar(args.Values[1]);
+        JavascriptString* methodName = UnsafeVarTo<JavascriptString>(args.Values[1]);
 
         // chakra library functions, since they aren't public, can be constructors (__chakraLibrary.ArrayIterator is one)
         ScriptFunction* func = EngineInterfaceObject::CreateLibraryCodeScriptFunction(
-            ScriptFunction::UnsafeFromVar(args.Values[2]),
+            UnsafeVarTo<ScriptFunction>(args.Values[2]),
             methodName,
             true /* isConstructor */,
             true /* isJsBuiltIn */,
@@ -281,7 +297,7 @@ namespace Js
     {
         EngineInterfaceObject_CommonFunctionProlog(function, callInfo);
 
-        AssertOrFailFast(args.Info.Count == 3 && TaggedInt::Is(args.Values[1]) && ScriptFunction::Is(args.Values[2]));
+        AssertOrFailFast(args.Info.Count == 3 && TaggedInt::Is(args.Values[1]) && VarIs<ScriptFunction>(args.Values[2]));
 
         JavascriptLibrary * library = scriptContext->GetLibrary();
 
@@ -293,12 +309,14 @@ namespace Js
         PropertyId methodPropID = PropertyIds::_none;
         PropertyString *methodPropString = nullptr;
         PropertyString *classPropString = nullptr;
+        JavascriptString *fullName = nullptr;
+        JavascriptString *dot = library->GetDotString();
         switch (funcKind)
         {
-#define VALUE(ClassName, methodName, _isStatic) \
+#define VALUE(ClassName, methodName, propertyType) \
         case FunctionKind::ClassName##_##methodName: \
-            isStatic = _isStatic; \
-            installTarget = _isStatic ? library->Get##ClassName##Constructor() : library->Get##ClassName##Prototype(); \
+            isStatic = static_cast<bool>(IsPropertyTypeStatic::##propertyType); \
+            installTarget = library->Get##ClassName##propertyType##(); \
             methodPropID = PropertyIds::methodName; \
             methodPropString = scriptContext->GetPropertyString(methodPropID); \
             classPropString = scriptContext->GetPropertyString(PropertyIds::ClassName); \
@@ -308,10 +326,9 @@ FUNCTIONKIND_VALUES(VALUE)
         default:
             AssertOrFailFastMsg(false, "funcKind should never be outside the range of projected values");
         }
+
         Assert(methodPropString && classPropString && installTarget && methodPropID != PropertyIds::_none);
 
-        JavascriptString *fullName = nullptr;
-        JavascriptString *dot = library->GetDotString();
         if (isStatic)
         {
             fullName = JavascriptString::Concat3(classPropString, dot, methodPropString);
@@ -323,7 +340,7 @@ FUNCTIONKIND_VALUES(VALUE)
         }
 
         ScriptFunction *func = EngineInterfaceObject::CreateLibraryCodeScriptFunction(
-            ScriptFunction::UnsafeFromVar(args.Values[2]),
+            UnsafeVarTo<ScriptFunction>(args.Values[2]),
             fullName,
             false /* isConstructor */,
             true /* isJsBuiltIn */,
@@ -353,6 +370,35 @@ FUNCTIONKIND_VALUES(VALUE)
             break;
         case FunctionKind::Array_indexOf:
             library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInJavascriptArrayEntryIndexOf, func);
+            break;
+        case FunctionKind::Array_some:
+            library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInJavascriptArrayEntrySome, func);
+            break;
+        case FunctionKind::Array_every:
+            library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInJavascriptArrayEntryEvery, func);
+            break;
+        case FunctionKind::Array_includes:
+            library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInJavascriptArrayEntryIncludes, func);
+            break;
+        case FunctionKind::Array_reduce:
+            library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInJavascriptArrayEntryReduce, func);
+            break;
+        case FunctionKind::Math_max:
+            library->mathMax = func;
+            library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInMathMax, func);
+            break;
+        case FunctionKind::Math_min:
+            library->mathMin = func;
+            library->AddMember(scriptContext->GetLibrary()->GetEngineInterfaceObject()->GetCommonNativeInterfaces(), PropertyIds::builtInMathMin, func);
+            break;
+        // FunctionKinds with no entry functions
+        case FunctionKind::Array_sort:
+        case FunctionKind::Array_flat:
+        case FunctionKind::Array_flatMap:
+        case FunctionKind::Object_fromEntries:
+            break;
+        default:
+            AssertOrFailFastMsg(false, "funcKind should never be outside the range of projected values");
             break;
         }
 
@@ -394,11 +440,11 @@ FUNCTIONKIND_VALUES(VALUE)
         Var iterable = args.Values[1];
 
         TypedArrayBase *typedArrayBase = nullptr;
-        Assert(!JavascriptArray::Is(iterable));
+        Assert(!JavascriptArray::IsNonES5Array(iterable));
 
-        if (TypedArrayBase::Is(iterable))
+        if (VarIs<TypedArrayBase>(iterable))
         {
-            typedArrayBase = TypedArrayBase::FromVar(iterable);
+            typedArrayBase = VarTo<TypedArrayBase>(iterable);
             if (typedArrayBase->IsDetachedBuffer())
             {
                 JavascriptError::ThrowTypeError(scriptContext, JSERR_DetachedTypedArray);
@@ -427,14 +473,14 @@ FUNCTIONKIND_VALUES(VALUE)
     {
         EngineInterfaceObject_CommonFunctionProlog(function, callInfo);
 
-        DynamicObject* obj = DynamicObject::FromVar(args.Values[1]);
+        DynamicObject* obj = VarTo<DynamicObject>(args.Values[1]);
         unsigned propCount = TaggedInt::ToUInt32(args.Values[2]);
 
         Assert(callInfo.Count == 3 + propCount);
 
         for (unsigned i = 0; i < propCount; i++)
         {
-            JavascriptString *propName = JavascriptString::FromVar(args.Values[i + 3]);
+            JavascriptString *propName = VarTo<JavascriptString>(args.Values[i + 3]);
             obj->SetPropertyWithAttributes(JavascriptOperators::GetPropertyId(propName, scriptContext), scriptContext->GetLibrary()->GetNull(), PropertyWritable, nullptr);
         }
 
@@ -477,7 +523,7 @@ FUNCTIONKIND_VALUES(VALUE)
         EngineInterfaceObject_CommonFunctionProlog(function, callInfo);
         AssertOrFailFast(args.Info.Count == 4);
 
-        RecyclableObject * obj = RecyclableObject::FromVar(args.Values[1]);
+        RecyclableObject * obj = VarTo<RecyclableObject>(args.Values[1]);
         double index = JavascriptConversion::ToInteger(args.Values[2], scriptContext);
         AssertOrFailFast(index >= 0);
         JavascriptArray::BigIndex bigIndex(static_cast<uint64>(index));

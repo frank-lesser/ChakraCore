@@ -506,13 +506,16 @@ FlowGraph::Build(void)
                     {
                         Assert(exitLabel);
                         IR::Instr * bailOnEarlyExit = IR::BailOutInstr::New(Js::OpCode::BailOnEarlyExit, IR::BailOutOnEarlyExit, instr, instr->m_func);
+                        bailOnEarlyExit->SetByteCodeOffset(instr);
                         instr->InsertBefore(bailOnEarlyExit);
+
                         IR::LabelInstr *exceptFinallyLabel = this->finallyLabelStack->Top();
                         IR::LabelInstr *nonExceptFinallyLabel = exceptFinallyLabel->m_next->m_next->AsLabelInstr();
 
                         // It is possible for the finally region to have a non terminating loop, in which case the end of finally is eliminated
                         // We can skip adding edge from finally to early exit in this case
                         IR::Instr * leaveToFinally = IR::BranchInstr::New(Js::OpCode::Leave, exceptFinallyLabel, this->func);
+                        leaveToFinally->SetByteCodeOffset(instr);
                         instr->InsertBefore(leaveToFinally);
                         instr->Remove();
                         this->AddEdge(currentLabel->GetBasicBlock(), exceptFinallyLabel->GetBasicBlock());
@@ -3421,7 +3424,7 @@ FlowGraph::RemoveInstr(IR::Instr *instr, GlobOpt * globOpt)
         *       - When we restore HeapArguments object in the bail out path, it expects the scope object also to be restored - if one was created.
         */
         Js::OpCode opcode = instr->m_opcode;
-        if (opcode == Js::OpCode::LdElemI_A && instr->DoStackArgsOpt(this->func) &&
+        if (opcode == Js::OpCode::LdElemI_A && instr->DoStackArgsOpt() &&
             globOpt->CurrentBlockData()->IsArgumentsOpnd(instr->GetSrc1()) && instr->m_func->GetScopeObjSym())
         {
             IR::ByteCodeUsesInstr * byteCodeUsesInstr = IR::ByteCodeUsesInstr::New(instr);

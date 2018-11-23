@@ -201,7 +201,7 @@ GlobOpt::CaptureValuesIncremental(BasicBlock * block,
     NEXT_BITSET_IN_SPARSEBV
 
     // If, after going over the set of changed syms since the last time we captured values,
-    // there are remaining unprocessed entries in the current captured values set, 
+    // there are remaining unprocessed entries in the current captured values set,
     // they can simply be copied over to the new bailout info.
     while (hasConstValue)
     {
@@ -272,7 +272,7 @@ GlobOpt::CaptureValues(BasicBlock *block, BailOutInfo * bailOutInfo, BVSparse<Ji
     bailOutInfo->capturedValues->copyPropSyms.Clear(this->func->m_alloc);
     bailOutCopySymsIter.SetNext(&bailOutInfo->capturedValues->copyPropSyms);
     bailOutInfo->capturedValues->copyPropSyms = capturedValues.copyPropSyms;
-    
+
     // In pre-pass only bailout info created should be for the loop header, and that doesn't take into account the back edge.
     // Don't use the captured values on that bailout for incremental capturing of values.
     if (!PHASE_OFF(Js::IncrementalBailoutPhase, func) && !this->IsLoopPrePass())
@@ -482,6 +482,18 @@ GlobOpt::CaptureByteCodeSymUses(IR::Instr * instr)
 void
 GlobOpt::ProcessInlineeEnd(IR::Instr* instr)
 {
+    if (!PHASE_OFF(Js::StackArgLenConstOptPhase, instr->m_func) && instr->m_func->IsStackArgsEnabled()
+        && instr->m_func->hasArgLenAndConstOpt && instr->m_func->unoptimizableArgumentsObjReference == 0)
+    {
+        instr->m_func->hasUnoptimizedArgumentsAccess = false;
+        if (DoInlineArgsOpt(instr->m_func))
+        {
+            instr->m_func->m_hasInlineArgsOpt = true;
+            Assert(instr->m_func->cachedInlineeFrameInfo);
+            instr->m_func->frameInfo = instr->m_func->cachedInlineeFrameInfo;
+        }
+    }
+
     if (instr->m_func->m_hasInlineArgsOpt)
     {
         RecordInlineeFrameInfo(instr);
@@ -570,6 +582,7 @@ GlobOpt::TrackCalls(IR::Instr * instr)
     }
 
     case Js::OpCode::InlineeStart:
+    {
         Assert(instr->m_func->GetParentFunc() == this->currentBlock->globOptData.curFunc);
         Assert(instr->m_func->GetParentFunc());
         this->currentBlock->globOptData.curFunc = instr->m_func;
@@ -577,16 +590,24 @@ GlobOpt::TrackCalls(IR::Instr * instr)
         this->func->UpdateMaxInlineeArgOutSize(this->currentBlock->globOptData.inlinedArgOutSize);
         this->EndTrackCall(instr);
 
+        InlineeFrameInfo* inlineeFrameInfo = InlineeFrameInfo::New(instr->m_func->m_alloc);
+        inlineeFrameInfo->functionSymStartValue = instr->GetSrc1()->GetSym() ?
+            CurrentBlockData()->FindValue(instr->GetSrc1()->GetSym()) : nullptr;
+        inlineeFrameInfo->floatSyms = CurrentBlockData()->liveFloat64Syms->CopyNew(this->alloc);
+        inlineeFrameInfo->intSyms = CurrentBlockData()->liveInt32Syms->MinusNew(CurrentBlockData()->liveLossyInt32Syms, this->alloc);
+        inlineeFrameInfo->varSyms = CurrentBlockData()->liveVarSyms->CopyNew(this->alloc);
+
         if (DoInlineArgsOpt(instr->m_func))
         {
             instr->m_func->m_hasInlineArgsOpt = true;
-            InlineeFrameInfo* frameInfo = InlineeFrameInfo::New(func->m_alloc);
-            instr->m_func->frameInfo = frameInfo;
-            frameInfo->floatSyms = CurrentBlockData()->liveFloat64Syms->CopyNew(this->alloc);
-            frameInfo->intSyms = CurrentBlockData()->liveInt32Syms->MinusNew(CurrentBlockData()->liveLossyInt32Syms, this->alloc);
-            frameInfo->varSyms = CurrentBlockData()->liveVarSyms->CopyNew(this->alloc);
+            instr->m_func->frameInfo = inlineeFrameInfo;
+        }
+        else
+        {
+            instr->m_func->cachedInlineeFrameInfo = inlineeFrameInfo;
         }
         break;
+    }
 
     case Js::OpCode::EndCallForPolymorphicInlinee:
         // Have this opcode mimic the functions of both InlineeStart and InlineeEnd in the bailout block of a polymorphic call inlined using fixed methods.
@@ -761,6 +782,15 @@ void GlobOpt::RecordInlineeFrameInfo(IR::Instr* inlineeEnd)
             }
             else
             {
+                // If the value of the functionObject symbol has changed between the inlineeStart and the inlineeEnd,
+                // we don't record the inlinee frame info (see OS#18318884).
+                Assert(frameInfo->functionSymStartValue != nullptr);
+                if (!frameInfo->functionSymStartValue->IsEqualTo(CurrentBlockData()->FindValue(functionObject->m_sym)))
+                {
+                    argInstr->m_func->DisableCanDoInlineArgOpt();
+                    return true;
+                }
+
                 frameInfo->function = InlineFrameInfoValue(functionObject->m_sym);
             }
         }
@@ -1152,7 +1182,7 @@ GlobOpt::MaySrcNeedBailOnImplicitCall(IR::Opnd const * opnd, Value const * val)
     case IR::OpndKindReg:
         // Only need implicit call if the operation will call ToPrimitive and we haven't prove
         // that it is already a primitive
-        return 
+        return
             !(val && val->GetValueInfo()->IsPrimitive()) &&
             !opnd->AsRegOpnd()->GetValueType().IsPrimitive() &&
             !opnd->AsRegOpnd()->m_sym->IsInt32() &&
@@ -1294,7 +1324,7 @@ GlobOpt::MayNeedBailOnImplicitCall(IR::Instr const * instr, Value const * src1Va
         return
             !(
                 baseValueType.IsString() ||
-                (baseValueType.IsAnyArray() && baseValueType.GetObjectType() != ObjectType::ObjectWithArray) ||
+                baseValueType.IsArray() ||
                 (instr->HasBailOutInfo() && instr->GetBailOutKindNoBits() == IR::BailOutOnIrregularLength) // guarantees no implicit calls
             );
     }

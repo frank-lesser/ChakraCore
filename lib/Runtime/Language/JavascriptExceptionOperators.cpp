@@ -171,7 +171,7 @@ namespace Js
                 // it so happens that this catch was on the stack and caught the exception.
                 // Re-throw!
                 JavascriptExceptionOperators::DoThrow(exception, scriptContext);
-            }  
+            }
 
             Var exceptionObject = exception->GetThrownObject(scriptContext);
             AssertMsg(exceptionObject, "Caught object is null.");
@@ -190,19 +190,23 @@ namespace Js
     {
         void                      *tryContinuation     = nullptr;
         JavascriptExceptionObject *exception           = nullptr;
+        void                      *tryHandlerAddrOfReturnAddr = nullptr;
 
         Js::JavascriptExceptionOperators::HasBailedOutPtrStack hasBailedOutPtrStack(scriptContext, (bool*)((char*)frame + hasBailedOutOffset));
         PROBE_STACK(scriptContext, Constants::MinStackJitEHBailout + spillSize + argsSize);
-
-        try
         {
-            tryContinuation = amd64_CallWithFakeFrame(tryAddr, frame, spillSize, argsSize);
+            void * addrOfReturnAddr = (void*)((char*)frame + sizeof(char*));
+            Js::JavascriptExceptionOperators::TryHandlerAddrOfReturnAddrStack tryHandlerAddrOfReturnAddrStack(scriptContext, addrOfReturnAddr);
+            try
+            {
+                tryContinuation = amd64_CallWithFakeFrame(tryAddr, frame, spillSize, argsSize);
+            }
+            catch (const Js::JavascriptException& err)
+            {
+                exception = err.GetAndClear();
+                tryHandlerAddrOfReturnAddr = scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr();
+            }
         }
-        catch (const Js::JavascriptException& err)
-        {
-            exception = err.GetAndClear();
-        }
-
         if (exception)
         {
             // Clone static exception object early in case finally block overwrites it
@@ -212,19 +216,9 @@ namespace Js
         if (exception)
         {
 #if ENABLE_NATIVE_CODEGEN
-            if (scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr() != nullptr)
+            if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
             {
-                if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
-                {
-                    WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr());
-                }
-            }
-            else
-            {
-                if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
-                {
-                     WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, frame);
-                }
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, tryHandlerAddrOfReturnAddr);
             }
 #endif
             bool hasBailedOut = *(bool*)((char*)frame + hasBailedOutOffset); // stack offsets are negative
@@ -251,21 +245,32 @@ namespace Js
         void                      *tryContinuation = nullptr;
         void                      *finallyContinuation = nullptr;
         JavascriptExceptionObject *exception           = nullptr;
+        void                      *tryHandlerAddrOfReturnAddr = nullptr;
 
         PROBE_STACK(scriptContext, Constants::MinStackJitEHBailout + spillSize + argsSize);
-        try
         {
-            tryContinuation = amd64_CallWithFakeFrame(tryAddr, frame, spillSize, argsSize);
+            void * addrOfReturnAddr = (void*)((char*)frame + sizeof(char*));
+            Js::JavascriptExceptionOperators::TryHandlerAddrOfReturnAddrStack tryHandlerAddrOfReturnAddrStack(scriptContext, addrOfReturnAddr);
+            try
+            {
+                tryContinuation = amd64_CallWithFakeFrame(tryAddr, frame, spillSize, argsSize);
+            }
+            catch (const Js::JavascriptException& err)
+            {
+                exception = err.GetAndClear();
+                tryHandlerAddrOfReturnAddr = scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr();
+            }
         }
-        catch (const Js::JavascriptException& err)
-        {
-            exception = err.GetAndClear();
-        }
-
         if (exception)
         {
             // Clone static exception object early in case finally block overwrites it
             exception = exception->CloneIfStaticExceptionObject(scriptContext);
+#if ENABLE_NATIVE_CODEGEN
+            if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, tryHandlerAddrOfReturnAddr);
+            }
+#endif
         }
 
         finallyContinuation = amd64_CallWithFakeFrame(finallyAddr, frame, spillSize, argsSize);
@@ -276,6 +281,12 @@ namespace Js
 
         if (exception)
         {
+#if ENABLE_NATIVE_CODEGEN
+            if (scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr() != nullptr)
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr, scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr());
+            }
+#endif
             JavascriptExceptionOperators::DoThrow(exception, scriptContext);
         }
 
@@ -365,44 +376,40 @@ namespace Js
         int hasBailedOutOffset,
         ScriptContext *scriptContext)
     {
-        void                      *tryContinuation     = nullptr;
-        JavascriptExceptionObject *exception           = nullptr;
+        void                      *tryContinuation            = nullptr;
+        JavascriptExceptionObject *exception                  = nullptr;
+        void                      *tryHandlerAddrOfReturnAddr = nullptr;
+
         Js::JavascriptExceptionOperators::HasBailedOutPtrStack hasBailedOutPtrStack(scriptContext, (bool*)((char*)localsPtr + hasBailedOutOffset));
 
         PROBE_STACK(scriptContext, Constants::MinStackJitEHBailout + argsSize);
-        try
         {
+            void * addrOfReturnAddr = (void*)((char*)framePtr + sizeof(char*));
+            Js::JavascriptExceptionOperators::TryHandlerAddrOfReturnAddrStack tryHandlerAddrOfReturnAddrStack(scriptContext, addrOfReturnAddr);
+            try
+            {
 #if defined(_M_ARM)
             tryContinuation = arm_CallEhFrame(tryAddr, framePtr, localsPtr, argsSize);
 #elif defined(_M_ARM64)
             tryContinuation = arm64_CallEhFrame(tryAddr, framePtr, localsPtr, argsSize);
 #endif
+            }
+            catch (const Js::JavascriptException& err)
+            {
+                exception = err.GetAndClear();
+                tryHandlerAddrOfReturnAddr = scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr();
+            }
         }
-        catch (const Js::JavascriptException& err)
-        {
-            exception = err.GetAndClear();
-        }
-
         if (exception)
         {
-#if ENABLE_NATIVE_CODEGEN
-            if (scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr() != nullptr)
-            {
-                if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
-                {
-                    WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr());
-                }
-            }
-            else
-            {
-                if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
-                {
-                    WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, framePtr);
-                }
-            }
-#endif
             // Clone static exception object early in case finally block overwrites it
             exception = exception->CloneIfStaticExceptionObject(scriptContext);
+#if ENABLE_NATIVE_CODEGEN
+            if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, tryHandlerAddrOfReturnAddr);
+            }
+#endif
             bool hasBailedOut = *(bool*)((char*)localsPtr + hasBailedOutOffset); // stack offsets are sp relative
             if (hasBailedOut)
             {
@@ -437,26 +444,38 @@ namespace Js
         void                      *tryContinuation = nullptr;
         void                      *finallyContinuation = nullptr;
         JavascriptExceptionObject *exception = nullptr;
+        void                      *tryHandlerAddrOfReturnAddr = nullptr;
 
         PROBE_STACK(scriptContext, Constants::MinStackJitEHBailout + argsSize);
-
-        try
         {
+            void * addrOfReturnAddr = (void*)((char*)framePtr + sizeof(char*));
+            Js::JavascriptExceptionOperators::TryHandlerAddrOfReturnAddrStack tryHandlerAddrOfReturnAddrStack(scriptContext, addrOfReturnAddr);
+
+            try
+            {
 #if defined(_M_ARM)
-            tryContinuation = arm_CallEhFrame(tryAddr, framePtr, localsPtr, argsSize);
+                tryContinuation = arm_CallEhFrame(tryAddr, framePtr, localsPtr, argsSize);
 #elif defined(_M_ARM64)
-            tryContinuation = arm64_CallEhFrame(tryAddr, framePtr, localsPtr, argsSize);
+                tryContinuation = arm64_CallEhFrame(tryAddr, framePtr, localsPtr, argsSize);
 #endif
+            }
+            catch (const Js::JavascriptException& err)
+            {
+                exception = err.GetAndClear();
+                tryHandlerAddrOfReturnAddr = scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr();
+            }
         }
-        catch (const Js::JavascriptException& err)
-        {
-            exception = err.GetAndClear();
-        }
-
         if (exception)
         {
             // Clone static exception object early in case finally block overwrites it
             exception = exception->CloneIfStaticExceptionObject(scriptContext);
+
+#if ENABLE_NATIVE_CODEGEN
+            if (exception->GetExceptionContext() && exception->GetExceptionContext()->ThrowingFunction())
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, tryHandlerAddrOfReturnAddr);
+            }
+#endif
         }
 
 #if defined(_M_ARM)
@@ -472,6 +491,12 @@ namespace Js
 
         if (exception)
         {
+#if ENABLE_NATIVE_CODEGEN
+            if (scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr() != nullptr)
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr, scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr());
+            }
+#endif
             JavascriptExceptionOperators::DoThrow(exception, scriptContext);
         }
 
@@ -647,21 +672,24 @@ namespace Js
     {
         Js::JavascriptExceptionObject* pExceptionObject = NULL;
         void* continuationAddr = NULL;
+        void* tryHandlerAddrOfReturnAddr = nullptr;
 
         Js::JavascriptExceptionOperators::HasBailedOutPtrStack hasBailedOutPtrStack(scriptContext, (bool*)((char*)framePtr + hasBailedOutOffset));
         PROBE_STACK(scriptContext, Constants::MinStackJitEHBailout);
-
-        try
         {
-            // Bug in compiler optimizer: try-catch can be optimized away if the try block contains __asm calls into function
-            // that may throw. The current workaround is to add the following dummy throw to prevent this optimization.
-            // It seems like compiler got smart and still optimizes if the exception is not JavascriptExceptionObject (see catch handler below).
-            // In order to circumvent that we are throwing OutOfMemory.
-            if (!tryAddr)
+            void * addrOfReturnAddr = (void*)((char*)framePtr + sizeof(char*));
+            Js::JavascriptExceptionOperators::TryHandlerAddrOfReturnAddrStack tryHandlerAddrOfReturnAddrStack(scriptContext, addrOfReturnAddr);
+            try
             {
-                Assert(false);
-                ThrowOutOfMemory(scriptContext);
-            }
+                // Bug in compiler optimizer: try-catch can be optimized away if the try block contains __asm calls into function
+                // that may throw. The current workaround is to add the following dummy throw to prevent this optimization.
+                // It seems like compiler got smart and still optimizes if the exception is not JavascriptExceptionObject (see catch handler below).
+                // In order to circumvent that we are throwing OutOfMemory.
+                if (!tryAddr)
+                {
+                    Assert(false);
+                    ThrowOutOfMemory(scriptContext);
+                }
 
 #ifdef _M_IX86
             void *savedEsp;
@@ -711,28 +739,19 @@ namespace Js
 #else
             AssertMsg(FALSE, "Unsupported native try-finally handler");
 #endif
+            }
+            catch (const Js::JavascriptException& err)
+            {
+                pExceptionObject = err.GetAndClear();
+                tryHandlerAddrOfReturnAddr = scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr();
+            }
         }
-        catch(const Js::JavascriptException& err)
-        {
-            pExceptionObject = err.GetAndClear();
-        }
-
         if (pExceptionObject)
         {
 #if ENABLE_NATIVE_CODEGEN
-            if (scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr() != nullptr)
+            if (pExceptionObject->GetExceptionContext() && pExceptionObject->GetExceptionContext()->ThrowingFunction())
             {
-                if (pExceptionObject->GetExceptionContext() && pExceptionObject->GetExceptionContext()->ThrowingFunction())
-                {
-                    WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr());
-                }
-            }
-            else
-            {
-                if (pExceptionObject->GetExceptionContext() && pExceptionObject->GetExceptionContext()->ThrowingFunction())
-                {
-                    WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, framePtr);
-                }
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, tryHandlerAddrOfReturnAddr);
             }
 #endif
             // Clone static exception object early in case finally block overwrites it
@@ -817,79 +836,91 @@ namespace Js
     {
         Js::JavascriptExceptionObject* pExceptionObject = NULL;
         void* continuationAddr = NULL;
+        void * tryHandlerAddrOfReturnAddr = nullptr;
 
         PROBE_STACK(scriptContext, Constants::MinStackJitEHBailout);
-
-        try
         {
-            // Bug in compiler optimizer: try-catch can be optimized away if the try block contains __asm calls into function
-            // that may throw. The current workaround is to add the following dummy throw to prevent this optimization.
-            // It seems like compiler got smart and still optimizes if the exception is not JavascriptExceptionObject (see catch handler below).
-            // In order to circumvent that we are throwing OutOfMemory.
-            if (!tryAddr)
+            void * addrOfReturnAddr = (void*)((char*)framePtr + sizeof(char*));
+            Js::JavascriptExceptionOperators::TryHandlerAddrOfReturnAddrStack tryHandlerAddrOfReturnAddrStack(scriptContext, addrOfReturnAddr);
+
+            try
             {
-                Assert(false);
-                ThrowOutOfMemory(scriptContext);
-            }
+                // Bug in compiler optimizer: try-catch can be optimized away if the try block contains __asm calls into function
+                // that may throw. The current workaround is to add the following dummy throw to prevent this optimization.
+                // It seems like compiler got smart and still optimizes if the exception is not JavascriptExceptionObject (see catch handler below).
+                // In order to circumvent that we are throwing OutOfMemory.
+                if (!tryAddr)
+                {
+                    Assert(false);
+                    ThrowOutOfMemory(scriptContext);
+                }
 
 #ifdef _M_IX86
-            void *savedEsp;
-            __asm
-            {
-                // Save and restore the callee-saved registers around the call.
-                // TODO: track register kills by region and generate per-region prologs and epilogs
-                push esi
-                push edi
-                push ebx
+                void *savedEsp;
+                __asm
+                {
+                    // Save and restore the callee-saved registers around the call.
+                    // TODO: track register kills by region and generate per-region prologs and epilogs
+                    push esi
+                    push edi
+                    push ebx
 
-                // 8-byte align frame to improve floating point perf of our JIT'd code.
-                // Save ESP
-                mov ecx, esp
-                mov savedEsp, ecx
-                and esp, -8
+                    // 8-byte align frame to improve floating point perf of our JIT'd code.
+                    // Save ESP
+                    mov ecx, esp
+                    mov savedEsp, ecx
+                    and esp, -8
 
-                // Set up the call target, save the current frame ptr, and adjust the frame to access
-                // locals in native code.
-                mov eax, tryAddr
+                    // Set up the call target, save the current frame ptr, and adjust the frame to access
+                    // locals in native code.
+                    mov eax, tryAddr
 
 #if 0 && defined(_CONTROL_FLOW_GUARD)
-                // verify that the call target is valid
-                mov  ebx, eax; save call target
-                mov  ecx, eax
-                call[__guard_check_icall_fptr]
-                mov  eax, ebx; restore call target
+                    // verify that the call target is valid
+                    mov  ebx, eax; save call target
+                    mov  ecx, eax
+                    call[__guard_check_icall_fptr]
+                    mov  eax, ebx; restore call target
 #endif
 
-                push ebp
-                mov ebp, framePtr
-                call eax
-                pop ebp
+                    push ebp
+                    mov ebp, framePtr
+                    call eax
+                    pop ebp
 
-                // The native code gives us the address where execution should continue on exit
-                // from the region.
-                mov continuationAddr, eax
+                    // The native code gives us the address where execution should continue on exit
+                    // from the region.
+                    mov continuationAddr, eax
 
-                // Restore ESP
-                mov ecx, savedEsp
-                mov esp, ecx
+                    // Restore ESP
+                    mov ecx, savedEsp
+                    mov esp, ecx
 
-                pop ebx
-                pop edi
-                pop esi
-            }
+                    pop ebx
+                    pop edi
+                    pop esi
+                }
 #else
-            AssertMsg(FALSE, "Unsupported native try-finally handler");
+                AssertMsg(FALSE, "Unsupported native try-finally handler");
 #endif
+            }
+            catch (const Js::JavascriptException& err)
+            {
+                pExceptionObject = err.GetAndClear();
+                tryHandlerAddrOfReturnAddr = scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr();
+            }
         }
-        catch (const Js::JavascriptException& err)
-        {
-            pExceptionObject = err.GetAndClear();
-        }
-
         if (pExceptionObject)
         {
             // Clone static exception object early in case finally block overwrites it
             pExceptionObject = pExceptionObject->CloneIfStaticExceptionObject(scriptContext);
+
+#if ENABLE_NATIVE_CODEGEN
+            if (pExceptionObject->GetExceptionContext() && pExceptionObject->GetExceptionContext()->ThrowingFunction())
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr /* start stackwalk from the current frame */, tryHandlerAddrOfReturnAddr);
+            }
+#endif
         }
 
         void* newContinuationAddr = NULL;
@@ -952,6 +983,12 @@ namespace Js
 
         if (pExceptionObject)
         {
+#if ENABLE_NATIVE_CODEGEN
+            if (scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr() != nullptr)
+            {
+                WalkStackForCleaningUpInlineeInfo(scriptContext, nullptr, scriptContext->GetThreadContext()->GetTryHandlerAddrOfReturnAddr());
+            }
+#endif
             JavascriptExceptionOperators::DoThrow(pExceptionObject, scriptContext);
         }
 
@@ -1011,18 +1048,18 @@ namespace Js
         Assert(scriptContext != nullptr);
         // TODO: FastDOM Trampolines will throw JS Exceptions but are not isScriptActive
         //AssertMsg(scriptContext->GetThreadContext()->IsScriptActive() ||
-        //          (JavascriptError::Is(object) && (JavascriptError::FromVar(object))->IsExternalError()),
+        //          (VarIs<JavascriptError>(object) && (VarTo<JavascriptError>(object))->IsExternalError()),
         //    "Javascript exception raised when script is not active");
         AssertMsg(scriptContext->GetThreadContext()->IsInScript() ||
-            (JavascriptError::Is(object) && (JavascriptError::FromVar(object))->IsExternalError()),
+            (VarIs<JavascriptError>(object) && (VarTo<JavascriptError>(object))->IsExternalError()),
             "Javascript exception raised without being in CallRootFunction");
 
         JavascriptError *javascriptError = nullptr;
-        if (JavascriptError::Is(object))
+        if (VarIs<JavascriptError>(object))
         {
             // We keep track of the JavascriptExceptionObject that was created when this error
             // was first thrown so that we can always get the correct metadata.
-            javascriptError = JavascriptError::FromVar(object);
+            javascriptError = VarTo<JavascriptError>(object);
             JavascriptExceptionObject *exceptionObject = javascriptError->GetJavascriptExceptionObject();
             if (exceptionObject)
             {
@@ -1115,9 +1152,9 @@ namespace Js
                 // In WER scenario, we should combine the original stack with latest throw stack as the final throw might be coming form
                 // a different stack.
                 uint64 i = 1;
-                if (crawlStackForWER && thrownObject && Js::JavascriptError::Is(thrownObject))
+                if (crawlStackForWER && thrownObject && Js::VarIs<Js::JavascriptError>(thrownObject))
                 {
-                    Js::JavascriptError* errorObject = Js::JavascriptError::FromVar(thrownObject);
+                    Js::JavascriptError* errorObject = Js::VarTo<Js::JavascriptError>(thrownObject);
                     Js::JavascriptExceptionContext::StackTrace *originalStackTrace = NULL;
                     const Js::JavascriptExceptionObject* originalExceptionObject = errorObject->GetJavascriptExceptionObject();
                     if (!resetStack && errorObject->GetInternalProperty(errorObject, InternalPropertyIds::StackTrace, (Js::Var*) &originalStackTrace, NULL, &scriptContext) &&
@@ -1407,14 +1444,14 @@ namespace Js
     //
     bool JavascriptExceptionOperators::IsErrorInstance(Var thrownObject)
     {
-        if (thrownObject && JavascriptError::Is(thrownObject))
+        if (thrownObject && VarIs<JavascriptError>(thrownObject))
         {
-            return !JavascriptError::FromVar(thrownObject)->IsPrototype();
+            return !VarTo<JavascriptError>(thrownObject)->IsPrototype();
         }
 
-        if (thrownObject && RecyclableObject::Is(thrownObject))
+        if (thrownObject && VarIs<RecyclableObject>(thrownObject))
         {
-            RecyclableObject* obj = RecyclableObject::FromVar(thrownObject);
+            RecyclableObject* obj = VarTo<RecyclableObject>(thrownObject);
 
             while (true)
             {
@@ -1424,7 +1461,7 @@ namespace Js
                     break;
                 }
 
-                if (JavascriptError::Is(obj))
+                if (VarIs<JavascriptError>(obj))
                 {
                     return true;
                 }
@@ -1458,7 +1495,7 @@ namespace Js
         // If we still have stack trace to store and obj is a thrown exception object, obj must be an Error instance.
         Assert(!isThrownException || IsErrorInstance(targetObject));
 
-        RecyclableObject* obj = RecyclableObject::FromVar(targetObject);
+        RecyclableObject* obj = VarTo<RecyclableObject>(targetObject);
         if (!resetStack && obj->HasProperty(PropertyIds::stack))
         {
             return; // we don't want to overwrite an existing "stack" property
@@ -1519,19 +1556,19 @@ namespace Js
 
         // If the first argument to the accessor is not a recyclable object, return undefined
         // for compat with other browsers
-        if (!RecyclableObject::Is(args[0]))
+        if (!VarIs<RecyclableObject>(args[0]))
         {
             return scriptContext->GetLibrary()->GetUndefined();
         }
 
-        RecyclableObject *obj = RecyclableObject::FromVar(args[0]);
+        RecyclableObject *obj = VarTo<RecyclableObject>(args[0]);
 
         // If an argument was passed to the accessor, it is being called as a setter.
         // Set the internal StackTraceCache property accordingly.
         if (args.Info.Count > 1)
         {
             obj->SetInternalProperty(InternalPropertyIds::StackTraceCache, args[1], PropertyOperationFlags::PropertyOperation_None, NULL);
-            if (JavascriptError::Is(obj))
+            if (VarIs<JavascriptError>(obj))
             {
                 ((JavascriptError *)obj)->SetStackPropertyRedefined(true);
             }
@@ -1633,7 +1670,7 @@ namespace Js
         if (scriptContext->GetConfig()->IsErrorStackTraceEnabled()
             && IsErrorInstance(thrownObject))
         {
-            HRESULT hr = JavascriptError::GetRuntimeError(RecyclableObject::FromVar(thrownObject), NULL);
+            HRESULT hr = JavascriptError::GetRuntimeError(VarTo<RecyclableObject>(thrownObject), NULL);
             JavascriptFunction* error = scriptContext->GetLibrary()->GetErrorConstructor();
 
             // If we are throwing StackOverflow and Error.stackTraceLimit is a custom getter, we can't make the getter

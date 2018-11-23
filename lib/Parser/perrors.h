@@ -109,3 +109,15 @@ LSC_ERROR_MSG(1093, ERRLabelBeforeClassDeclaration, "Labels not allowed before c
 LSC_ERROR_MSG(1094, ERRLabelFollowedByEOF, "Unexpected end of script after a label.")
 LSC_ERROR_MSG(1095, ERRFunctionAfterLabelInStrict, "Function declarations not allowed after a label in strict mode.")
 LSC_ERROR_MSG(1096, ERRAwaitAsLabelInAsync, "Use of 'await' as label in async function is not allowed.")
+LSC_ERROR_MSG(1097, ERRExperimental, "Use of disabled experimental feature")
+LSC_ERROR_MSG(1098, ERRDuplicateExport, "Duplicate export of name '%s'")
+LSC_ERROR_MSG(1099, ERRStmtOfWithIsLabelledFunc, "The statement of a 'with' statement cannot be a labelled function.")
+LSC_ERROR_MSG(1100, ERRUndeclaredExportName, "Export of name '%s' which has no local definition.")
+//1100-1199 available for future use
+
+// Generic errors intended to be re-usable
+LSC_ERROR_MSG(1200, ERRKeywordAfter, "Unexpected keyword '%s' after '%s'")
+LSC_ERROR_MSG(1201, ERRTokenAfter, "Unexpected token '%s' after '%s'")
+LSC_ERROR_MSG(1202, ERRIdentifierAfter, "Unexpected identifier '%s' after '%s'")
+LSC_ERROR_MSG(1203, ERRInvalidIdentifier, "Unexpected invalid identifier '%s' after '%s'")
+LSC_ERROR_MSG(1205, ERRValidIfFollowedBy, "%s is only valid if followed by %s")

@@ -387,7 +387,7 @@ namespace Js
             return true;
         };
 
-        FunctionInfo* calleeFunctionInfo = callee->GetTypeId() == TypeIds_Function ? JavascriptFunction::FromVar(callee)->GetFunctionInfo() : nullptr;
+        FunctionInfo* calleeFunctionInfo = callee->GetTypeId() == TypeIds_Function ? VarTo<JavascriptFunction>(callee)->GetFunctionInfo() : nullptr;
         if (calleeFunctionInfo == nullptr)
         {
             return false;
@@ -434,12 +434,12 @@ namespace Js
             return;
         }
 
-        if (arg != nullptr && RecyclableObject::Is(arg) && JavascriptFunction::Is(arg))
+        if (arg != nullptr && VarIs<RecyclableObject>(arg) && VarIs<JavascriptFunction>(arg))
         {
             CallbackInfo * callbackInfo = EnsureCallbackInfo(functionBody, callSiteId);
             if (callbackInfo->sourceId == NoSourceId)
             {
-                JavascriptFunction * callback = JavascriptFunction::UnsafeFromVar(arg);
+                JavascriptFunction * callback = UnsafeVarTo<JavascriptFunction>(arg);
                 GetSourceAndFunctionId(functionBody, callback->GetFunctionInfo(), callback, &callbackInfo->sourceId, &callbackInfo->functionId);
                 callbackInfo->argNumber = argNum;
             }
@@ -453,7 +453,7 @@ namespace Js
                 {
                     Js::SourceId sourceId;
                     Js::LocalFunctionId functionId;
-                    JavascriptFunction * callback = JavascriptFunction::UnsafeFromVar(arg);
+                    JavascriptFunction * callback = UnsafeVarTo<JavascriptFunction>(arg);
                     GetSourceAndFunctionId(functionBody, callback->GetFunctionInfo(), callback, &sourceId, &functionId);
 
                     if (sourceId != callbackInfo->sourceId || functionId != callbackInfo->functionId)
@@ -2451,8 +2451,9 @@ namespace Js
         if (sz)
         {
             charcount_t len = static_cast<charcount_t>(wcslen(sz));
-            utf8char_t * tempBuffer = HeapNewArray(utf8char_t, len * 3);
-            size_t cbNeeded = utf8::EncodeInto(tempBuffer, sz, len);
+            const size_t cbTempBuffer = UInt32Math::Mul<3>(len);
+            utf8char_t * tempBuffer = HeapNewArray(utf8char_t, cbTempBuffer);
+            const size_t cbNeeded = utf8::EncodeInto<utf8::Utf8EncodingKind::Cesu8>(tempBuffer, cbTempBuffer, sz, len);
             fwrite(&cbNeeded, sizeof(cbNeeded), 1, file);
             fwrite(tempBuffer, sizeof(utf8char_t), cbNeeded, file);
             HeapDeleteArray(len * 3, tempBuffer);

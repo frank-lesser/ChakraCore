@@ -1005,7 +1005,7 @@ ThreadContext::UncheckedAddPropertyId(JsUtil::CharacterBuffer<WCHAR> const& prop
     {
         if(this->TTDContext->GetActiveScriptContext() != nullptr && this->TTDContext->GetActiveScriptContext()->ShouldPerformReplayAction())
         {
-            //We reload all properties that occour in the trace so they only way we get here in TTD mode is:
+            //We reload all properties that occur in the trace so they only way we get here in TTD mode is:
             //(1) if the program is creating a new symbol (which always gets a fresh id) and we should recreate it or
             //(2) if it is forcing arguments in debug parse mode (instead of regular which we recorded in)
             Js::PropertyId propertyId = Js::Constants::NoProperty;
@@ -1520,6 +1520,8 @@ ThreadContext::EnterScriptEnd(Js::ScriptEntryExitRecord * record, bool doCleanup
             this->hasThrownPendingException = false;
         }
 
+        delayFreeCallback.ClearAll();
+
 #ifdef ENABLE_DEBUG_CONFIG_OPTIONS
         if (Js::Configuration::Global.flags.FreeRejittedCode)
 #endif
@@ -1746,7 +1748,7 @@ ThreadContext::ProbeStack(size_t size, Js::RecyclableObject * obj, Js::ScriptCon
 {
     AssertCanHandleStackOverflowCall(obj->IsExternal() ||
         (Js::JavascriptOperators::GetTypeId(obj) == Js::TypeIds_Function &&
-        Js::JavascriptFunction::FromVar(obj)->IsExternalFunction()));
+        Js::VarTo<Js::JavascriptFunction>(obj)->IsExternalFunction()));
     if (!this->IsStackAvailable(size))
     {
         if (this->IsExecutionDisabled())
@@ -1758,7 +1760,7 @@ ThreadContext::ProbeStack(size_t size, Js::RecyclableObject * obj, Js::ScriptCon
 
         if (obj->IsExternal() ||
             (Js::JavascriptOperators::GetTypeId(obj) == Js::TypeIds_Function &&
-            Js::JavascriptFunction::FromVar(obj)->IsExternalFunction()))
+            Js::VarTo<Js::JavascriptFunction>(obj)->IsExternalFunction()))
         {
             Js::JavascriptError::ThrowStackOverflowError(scriptContext);
         }
@@ -2743,6 +2745,20 @@ ThreadContext::DoTryRedeferral() const
             Assert(0);
             return false;
     };
+}
+
+void
+ThreadContext::OnScanStackCallback(void ** stackTop, size_t byteCount, void ** registers, size_t registersByteCount)
+{
+    // Scan the stack to match with current list of delayed free buffer. For those which are not found on the stack
+    // will be released (ref-count decremented)
+
+    if (!this->delayFreeCallback.HasAnyItem())
+    {
+        return;
+    }
+
+    this->delayFreeCallback.ScanStack(stackTop, byteCount, registers, registersByteCount);
 }
 
 bool

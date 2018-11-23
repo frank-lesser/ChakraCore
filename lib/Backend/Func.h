@@ -119,11 +119,11 @@ public:
         Js::RegSlot returnValueRegSlot = Js::Constants::NoRegister, const bool isInlinedConstructor = false,
         Js::ProfileId callSiteIdInParentFunc = UINT16_MAX, bool isGetterSetter = false);
 public:
-    void * const GetCodeGenAllocators()
+    void * GetCodeGenAllocators()
     {
         return this->GetTopFunc()->m_codeGenAllocators;
     }
-    InProcCodeGenAllocators * const GetInProcCodeGenAllocators()
+    InProcCodeGenAllocators * GetInProcCodeGenAllocators()
     {
         Assert(!JITManager::GetJITManager()->IsJITServer());
         return reinterpret_cast<InProcCodeGenAllocators*>(this->GetTopFunc()->m_codeGenAllocators);
@@ -274,7 +274,7 @@ public:
         return &m_output;
     }
 
-    const JITTimeFunctionBody * const GetJITFunctionBody() const
+    const JITTimeFunctionBody * GetJITFunctionBody() const
     {
         return m_workItem->GetJITFunctionBody();
     }
@@ -725,7 +725,9 @@ public:
     StackSym *          tempSymDouble;
     StackSym *          tempSymBool;
     uint32              loopCount;
+    uint32              unoptimizableArgumentsObjReference;
     Js::ProfileId       callSiteIdInParentFunc;
+    InlineeFrameInfo*   cachedInlineeFrameInfo;
     bool                m_hasCalls: 1; // This is more accurate compared to m_isLeaf
     bool                m_hasInlineArgsOpt : 1;
     bool                m_doFastPaths : 1;
@@ -752,6 +754,15 @@ public:
     bool                isPostPeeps:1;
     bool                isPostLayout:1;
     bool                isPostFinalLower:1;
+
+    struct InstrByteCodeRegisterUses
+    {
+        Js::OpCode capturingOpCode;
+        BVSparse<JitArenaAllocator>* bv;
+    };
+    typedef JsUtil::BaseDictionary<uint32, InstrByteCodeRegisterUses, JitArenaAllocator> ByteCodeRegisterUses;
+    ByteCodeRegisterUses* byteCodeRegisterUses = nullptr;
+    BVSparse<JitArenaAllocator>* GetByteCodeOffsetUses(uint offset) const;
 
     typedef JsUtil::Stack<Js::Phase> CurrentPhasesStack;
     CurrentPhasesStack  currentPhases;

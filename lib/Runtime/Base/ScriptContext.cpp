@@ -108,6 +108,7 @@ namespace Js
         isPerformingNonreentrantWork(false),
         isDiagnosticsScriptContext(false),
         m_enumerateNonUserFunctionsOnly(false),
+        scriptContextPrivilegeLevel(ScriptContextPrivilegeLevel::Low),
         recycler(threadContext->EnsureRecycler()),
         CurrentThunk(DefaultEntryThunk),
         CurrentCrossSiteThunk(CrossSite::DefaultThunk),
@@ -1952,17 +1953,18 @@ namespace Js
                 Js::Throw::OutOfMemory();
             }
             Assert(length < MAXLONG);
+            charcount_t ccLength = static_cast<charcount_t>(length);
 
             // Allocate memory for the UTF8 output buffer.
             // We need at most 3 bytes for each Unicode code point.
             // The + 1 is to include the terminating NUL.
             // Nit:  Technically, we know that the NUL only needs 1 byte instead of
             // 3, but that's difficult to express in a SAL annotation for "EncodeInto".
-            size_t cbUtf8Buffer = AllocSizeMath::Mul(AllocSizeMath::Add(length, 1), 3);
+            size_t cbUtf8Buffer = UInt32Math::MulAdd<3, 1>(ccLength);
 
             utf8Script = RecyclerNewArrayLeafTrace(this->GetRecycler(), utf8char_t, cbUtf8Buffer);
 
-            cbNeeded = utf8::EncodeIntoAndNullTerminate(utf8Script, (const char16*)script, static_cast<charcount_t>(length));
+            cbNeeded = utf8::EncodeIntoAndNullTerminate<utf8::Utf8EncodingKind::Cesu8>(utf8Script, cbUtf8Buffer, (const char16*)script, ccLength);
 
 #if DBG_DUMP && defined(PROFILE_MEM)
             if (Js::Configuration::Global.flags.TraceMemory.IsEnabled(Js::ParsePhase) && Configuration::Global.flags.Verbose)
@@ -2455,7 +2457,7 @@ ExitTempAllocator:
                 hr = ps.ParseCesu8Source(&parseTree, pszSrc, cbLength, grfscr, pse, &sourceContextInfo->nextLocalFunctionId,
                     sourceContextInfo);
             }
-            
+
             utf8SourceInfo->SetParseFlags(grfscr);
             srcLength = ps.GetSourceLength();
 
@@ -4063,7 +4065,7 @@ ExitTempAllocator:
                 scriptFunction->GetFunctionBody()->GetAsmJsFunctionInfo() != nullptr &&
                 scriptFunction->GetFunctionBody()->GetAsmJsFunctionInfo()->GetModuleFunctionBody() != nullptr)
             {
-                AsmJsScriptFunction* asmFunc = AsmJsScriptFunction::FromVar(scriptFunction);
+                AsmJsScriptFunction* asmFunc = VarTo<AsmJsScriptFunction>(scriptFunction);
                 void* env = (void*)asmFunc->GetModuleEnvironment();
                 SList<AsmJsScriptFunction*> * funcList = nullptr;
                 if (asmJsEnvironmentMap->TryGetValue(env, &funcList))
@@ -4151,9 +4153,9 @@ ExitTempAllocator:
             pFunction->ResetConstructorCacheToDefault();
         }
 
-        if (ScriptFunctionWithInlineCache::Is(pFunction))
+        if (VarIs<ScriptFunctionWithInlineCache>(pFunction))
         {
-            ScriptFunctionWithInlineCache::FromVar(pFunction)->ClearInlineCacheOnFunctionObject();
+            VarTo<ScriptFunctionWithInlineCache>(pFunction)->ClearInlineCacheOnFunctionObject();
         }
 
         // We should have force parsed the function, and have a function body
@@ -4173,7 +4175,7 @@ ExitTempAllocator:
 #endif
 
 #ifdef ASMJS_PLAT
-        ScriptFunction * scriptFunction = ScriptFunction::FromVar(pFunction);
+        ScriptFunction * scriptFunction = VarTo<ScriptFunction>(pFunction);
         scriptContext->TransitionEnvironmentForDebugger(scriptFunction);
 #endif
     }
@@ -4237,7 +4239,7 @@ ExitTempAllocator:
             {
                 OUTPUT_TRACE(Js::ScriptProfilerPhase, _u("\t\tJs::ScriptContext::GetProfileModeThunk : 0x%08X\n"), (DWORD_PTR)Js::ScriptContext::GetProfileModeThunk(entryPoint));
 
-                ScriptFunction * scriptFunction = ScriptFunction::FromVar(pFunction);
+                ScriptFunction * scriptFunction = VarTo<ScriptFunction>(pFunction);
                 scriptFunction->ChangeEntryPoint(proxy->GetDefaultEntryPointInfo(), Js::ScriptContext::GetProfileModeThunk(entryPoint));
 
 #if ENABLE_NATIVE_CODEGEN && defined(ENABLE_SCRIPT_PROFILING)
@@ -4508,8 +4510,8 @@ ExitTempAllocator:
 #if defined(ENABLE_SCRIPT_DEBUGGING) || defined(ENABLE_SCRIPT_PROFILING)
         RUNTIME_ARGUMENTS(args, callInfo);
 
-        Assert(!WasmScriptFunction::Is(callable));
-        JavascriptFunction* function = JavascriptFunction::FromVar(callable);
+        Assert(!VarIs<WasmScriptFunction>(callable));
+        JavascriptFunction* function = VarTo<JavascriptFunction>(callable);
         ScriptContext* scriptContext = function->GetScriptContext();
 
         // We can come here when profiling is not on
@@ -4568,7 +4570,7 @@ ExitTempAllocator:
                     else
                     {
                         // it is string because user had called in toString extract name from it
-                        Assert(JavascriptString::Is(sourceString));
+                        Assert(VarIs<JavascriptString>(sourceString));
                         const char16 *pwszToString = ((JavascriptString *)sourceString)->GetSz();
                         const char16 *pwszNameStart = wcsstr(pwszToString, _u(" "));
                         const char16 *pwszNameEnd = wcsstr(pwszToString, _u("("));
@@ -5022,7 +5024,7 @@ ExitTempAllocator:
 
     void ScriptContext::RegisterIsInstInlineCache(Js::IsInstInlineCache * cache, Js::Var function)
     {
-        Assert(JavascriptFunction::FromVar(function)->GetScriptContext() == this);
+        Assert(VarTo<JavascriptFunction>(function)->GetScriptContext() == this);
         hasIsInstInlineCache = true;
 #if DBG
         this->isInstInlineCacheAllocator.Unlock();
@@ -6414,6 +6416,18 @@ ScriptContext::GetJitFuncRangeCache()
         return true;
     }
 
+    void ScriptContext::SetIsDiagnosticsScriptContext(bool set)
+    {
+        this->isDiagnosticsScriptContext = set;
+        if (this->isDiagnosticsScriptContext)
+        {
+            this->scriptContextPrivilegeLevel = ScriptContextPrivilegeLevel::Medium;
+        }
+        else
+        {
+            this->scriptContextPrivilegeLevel = ScriptContextPrivilegeLevel::Low;
+        }
+    }
 
     bool ScriptContext::IsScriptContextInDebugMode() const
     {

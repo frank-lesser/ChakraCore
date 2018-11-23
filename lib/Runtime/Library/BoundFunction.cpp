@@ -28,7 +28,7 @@ namespace Js
         AssertMsg(args.Info.Count > 0, "wrong number of args in BoundFunction");
 
         ScriptContext *scriptContext = this->GetScriptContext();
-        targetFunction = RecyclableObject::FromVar(args[0]);
+        targetFunction = VarTo<RecyclableObject>(args[0]);
 
         Assert(!CrossSite::NeedMarshalVar(targetFunction, scriptContext));
 
@@ -85,7 +85,7 @@ namespace Js
         // Reduce length number of bound args
         len = len - this->count;
         len = max(len, 0);
-            
+
         SetPropertyWithAttributes(PropertyIds::length, TaggedInt::ToVarUnchecked(len), PropertyConfigurable, nullptr, PropertyOperation_None, SideEffects_None);
     }
 
@@ -120,10 +120,10 @@ namespace Js
         {
             if (args.HasNewTarget())
             {
-                // target has an overriden new target make a new object from the newTarget
+                // target has an overridden new target make a new object from the newTarget
                 Var newTargetVar = args.GetNewTarget();
                 AssertOrFailFastMsg(JavascriptOperators::IsConstructor(newTargetVar), "newTarget must be a constructor");
-                RecyclableObject* newTarget = RecyclableObject::UnsafeFromVar(newTargetVar);
+                RecyclableObject* newTarget = UnsafeVarTo<RecyclableObject>(newTargetVar);
 
                 // Class constructors expect newTarget to be in args slot 0 (usually "this"),
                 // because "this" is not constructed until we reach the most-super superclass.
@@ -134,10 +134,14 @@ namespace Js
                 }
                 else
                 {
-                    args.Values[0] = newVarInstance = JavascriptOperators::CreateFromConstructor(newTarget, scriptContext);
+                    BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+                    {
+                        args.Values[0] = newVarInstance = JavascriptOperators::CreateFromConstructor(newTarget, scriptContext);
+                    }
+                    END_SAFE_REENTRANT_CALL
                 }
             }
-            else if (!JavascriptProxy::Is(targetFunction))
+            else if (!VarIs<JavascriptProxy>(targetFunction))
             {
                 // No new target and target is not a proxy can make a new object in a "normal" way.
                 // NewScObjectNoCtor will either construct an object or return targetFunction depending
@@ -150,7 +154,7 @@ namespace Js
             }
             else
             {
-                // target is a proxy without an overriden new target
+                // target is a proxy without an overridden new target
                 // give nullptr - FunctionCallTrap will make a new object
                 args.Values[0] = newVarInstance;
             }
@@ -170,7 +174,6 @@ namespace Js
             }
 
             Field(Var) *newValues = RecyclerNewArray(scriptContext->GetRecycler(), Field(Var), newArgCount);
-
             uint index = 0;
 
             //
@@ -222,7 +225,7 @@ namespace Js
             aReturnValue = JavascriptFunction::CallFunction<true>(targetFunction, targetFunction->GetEntryPoint(), actualArgs, /* useLargeArgCount */ true);
         }
         END_SAFE_REENTRANT_CALL
-        
+
         //
         // [[Construct]] and call returned a non-object
         // return the newly created var instance
@@ -240,14 +243,14 @@ namespace Js
         if (targetFunction != nullptr)
         {
             RecyclableObject* _targetFunction = targetFunction;
-            while (JavascriptProxy::Is(_targetFunction))
+            while (VarIs<JavascriptProxy>(_targetFunction))
             {
-                _targetFunction = JavascriptProxy::FromVar(_targetFunction)->GetTarget();
+                _targetFunction = VarTo<JavascriptProxy>(_targetFunction)->GetTarget();
             }
 
-            if (JavascriptFunction::Is(_targetFunction))
+            if (VarIs<JavascriptFunction>(_targetFunction))
             {
-                return JavascriptFunction::FromVar(_targetFunction);
+                return VarTo<JavascriptFunction>(_targetFunction);
             }
 
             // targetFunction should always be a JavascriptFunction.
@@ -262,9 +265,9 @@ namespace Js
         if (targetFunction != nullptr)
         {
             Var value = JavascriptOperators::GetPropertyNoCache(targetFunction, PropertyIds::name, targetFunction->GetScriptContext());
-            if (JavascriptString::Is(value))
+            if (VarIs<JavascriptString>(value))
             {
-                displayName = JavascriptString::FromVar(value);
+                displayName = VarTo<JavascriptString>(value);
             }
         }
         return JavascriptString::Concat(GetLibrary()->GetBoundFunctionPrefixString(), displayName);
@@ -272,9 +275,9 @@ namespace Js
 
     RecyclableObject* BoundFunction::GetBoundThis()
     {
-        if (boundThis != nullptr && RecyclableObject::Is(boundThis))
+        if (boundThis != nullptr && VarIs<RecyclableObject>(boundThis))
         {
-            return RecyclableObject::FromVar(boundThis);
+            return VarTo<RecyclableObject>(boundThis);
         }
         return NULL;
     }

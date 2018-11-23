@@ -110,6 +110,7 @@ PHASE(All)
         PHASE(GlobOpt)
             PHASE(PathDepBranchFolding)
             PHASE(OptimizeTryCatch)
+            PHASE_DEFAULT_ON(CaptureByteCodeRegUse)
             PHASE(Backward)
                 PHASE(TrackIntUsage)
                 PHASE(TrackNegativeZero)
@@ -165,6 +166,7 @@ PHASE(All)
                 PHASE(CheckThis)
                 PHASE(StackArgOpt)
                 PHASE(StackArgFormalsOpt)
+                PHASE(StackArgLenConstOpt)
                 PHASE(IndirCopyProp)
                 PHASE(ArrayCheckHoist)
                     PHASE(ArrayMissingValueCheckHoist)
@@ -277,6 +279,7 @@ PHASE(All)
             PHASE(FastIndirectEval)
         PHASE(IdleDecommit)
         PHASE(IdleCollect)
+        PHASE(Marshal)
         PHASE(MemoryAllocation)
 #ifdef RECYCLER_PAGE_HEAP
             PHASE(PageHeap)
@@ -385,6 +388,7 @@ PHASE(All)
         PHASE(ShareTypesWithAttributes)
         PHASE(ShareAccessorTypes)
         PHASE(ShareFuncTypes)
+        PHASE(ShareCrossSiteFuncTypes)
         PHASE(ConditionalCompilation)
         PHASE(InterpreterProfile)
         PHASE(InterpreterAutoProfile)
@@ -532,6 +536,7 @@ PHASE(All)
 #define DEFAULT_CONFIG_PoisonIntArrayStore (true)
 #define DEFAULT_CONFIG_PoisonFloatArrayStore (true)
 #define DEFAULT_CONFIG_PoisonTypedArrayStore (true)
+#define DEFAULT_CONFIG_PoisonStringStore (true)
 #define DEFAULT_CONFIG_PoisonObjectsForStores (true)
 
 #ifdef RECYCLER_PAGE_HEAP
@@ -649,6 +654,8 @@ PHASE(All)
 #define DEFAULT_CONFIG_ES6Unscopables          (true)
 #define DEFAULT_CONFIG_ES6RegExSticky          (true)
 #define DEFAULT_CONFIG_ES2018RegExDotAll          (true)
+#define DEFAULT_CONFIG_ESBigInt          (false)
+#define DEFAULT_CONFIG_ESSymbolDescription     (true)
 #ifdef COMPILE_DISABLE_ES6RegExPrototypeProperties
     // If ES6RegExPrototypeProperties needs to be disabled by compile flag, DEFAULT_CONFIG_ES6RegExPrototypeProperties should be false
     #define DEFAULT_CONFIG_ES6RegExPrototypeProperties (false)
@@ -668,6 +675,7 @@ PHASE(All)
 #define DEFAULT_CONFIG_ES7ValuesEntries        (true)
 #define DEFAULT_CONFIG_ESObjectGetOwnPropertyDescriptors (true)
 #define DEFAULT_CONFIG_ESDynamicImport         (false)
+#define DEFAULT_CONFIG_ESExportNsAs            (true)
 
 #define DEFAULT_CONFIG_ESSharedArrayBuffer     (false)
 
@@ -1082,6 +1090,7 @@ FLAGNR(Boolean, EntryPointInfoRpcData , "Keep encoded rpc buffer for jitted func
 
 FLAGNR(Boolean, LdChakraLib           , "Access to the Chakra internal library with the __chakraLibrary keyword", DEFAULT_CONFIG_LdChakraLib)
 FLAGNR(Boolean, TestChakraLib         , "Access to the Chakra internal library with the __chakraLibrary keyword without global access restriction", DEFAULT_CONFIG_TestChakraLib)
+
 // ES6 (BLUE+1) features/flags
 
 // Master ES6 flag to enable STABLE ES6 features/flags
@@ -1118,7 +1127,7 @@ FLAGPR           (Boolean, ES6, ES6IsConcatSpreadable  , "Enable ES6 isConcatSpr
 FLAGPR           (Boolean, ES6, ES6Math                , "Enable ES6 Math extensions"                               , DEFAULT_CONFIG_ES6Math)
 
 #ifndef COMPILE_DISABLE_ESDynamicImport
-    #define COMPILE_DISABLE_ESDynamicImport 0
+#define COMPILE_DISABLE_ESDynamicImport 0
 #endif
 FLAGPR_REGOVR_EXP(Boolean, ES6, ESDynamicImport        , "Enable dynamic import"                                    , DEFAULT_CONFIG_ESDynamicImport)
 
@@ -1143,6 +1152,7 @@ FLAGPR           (Boolean, ES6, ES6UnicodeVerbose      , "Enable ES6 Unicode 6.0
 FLAGPR           (Boolean, ES6, ES6Unscopables         , "Enable ES6 With Statement Unscopables"                    , DEFAULT_CONFIG_ES6Unscopables)
 FLAGPR           (Boolean, ES6, ES6RegExSticky         , "Enable ES6 RegEx sticky flag"                             , DEFAULT_CONFIG_ES6RegExSticky)
 FLAGPR           (Boolean, ES6, ES2018RegExDotAll      , "Enable ES2018 RegEx dotAll flag"                          , DEFAULT_CONFIG_ES2018RegExDotAll)
+FLAGPR           (Boolean, ES6, ESExportNsAs           , "Enable ES experimental export * as name"                  , DEFAULT_CONFIG_ESExportNsAs)
 
 #ifndef COMPILE_DISABLE_ES6RegExPrototypeProperties
     #define COMPILE_DISABLE_ES6RegExPrototypeProperties 0
@@ -1176,6 +1186,12 @@ FLAGPR_REGOVR_EXP(Boolean, ES6, ESSharedArrayBuffer    , "Enable SharedArrayBuff
 FLAGNR(Boolean, WinRTDelegateInterfaces , "Treat WinRT Delegates as Interfaces when determining their resolvability.", DEFAULT_CONFIG_WinRTDelegateInterfaces)
 FLAGR(Boolean, WinRTAdaptiveApps        , "Enable the adaptive apps feature, allowing for variable projection."      , DEFAULT_CONFIG_WinRTAdaptiveApps)
 #endif
+
+// ES BigInt flag
+FLAGR(Boolean, ESBigInt, "Enable ESBigInt flag", DEFAULT_CONFIG_ESBigInt)
+
+// ES Symbol.prototype.description flag
+FLAGR(Boolean, ESSymbolDescription, "Enable Symbol.prototype.description", DEFAULT_CONFIG_ESSymbolDescription)
 
 // This flag to be removed once JITing generator functions is stable
 FLAGNR(Boolean, JitES6Generators        , "Enable JITing of ES6 generators", false)
@@ -1310,13 +1326,14 @@ FLAGPR(Boolean, MitigateSpectre, PoisonIntArrayLoad, "Poison loads from Int arra
 FLAGPR(Boolean, MitigateSpectre, PoisonFloatArrayLoad, "Poison loads from Float arrays", DEFAULT_CONFIG_PoisonFloatArrayLoad)
 FLAGPR(Boolean, MitigateSpectre, PoisonTypedArrayLoad, "Poison loads from TypedArrays", DEFAULT_CONFIG_PoisonTypedArrayLoad)
 FLAGPR(Boolean, MitigateSpectre, PoisonStringLoad, "Poison indexed loads from strings", DEFAULT_CONFIG_PoisonStringLoad)
-FLAGPR(Boolean, MitigateSpectre, PoisonObjectsForLoads, "Poison objects after type checks", DEFAULT_CONFIG_PoisonObjectsForLoads)
+FLAGPR(Boolean, MitigateSpectre, PoisonObjectsForLoads, "Poison objects after type checks for loads", DEFAULT_CONFIG_PoisonObjectsForLoads)
 
-FLAGPR(Boolean, MitigateSpectre, PoisonVarArrayStore, "Poison stores from Var arrays", DEFAULT_CONFIG_PoisonVarArrayStore)
-FLAGPR(Boolean, MitigateSpectre, PoisonIntArrayStore, "Poison stores from Int arrays", DEFAULT_CONFIG_PoisonIntArrayStore)
-FLAGPR(Boolean, MitigateSpectre, PoisonFloatArrayStore, "Poison stores from Float arrays", DEFAULT_CONFIG_PoisonFloatArrayStore)
-FLAGPR(Boolean, MitigateSpectre, PoisonTypedArrayStore, "Poison stores from TypedArrays", DEFAULT_CONFIG_PoisonTypedArrayStore)
-FLAGPR(Boolean, MitigateSpectre, PoisonObjectsForStores, "Poison objects after type checks", DEFAULT_CONFIG_PoisonObjectsForStores)
+FLAGPR(Boolean, MitigateSpectre, PoisonVarArrayStore, "Poison stores to Var arrays", DEFAULT_CONFIG_PoisonVarArrayStore)
+FLAGPR(Boolean, MitigateSpectre, PoisonIntArrayStore, "Poison stores to Int arrays", DEFAULT_CONFIG_PoisonIntArrayStore)
+FLAGPR(Boolean, MitigateSpectre, PoisonFloatArrayStore, "Poison stores to Float arrays", DEFAULT_CONFIG_PoisonFloatArrayStore)
+FLAGPR(Boolean, MitigateSpectre, PoisonTypedArrayStore, "Poison stores to TypedArrays", DEFAULT_CONFIG_PoisonTypedArrayStore)
+FLAGPR(Boolean, MitigateSpectre, PoisonStringStore, "Poison indexed stores to strings", DEFAULT_CONFIG_PoisonStringStore)
+FLAGPR(Boolean, MitigateSpectre, PoisonObjectsForStores, "Poison objects after type checks for stores", DEFAULT_CONFIG_PoisonObjectsForStores)
 
 FLAGNR(Number,  MinInterpretCount     , "Minimum number of times a function must be interpreted", 0)
 FLAGNR(Number,  MinSimpleJitRunCount  , "Minimum number of times a function must be run in simple jit", 0)

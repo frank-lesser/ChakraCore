@@ -66,6 +66,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     m_hasCalls(false),
     m_hasInlineArgsOpt(false),
     m_canDoInlineArgsOpt(true),
+    unoptimizableArgumentsObjReference(0),
     m_doFastPaths(false),
     hasBailout(false),
     firstIRTemp(0),
@@ -108,6 +109,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     loopCount(0),
     callSiteIdInParentFunc(callSiteIdInParentFunc),
     isGetterSetter(isGetterSetter),
+    cachedInlineeFrameInfo(nullptr),
     frameInfo(nullptr),
     isTJLoopBody(false),
     m_nativeCodeDataSym(nullptr),
@@ -1226,6 +1228,17 @@ Func::NumberInstrs()
     NEXT_INSTR_IN_FUNC;
 }
 
+#if DBG
+BVSparse<JitArenaAllocator>* Func::GetByteCodeOffsetUses(uint offset) const
+{
+    InstrByteCodeRegisterUses uses;
+    if (byteCodeRegisterUses->TryGetValue(offset, &uses))
+    {
+        return uses.bv;
+    }
+    return nullptr;
+}
+
 ///----------------------------------------------------------------------------
 ///
 /// Func::IsInPhase
@@ -1233,7 +1246,6 @@ Func::NumberInstrs()
 /// Determines whether the function is currently in the provided phase
 ///
 ///----------------------------------------------------------------------------
-#if DBG
 bool
 Func::IsInPhase(Js::Phase tag)
 {

@@ -31,6 +31,8 @@ namespace Projection
 
 namespace Js
 {
+    class RefCountedBuffer;
+
     static const unsigned int EvalMRUSize = 15;
     typedef JsUtil::BaseDictionary<DWORD_PTR, SourceContextInfo *, Recycler, PowerOf2SizePolicy> SourceContextInfoMap;
     typedef JsUtil::BaseDictionary<uint, SourceContextInfo *, Recycler, PowerOf2SizePolicy> DynamicSourceContextInfoMap;
@@ -193,6 +195,7 @@ namespace Js
         static DWORD GetBooleanFalseOffset() { return offsetof(JavascriptLibrary, booleanFalse); }
         static DWORD GetNegativeZeroOffset() { return offsetof(JavascriptLibrary, negativeZero); }
         static DWORD GetNumberTypeStaticOffset() { return offsetof(JavascriptLibrary, numberTypeStatic); }
+        static DWORD GetBigIntTypeStaticOffset() { return offsetof(JavascriptLibrary, bigintTypeStatic); }
         static DWORD GetObjectTypesOffset() { return offsetof(JavascriptLibrary, objectTypes); }
         static DWORD GetObjectHeaderInlinedTypesOffset() { return offsetof(JavascriptLibrary, objectHeaderInlinedTypes); }
         static DWORD GetRegexTypeOffset() { return offsetof(JavascriptLibrary, regexType); }
@@ -259,6 +262,8 @@ namespace Js
         Field(DynamicType *) charArrayType;
         Field(StaticType *) booleanTypeStatic;
         Field(DynamicType *) booleanTypeDynamic;
+        Field(DynamicType *) bigintTypeDynamic;
+        Field(StaticType *) bigintTypeStatic;
         Field(DynamicType *) dateType;
         Field(StaticType *) variantDateType;
         Field(DynamicType *) symbolTypeDynamic;
@@ -295,6 +300,7 @@ namespace Js
         Field(DynamicType *) defaultExternalConstructorFunctionWithDeferredPrototypeType;
         Field(DynamicType *) boundFunctionType;
         Field(DynamicType *) regexConstructorType;
+        Field(DynamicType *) crossSiteDeferredFunctionType;
         Field(DynamicType *) crossSiteDeferredPrototypeFunctionType;
         Field(DynamicType *) crossSiteIdMappedFunctionWithPrototypeType;
         Field(DynamicType *) crossSiteExternalConstructFunctionWithPrototypeType;
@@ -656,6 +662,8 @@ namespace Js
         StaticType  * GetBooleanTypeStatic() const { return booleanTypeStatic; }
         DynamicType * GetBooleanTypeDynamic() const { return booleanTypeDynamic; }
         DynamicType * GetDateType() const { return dateType; }
+        StaticType * GetBigIntTypeStatic() const { return bigintTypeStatic; }
+        DynamicType * GetBigIntTypeDynamic() const { return bigintTypeDynamic; }
         DynamicType * GetBoundFunctionType() const { return boundFunctionType; }
         DynamicType * GetRegExpConstructorType() const { return regexConstructorType; }
         StaticType  * GetEnumeratorType() const { return enumeratorType; }
@@ -674,6 +682,7 @@ namespace Js
         StaticType  * GetNumberTypeStatic() const { return numberTypeStatic; }
         StaticType  * GetInt64TypeStatic() const { return int64NumberTypeStatic; }
         StaticType  * GetUInt64TypeStatic() const { return uint64NumberTypeStatic; }
+
         DynamicType * GetNumberTypeDynamic() const { return numberTypeDynamic; }
         DynamicType * GetPromiseType() const { return promiseType; }
 
@@ -798,6 +807,7 @@ namespace Js
         JavascriptArray* CreateArray(uint32 length, uint32 size);
         ArrayBuffer* CreateArrayBuffer(uint32 length);
         ArrayBuffer* CreateArrayBuffer(byte* buffer, uint32 length);
+        ArrayBuffer* CreateArrayBuffer(RefCountedBuffer* buffer, uint32 length);
 #ifdef ENABLE_WASM
         class WebAssemblyArrayBuffer* CreateWebAssemblyArrayBuffer(uint32 length);
         class WebAssemblyArrayBuffer* CreateWebAssemblyArrayBuffer(byte* buffer, uint32 length);
@@ -810,7 +820,8 @@ namespace Js
         SharedArrayBuffer* CreateSharedArrayBuffer(SharedContents *contents);
         ArrayBuffer* CreateProjectionArraybuffer(uint32 length);
         ArrayBuffer* CreateProjectionArraybuffer(byte* buffer, uint32 length);
-        ArrayBuffer* CreateExternalArrayBuffer(byte* buffer, uint32 length);
+        ArrayBuffer* CreateProjectionArraybuffer(RefCountedBuffer* buffer, uint32 length);
+        ArrayBuffer* CreateExternalArrayBuffer(RefCountedBuffer* buffer, uint32 length);
         DataView* CreateDataView(ArrayBufferBase* arrayBuffer, uint32 offSet, uint32 mappedLength);
 
         template <typename TypeName, bool clamped>
@@ -902,8 +913,13 @@ namespace Js
         template<bool isNameAvailable>
         static DynamicTypeHandler * GetDeferredAsyncFunctionTypeHandlerBase();
 
+        DynamicType * CreateDeferredFunctionType(JavascriptMethod entrypoint);
         DynamicType * CreateDeferredPrototypeFunctionType(JavascriptMethod entrypoint);
-        DynamicType * CreateDeferredPrototypeFunctionTypeNoProfileThunk(JavascriptMethod entrypoint, bool isShared = false, bool isLengthAvailable = false);
+        DynamicType * CreateDeferredPrototypeFunctionTypeNoProfileThunk(JavascriptMethod entrypoint, bool isShared = false);
+        DynamicType * CreateDeferredFunctionTypeNoProfileThunk(JavascriptMethod entrypoint, bool isShared = false);
+        DynamicType * CreateDeferredLengthPrototypeFunctionTypeNoProfileThunk(JavascriptMethod entrypoint, bool isShared = false);
+        DynamicType * CreateDeferredLengthFunctionTypeNoProfileThunk(JavascriptMethod entrypoint, bool isShared = false);
+        template<bool isLengthAvailable, bool isPrototypeAvailable> DynamicType * CreateDeferredFunctionTypeNoProfileThunk_Internal(JavascriptMethod entrypoint, bool isShared);
         DynamicType * CreateFunctionType(JavascriptMethod entrypoint, RecyclableObject* prototype = nullptr);
         DynamicType * CreateFunctionWithConfigurableLengthType(FunctionInfo * functionInfo);
         DynamicType * CreateFunctionWithLengthType(FunctionInfo * functionInfo);
@@ -1144,6 +1160,7 @@ namespace Js
         STANDARD_INIT(Proxy);
         STANDARD_INIT(Function);
         STANDARD_INIT(Number);
+        STANDARD_INIT(BigInt);
         STANDARD_INIT(Object);
         STANDARD_INIT(Regex);
         STANDARD_INIT(String);
@@ -1253,6 +1270,7 @@ namespace Js
         HRESULT ProfilerRegisterFunction();
         HRESULT ProfilerRegisterMath();
         HRESULT ProfilerRegisterNumber();
+        HRESULT ProfilerRegisterBigInt();
         HRESULT ProfilerRegisterString();
         HRESULT ProfilerRegisterRegExp();
         HRESULT ProfilerRegisterJSON();

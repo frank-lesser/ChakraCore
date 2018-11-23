@@ -400,7 +400,7 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
     case Js::OpCode::InlineeEnd:
         Assert(!instr->UsesAllFields());
 
-        // Kill all live 'arguments' and 'caller' fields, as 'inlineeFunction.arguments' and 'inlineeFunction.caller' 
+        // Kill all live 'arguments' and 'caller' fields, as 'inlineeFunction.arguments' and 'inlineeFunction.caller'
         // cannot be copy-propped across different instances of the same inlined function.
         KillLiveFields(argumentsEquivBv, bv);
         KillLiveFields(callerEquivBv, bv);
@@ -493,7 +493,7 @@ GlobOpt::CreateFieldSrcValue(PropertySym * sym, PropertySym * originalSym, IR::O
     }
 
     Assert((*ppOpnd)->AsSymOpnd()->m_sym == sym || this->IsLoopPrePass());
-    
+
     // We don't use the sym store to do copy prop on hoisted fields, but create a value
     // in case it can be copy prop out of the loop.
     return this->NewGenericValue(ValueType::Uninitialized, *ppOpnd);
@@ -1284,8 +1284,8 @@ GlobOpt::ProcessPropOpInTypeCheckSeq(IR::Instr* instr, IR::PropertySymOpnd *opnd
             }
         }
         else if (valueInfo->GetJsTypeSet() &&
-                 (opnd->IsMono() ? 
-                      valueInfo->GetJsTypeSet()->Contains(opnd->GetFirstEquivalentType()) : 
+                 (opnd->IsMono() ?
+                      valueInfo->GetJsTypeSet()->Contains(opnd->GetFirstEquivalentType()) :
                       IsSubsetOf(opndTypeSet, valueInfo->GetJsTypeSet())
                  )
             )
@@ -1473,7 +1473,7 @@ GlobOpt::OptNewScObject(IR::Instr** instrPtr, Value* srcVal)
         instr->m_func->GetConstructorCache(static_cast<Js::ProfileId>(instr->AsProfiledInstr()->u.profileId)) : nullptr;
 
     // TODO: OOP JIT, enable assert
-    //Assert(ctorCache == nullptr || srcVal->GetValueInfo()->IsVarConstant() && Js::JavascriptFunction::Is(srcVal->GetValueInfo()->AsVarConstant()->VarValue()));
+    //Assert(ctorCache == nullptr || srcVal->GetValueInfo()->IsVarConstant() && Js::VarIs<Js::JavascriptFunction>(srcVal->GetValueInfo()->AsVarConstant()->VarValue()));
     Assert(ctorCache == nullptr || !ctorCache->IsTypeFinal() || ctorCache->CtorHasNoExplicitReturnValue());
 
     if (ctorCache != nullptr && !ctorCache->SkipNewScObject() && (isCtorInlined || ctorCache->IsTypeFinal()))
@@ -1851,6 +1851,8 @@ GlobOpt::CopyPropPropertySymObj(IR::SymOpnd *symOpnd, IR::Instr *instr)
                         bool shouldOptimize = CompareCurrentTypesWithExpectedTypes(newValueInfo, propertySymOpnd);
                         if (!shouldOptimize)
                         {
+                            // We would like just to force a new type check here and keep optimizing, but downstream
+                            // objtypespecfldinfo may have slot indices based on the old type.
                             propertySymOpnd->SetTypeCheckSeqCandidate(false);
                         }
                     }
@@ -1967,6 +1969,12 @@ GlobOpt::UpdateObjPtrValueType(IR::Opnd * opnd, IR::Instr * instr)
     AnalysisAssert(type != nullptr);
     Js::TypeId typeId = type->GetTypeId();
 
+    if (Js::TypedArrayBase::Is(typeId))
+    {
+        // Type ID does not allow us to distinguish between virtual and non-virtual typed array.
+        return;
+    }
+
     // Passing false for useVirtual as we would never have a virtual typed array hitting this code path
     ValueType newValueType = ValueType::FromTypeId(typeId, false);
 
@@ -1975,20 +1983,8 @@ GlobOpt::UpdateObjPtrValueType(IR::Opnd * opnd, IR::Instr * instr)
         switch (typeId)
         {
         default:
-            if (typeId > Js::TypeIds_LastStaticType)
-            {
-                Assert(typeId != Js::TypeIds_Proxy);
-                if (objValueType.IsLikelyArrayOrObjectWithArray())
-                {
-                    // If we have likely object with array before, we can't make it definite object with array
-                    // since we have only proved that it is an object.
-                    // Keep the likely array or object with array.
-                }
-                else
-                {
-                    newValueType = ValueType::GetObject(ObjectType::Object);
-                }
-            }
+            // Can't mark as definite object because it may actually be object-with-array.
+            // Consider: a value type that subsumes object, array, and object-with-array.
             break;
         case Js::TypeIds_NativeIntArray:
         case Js::TypeIds_NativeFloatArray:

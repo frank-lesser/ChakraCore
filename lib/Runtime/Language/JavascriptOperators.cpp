@@ -6,7 +6,7 @@
 
 #include "Types/PathTypeHandler.h"
 #include "Types/PropertyIndexRanges.h"
-#include "Types/WithScopeObject.h"
+#include "Types/UnscopablesWrapperObject.h"
 #include "Types/SpreadArgument.h"
 #include "Library/JavascriptPromise.h"
 #include "Library/JavascriptRegularExpression.h"
@@ -209,7 +209,7 @@ using namespace Js;
         //   See Win8 bug 490489.
         callInfo.Flags = CallFlags_Value;
 
-        RecyclableObject *funcPtr = RecyclableObject::UnsafeFromVar(func);
+        RecyclableObject *funcPtr = UnsafeVarTo<RecyclableObject>(func);
         PROBE_STACK(scriptContext, Js::Constants::MinStackDefault + argCount * 4);
 
         JavascriptMethod entryPoint = funcPtr->GetEntryPoint();
@@ -308,6 +308,15 @@ using namespace Js;
         JIT_HELPER_END(Op_ConvNumberInPlace);
     }
 
+    Var JavascriptOperators::ToNumericInPlace(Var aRight, ScriptContext* scriptContext, JavascriptNumber* result)
+    {
+        if (JavascriptOperators::GetTypeId(aRight) == TypeIds_BigInt)
+        {
+            return aRight;
+        }
+        return JavascriptOperators::ToNumberInPlace(aRight, scriptContext, result);
+    }
+
     Var JavascriptOperators::Typeof(Var var, ScriptContext* scriptContext)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_Typeof);
@@ -325,13 +334,13 @@ using namespace Js;
             return scriptContext->GetLibrary()->GetNumberTypeDisplayString();
         default:
             // Falsy objects are typeof 'undefined'.
-            if (RecyclableObject::FromVar(var)->GetType()->IsFalsy())
+            if (VarTo<RecyclableObject>(var)->GetType()->IsFalsy())
             {
                 return scriptContext->GetLibrary()->GetUndefinedDisplayString();
             }
             else
             {
-                return RecyclableObject::FromVar(var)->GetTypeOfString(scriptContext);
+                return VarTo<RecyclableObject>(var)->GetTypeOfString(scriptContext);
             }
         }
         JIT_HELPER_END(Op_Typeof);
@@ -540,7 +549,7 @@ using namespace Js;
             {
                 return false;
             }
-            else if (JavascriptVariantDate::Is(aLeft) == false) // only need to check on aLeft - since they are the same var, aRight would do the same
+            else if (VarIs<JavascriptVariantDate>(aLeft) == false) // only need to check on aLeft - since they are the same var, aRight would do the same
             {
                 return true;
             }
@@ -567,7 +576,7 @@ using namespace Js;
             }
             else
             {
-                BOOL res = RecyclableObject::UnsafeFromVar(aRight)->Equals(aLeft, &result, requestContext);
+                BOOL res = UnsafeVarTo<RecyclableObject>(aRight)->Equals(aLeft, &result, requestContext);
                 AssertMsg(res, "Should have handled this");
                 return result;
             }
@@ -584,13 +593,13 @@ using namespace Js;
             }
             else
             {
-                BOOL res = RecyclableObject::UnsafeFromVar(aRight)->Equals(aLeft, &result, requestContext);
+                BOOL res = UnsafeVarTo<RecyclableObject>(aRight)->Equals(aLeft, &result, requestContext);
                 AssertMsg(res, "Should have handled this");
                 return result;
             }
         }
 
-        if (RecyclableObject::UnsafeFromVar(aLeft)->Equals(aRight, &result, requestContext))
+        if (UnsafeVarTo<RecyclableObject>(aLeft)->Equals(aRight, &result, requestContext))
         {
             return result;
         }
@@ -641,6 +650,13 @@ using namespace Js;
         TypeId leftType = JavascriptOperators::GetTypeId(aLeft);
         TypeId rightType = JavascriptOperators::GetTypeId(aRight);
 
+        if ((leftType == TypeIds_BigInt) || (rightType == TypeIds_BigInt))
+        {
+            // TODO: support comparison with types other than BigInt
+            AssertOrFailFastMsg(leftType == rightType, "do not support comparison with types other than BigInt");
+            return JavascriptBigInt::LessThan(aLeft, aRight);
+        }
+
         switch (leftType)
         {
         case TypeIds_Integer:
@@ -679,15 +695,15 @@ using namespace Js;
                 {
                 case TypeIds_Int64Number:
                     {
-                        __int64 leftValue = JavascriptInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                        __int64 rightValue = JavascriptInt64Number::UnsafeFromVar(aRight)->GetValue();
+                        __int64 leftValue = UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                        __int64 rightValue = UnsafeVarTo<JavascriptInt64Number>(aRight)->GetValue();
                         return leftValue < rightValue;
                     }
                     break;
                 case TypeIds_UInt64Number:
                     {
-                        __int64 leftValue = JavascriptInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                        unsigned __int64 rightValue = JavascriptUInt64Number::UnsafeFromVar(aRight)->GetValue();
+                        __int64 leftValue = UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                        unsigned __int64 rightValue = UnsafeVarTo<JavascriptUInt64Number>(aRight)->GetValue();
                         if (rightValue <= INT_MAX && leftValue >= 0)
                         {
                             return leftValue < (__int64)rightValue;
@@ -695,7 +711,7 @@ using namespace Js;
                     }
                     break;
                 }
-                dblLeft = (double)JavascriptInt64Number::UnsafeFromVar(aLeft)->GetValue();
+                dblLeft = (double)UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
                 dblRight = JavascriptConversion::ToNumber(aRight, scriptContext);
             }
             break;
@@ -709,8 +725,8 @@ using namespace Js;
                 {
                 case TypeIds_Int64Number:
                     {
-                        unsigned __int64 leftValue = JavascriptUInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                        __int64 rightValue = JavascriptInt64Number::UnsafeFromVar(aRight)->GetValue();
+                        unsigned __int64 leftValue = UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                        __int64 rightValue = UnsafeVarTo<JavascriptInt64Number>(aRight)->GetValue();
                         if (leftValue < INT_MAX && rightValue >= 0)
                         {
                             return (__int64)leftValue < rightValue;
@@ -719,16 +735,17 @@ using namespace Js;
                     break;
                 case TypeIds_UInt64Number:
                     {
-                        unsigned __int64 leftValue = JavascriptUInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                        unsigned __int64 rightValue = JavascriptUInt64Number::UnsafeFromVar(aRight)->GetValue();
+                        unsigned __int64 leftValue = UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                        unsigned __int64 rightValue = UnsafeVarTo<JavascriptUInt64Number>(aRight)->GetValue();
                         return leftValue < rightValue;
                     }
                     break;
                 }
-                dblLeft = (double)JavascriptUInt64Number::UnsafeFromVar(aLeft)->GetValue();
+                dblLeft = (double)UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
                 dblRight = JavascriptConversion::ToNumber(aRight, scriptContext);
             }
             break;
+
         case TypeIds_String:
             switch (rightType)
             {
@@ -793,6 +810,9 @@ using namespace Js;
 
     BOOL JavascriptOperators::StrictEqualString(Var aLeft, JavascriptString* aRight)
     {
+        JIT_HELPER_REENTRANT_HEADER(Op_StrictEqualString);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_StrictEqualString, Op_StrictEqual);
+
         JavascriptString* leftStr = TryFromVar<JavascriptString>(aLeft);
         if (!leftStr)
         {
@@ -836,7 +856,7 @@ using namespace Js;
             switch (rightType)
             {
             case TypeIds_String:
-                return JavascriptString::Equals(JavascriptString::UnsafeFromVar(aLeft), JavascriptString::UnsafeFromVar(aRight));
+                return JavascriptString::Equals(UnsafeVarTo<JavascriptString>(aLeft), UnsafeVarTo<JavascriptString>(aRight));
             }
             return FALSE;
         case TypeIds_Integer:
@@ -857,18 +877,18 @@ using namespace Js;
             {
             case TypeIds_Int64Number:
                 {
-                    __int64 leftValue = JavascriptInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                    __int64 rightValue = JavascriptInt64Number::UnsafeFromVar(aRight)->GetValue();
+                    __int64 leftValue = UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                    __int64 rightValue = UnsafeVarTo<JavascriptInt64Number>(aRight)->GetValue();
                     return leftValue == rightValue;
                 }
             case TypeIds_UInt64Number:
                 {
-                    __int64 leftValue = JavascriptInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                    unsigned __int64 rightValue = JavascriptInt64Number::FromVar(aRight)->GetValue();
+                    __int64 leftValue = UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                    unsigned __int64 rightValue = VarTo<JavascriptUInt64Number>(aRight)->GetValue();
                     return ((unsigned __int64)leftValue == rightValue);
                 }
             case TypeIds_Number:
-                dblLeft     = (double)JavascriptInt64Number::UnsafeFromVar(aLeft)->GetValue();
+                dblLeft     = (double)UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
                 dblRight    = JavascriptNumber::GetValue(aRight);
                 goto CommonNumber;
             }
@@ -878,18 +898,18 @@ using namespace Js;
             {
             case TypeIds_Int64Number:
                 {
-                    unsigned __int64 leftValue = JavascriptUInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                    __int64 rightValue = JavascriptInt64Number::UnsafeFromVar(aRight)->GetValue();
+                    unsigned __int64 leftValue = UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                    __int64 rightValue = UnsafeVarTo<JavascriptInt64Number>(aRight)->GetValue();
                     return (leftValue == (unsigned __int64)rightValue);
                 }
             case TypeIds_UInt64Number:
                 {
-                    unsigned __int64 leftValue = JavascriptUInt64Number::UnsafeFromVar(aLeft)->GetValue();
-                    unsigned __int64 rightValue = JavascriptInt64Number::FromVar(aRight)->GetValue();
+                    unsigned __int64 leftValue = UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                    unsigned __int64 rightValue = VarTo<JavascriptUInt64Number>(aRight)->GetValue();
                     return leftValue == rightValue;
                 }
             case TypeIds_Number:
-                dblLeft     = (double)JavascriptUInt64Number::UnsafeFromVar(aLeft)->GetValue();
+                dblLeft     = (double)UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
                 dblRight    = JavascriptNumber::GetValue(aRight);
                 goto CommonNumber;
             }
@@ -904,17 +924,25 @@ using namespace Js;
                 goto CommonNumber;
             case TypeIds_Int64Number:
                 dblLeft     = JavascriptNumber::GetValue(aLeft);
-                dblRight = (double)JavascriptInt64Number::FromVar(aRight)->GetValue();
+                dblRight = (double)VarTo<JavascriptInt64Number>(aRight)->GetValue();
                 goto CommonNumber;
             case TypeIds_UInt64Number:
                 dblLeft     = JavascriptNumber::GetValue(aLeft);
-                dblRight = (double)JavascriptUInt64Number::UnsafeFromVar(aRight)->GetValue();
+                dblRight = (double)UnsafeVarTo<JavascriptUInt64Number>(aRight)->GetValue();
                 goto CommonNumber;
             case TypeIds_Number:
                 dblLeft     = JavascriptNumber::GetValue(aLeft);
                 dblRight    = JavascriptNumber::GetValue(aRight);
 CommonNumber:
                 return FEqualDbl(dblLeft, dblRight);
+            }
+            return FALSE;
+
+        case TypeIds_BigInt:
+            switch (rightType)
+            {
+            case TypeIds_BigInt:
+                return JavascriptBigInt::Equals(aLeft, aRight);
             }
             return FALSE;
         case TypeIds_Boolean:
@@ -937,8 +965,8 @@ CommonNumber:
         case TypeIds_Symbol:
             if (rightType == TypeIds_Symbol)
             {
-                    const PropertyRecord* leftValue = JavascriptSymbol::UnsafeFromVar(aLeft)->GetValue();
-                    const PropertyRecord* rightValue = JavascriptSymbol::UnsafeFromVar(aRight)->GetValue();
+                    const PropertyRecord* leftValue = UnsafeVarTo<JavascriptSymbol>(aLeft)->GetValue();
+                    const PropertyRecord* rightValue = UnsafeVarTo<JavascriptSymbol>(aRight)->GetValue();
                     Assert(leftValue != rightValue);
             }
             break;
@@ -951,7 +979,7 @@ CommonNumber:
                 case TypeIds_GlobalObject:
                 {
                     BOOL result;
-                    if(RecyclableObject::UnsafeFromVar(aLeft)->StrictEquals(aRight, &result, requestContext))
+                    if(UnsafeVarTo<RecyclableObject>(aLeft)->StrictEquals(aRight, &result, requestContext))
                     {
                         return result;
                     }
@@ -961,10 +989,10 @@ CommonNumber:
             break;
         }
 
-        if (RecyclableObject::FromVar(aLeft)->IsExternal())
+        if (VarTo<RecyclableObject>(aLeft)->IsExternal())
         {
             BOOL result;
-            if (RecyclableObject::FromVar(aLeft)->StrictEquals(aRight, &result, requestContext))
+            if (VarTo<RecyclableObject>(aLeft)->StrictEquals(aRight, &result, requestContext))
             {
                 if (result)
                 {
@@ -973,10 +1001,10 @@ CommonNumber:
             }
         }
 
-        if (!TaggedNumber::Is(aRight) && RecyclableObject::FromVar(aRight)->IsExternal())
+        if (!TaggedNumber::Is(aRight) && VarTo<RecyclableObject>(aRight)->IsExternal())
         {
             BOOL result;
-            if (RecyclableObject::FromVar(aRight)->StrictEquals(aLeft, &result, requestContext))
+            if (VarTo<RecyclableObject>(aRight)->StrictEquals(aLeft, &result, requestContext))
             {
                 if (result)
                 {
@@ -999,9 +1027,9 @@ CommonNumber:
         {
             return FALSE;
         }
-        RecyclableObject* object = RecyclableObject::UnsafeFromVar(instance);
+        RecyclableObject* object = UnsafeVarTo<RecyclableObject>(instance);
 
-        if (JavascriptProxy::Is(instance))
+        if (VarIs<JavascriptProxy>(instance))
         {
             PropertyDescriptor desc;
             return GetOwnPropertyDescriptor(object, propertyId, requestContext, &desc);
@@ -1055,7 +1083,7 @@ CommonNumber:
         }
         else
         {
-            RecyclableObject* object = RecyclableObject::UnsafeFromVar(instance);
+            RecyclableObject* object = UnsafeVarTo<RecyclableObject>(instance);
             result = object && object->GetAccessors(propertyId, getter, setter, requestContext);
         }
         return result;
@@ -1063,7 +1091,8 @@ CommonNumber:
 
     JavascriptArray* JavascriptOperators::GetOwnPropertyNames(Var instance, ScriptContext *scriptContext)
     {
-        RecyclableObject *object = RecyclableObject::FromVar(ToObject(instance, scriptContext));
+        RecyclableObject *object = ToObject(instance, scriptContext);
+        AssertOrFailFast(VarIsCorrectType(object)); // Consider moving this check into ToObject
         JavascriptProxy * proxy = JavascriptOperators::TryFromVar<JavascriptProxy>(instance);
         if (proxy)
         {
@@ -1075,7 +1104,8 @@ CommonNumber:
 
     JavascriptArray* JavascriptOperators::GetOwnPropertySymbols(Var instance, ScriptContext *scriptContext)
     {
-        RecyclableObject *object = RecyclableObject::FromVar(ToObject(instance, scriptContext));
+        RecyclableObject *object = ToObject(instance, scriptContext);
+        AssertOrFailFast(VarIsCorrectType(object));
         CHAKRATEL_LANGSTATS_INC_BUILTINCOUNT(Object_Constructor_getOwnPropertySymbols);
 
         JavascriptProxy* proxy = JavascriptOperators::TryFromVar<JavascriptProxy>(instance);
@@ -1089,7 +1119,8 @@ CommonNumber:
 
     JavascriptArray* JavascriptOperators::GetOwnPropertyKeys(Var instance, ScriptContext* scriptContext)
     {
-        RecyclableObject *object = RecyclableObject::FromVar(ToObject(instance, scriptContext));
+        RecyclableObject *object = ToObject(instance, scriptContext);
+        AssertOrFailFast(VarIsCorrectType(object));
 
         JavascriptProxy* proxy = JavascriptOperators::TryFromVar<JavascriptProxy>(instance);
         if (proxy)
@@ -1117,7 +1148,7 @@ CommonNumber:
             {
                 element = proxyResult->DirectGetItem(i);
 
-                Assert(!JavascriptSymbol::Is(element));
+                Assert(!VarIs<JavascriptSymbol>(element));
 
                 PropertyDescriptor propertyDescriptor;
                 JavascriptConversion::ToPropertyKey(element, scriptContext, &propertyRecord, nullptr);
@@ -1153,7 +1184,7 @@ CommonNumber:
         }
         else
         {
-            RecyclableObject* object = RecyclableObject::FromVar(instance);
+            RecyclableObject* object = VarTo<RecyclableObject>(instance);
             result = object && object->GetProperty(object, propertyId, value, propertyValueInfo, requestContext);
 
             if (propertyValueInfo && result)
@@ -1181,7 +1212,7 @@ CommonNumber:
         Assert(scriptContext);
         Assert(propertyDescriptor);
 
-        if (JavascriptProxy::Is(obj))
+        if (VarIs<JavascriptProxy>(obj))
         {
             return JavascriptProxy::GetOwnPropertyDescriptor(obj, propertyId, scriptContext, propertyDescriptor);
         }
@@ -1329,7 +1360,7 @@ CommonNumber:
             return false;
         }
 
-        RecyclableObject* instance = RecyclableObject::UnsafeFromVar(instanceVar);
+        RecyclableObject* instance = UnsafeVarTo<RecyclableObject>(instanceVar);
         ScriptContext* scriptContext = instance->GetScriptContext();
 
         if (!PHASE_OFF1(IsConcatSpreadableCachePhase))
@@ -1401,18 +1432,18 @@ CommonNumber:
 
         RecyclableObject* function = GetIteratorFunction(aRight, scriptContext);
         JavascriptMethod method = function->GetEntryPoint();
-        if (((JavascriptArray::Is(aRight) &&
+        if (((JavascriptArray::IsNonES5Array(aRight) &&
               (
                   JavascriptLibrary::IsDefaultArrayValuesFunction(function, scriptContext)
                   // Verify that the head segment of the array covers all elements with no gaps.
                   // Accessing an element on the prototype could have side-effects that would invalidate the optimization.
-                  && JavascriptArray::UnsafeFromVar(aRight)->GetHead()->next == nullptr
-                  && JavascriptArray::UnsafeFromVar(aRight)->GetHead()->left == 0
-                  && JavascriptArray::UnsafeFromVar(aRight)->GetHead()->length == JavascriptArray::FromVar(aRight)->GetLength()
-                  && JavascriptArray::UnsafeFromVar(aRight)->HasNoMissingValues()
-                  && !JavascriptArray::UnsafeFromVar(aRight)->IsCrossSiteObject()
+                  && UnsafeVarTo<JavascriptArray>(aRight)->GetHead()->next == nullptr
+                  && UnsafeVarTo<JavascriptArray>(aRight)->GetHead()->left == 0
+                  && UnsafeVarTo<JavascriptArray>(aRight)->GetHead()->length == VarTo<JavascriptArray>(aRight)->GetLength()
+                  && UnsafeVarTo<JavascriptArray>(aRight)->HasNoMissingValues()
+                  && !UnsafeVarTo<JavascriptArray>(aRight)->IsCrossSiteObject()
               )) ||
-             (TypedArrayBase::Is(aRight) && method == TypedArrayBase::EntryInfo::Values.GetOriginalEntryPoint()))
+             (VarIs<TypedArrayBase>(aRight) && method == TypedArrayBase::EntryInfo::Values.GetOriginalEntryPoint()))
             // We can't optimize away the iterator if the array iterator prototype is user defined.
             && !JavascriptLibrary::ArrayIteratorPrototypeHasUserDefinedNext(scriptContext))
         {
@@ -1448,13 +1479,13 @@ CommonNumber:
 
     BOOL JavascriptOperators::IsPropertyUnscopable(Var instanceVar, PropertyId propertyId)
     {
-        RecyclableObject* instance = RecyclableObject::FromVar(instanceVar);
+        RecyclableObject* instance = VarTo<RecyclableObject>(instanceVar);
         ScriptContext * scriptContext = instance->GetScriptContext();
 
         Var unscopables = JavascriptOperators::GetProperty(instance, PropertyIds::_symbolUnscopables, scriptContext);
         if (JavascriptOperators::IsObject(unscopables))
         {
-            DynamicObject *unscopablesList = DynamicObject::FromVar(unscopables);
+            DynamicObject *unscopablesList = VarTo<DynamicObject>(unscopables);
             Var value = nullptr;
             //8.1.1.2.1.9.c If blocked is not undefined
             if (JavascriptOperators::GetProperty(unscopablesList, propertyId, &value, scriptContext))
@@ -1489,7 +1520,7 @@ CommonNumber:
 
     BOOL JavascriptOperators::HasRootProperty(RecyclableObject* instance, PropertyId propertyId)
     {
-        Assert(RootObjectBase::Is(instance));
+        Assert(VarIs<RootObjectBase>(instance));
 
         RootObjectBase* rootObject = static_cast<RootObjectBase*>(instance);
         if (rootObject->HasRootProperty(propertyId))
@@ -1534,7 +1565,7 @@ CommonNumber:
         JIT_HELPER_REENTRANT_HEADER(Op_HasProperty);
         RecyclableObject* object = TaggedNumber::Is(instance) ?
             scriptContext->GetLibrary()->GetNumberPrototype() :
-            RecyclableObject::FromVar(instance);
+            VarTo<RecyclableObject>(instance);
         BOOL result = HasProperty(object, propertyId);
         return result;
         JIT_HELPER_END(Op_HasProperty);
@@ -1544,7 +1575,7 @@ CommonNumber:
     {
         RecyclableObject* object = TaggedNumber::Is(instance) ?
             scriptContext->GetLibrary()->GetNumberPrototype() :
-            RecyclableObject::FromVar(instance);
+            VarTo<RecyclableObject>(instance);
         BOOL result = HasOwnProperty(object, propertyId, scriptContext, nullptr);
         return result;
     }
@@ -1554,7 +1585,7 @@ CommonNumber:
     {
         AssertMsg(!TaggedNumber::Is(instance), "HasOwnPropertyNoHostObject int passed");
 
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
         return object && object->HasOwnPropertyNoHostObject(propertyId);
     }
 
@@ -1564,13 +1595,13 @@ CommonNumber:
     {
         AssertMsg(!TaggedNumber::Is(instance), "HasOwnPropertyNoHostObjectForHeapEnum int passed");
 
-        RecyclableObject * object = RecyclableObject::FromVar(instance);
+        RecyclableObject * object = VarTo<RecyclableObject>(instance);
         if (StaticType::Is(object->GetTypeId()))
         {
             return FALSE;
         }
         getter = setter = NULL;
-        DynamicObject* dynamicObject = DynamicObject::FromVar(instance);
+        DynamicObject* dynamicObject = VarTo<DynamicObject>(instance);
         Assert(dynamicObject->GetScriptContext()->IsHeapEnumInProgress());
         if (dynamicObject->UseDynamicObjectForNoHostObjectAccess())
         {
@@ -1578,7 +1609,7 @@ CommonNumber:
             {
                 Var value = nullptr;
                 if (!JavascriptConversion::PropertyQueryFlagsToBoolean(dynamicObject->DynamicObject::GetPropertyQuery(instance, propertyId, &value, NULL, requestContext)) ||
-                    (requestContext->IsUndeclBlockVar(value) && (ActivationObject::Is(instance) || RootObjectBase::Is(instance))))
+                    (requestContext->IsUndeclBlockVar(value) && (VarIs<ActivationObject>(instance) || VarIs<RootObjectBase>(instance))))
                 {
                     return FALSE;
                 }
@@ -1590,7 +1621,7 @@ CommonNumber:
             {
                 Var value = nullptr;
                 if (!object->GetProperty(instance, propertyId, &value, NULL, requestContext) ||
-                    (requestContext->IsUndeclBlockVar(value) && (ActivationObject::Is(instance) || RootObjectBase::Is(instance))))
+                    (requestContext->IsUndeclBlockVar(value) && (VarIs<ActivationObject>(instance) || VarIs<RootObjectBase>(instance))))
                 {
                     return FALSE;
                 }
@@ -1603,7 +1634,7 @@ CommonNumber:
     {
         AssertMsg(!TaggedNumber::Is(instance), "GetDataPropertyNoHostObject int passed");
         Assert(HasOwnPropertyNoHostObjectForHeapEnum(instance, propertyId, requestContext, getter, setter) || getter || setter);
-        DynamicObject* dynamicObject = DynamicObject::FromVar(instance);
+        DynamicObject* dynamicObject = VarTo<DynamicObject>(instance);
         getter = setter = NULL;
         if (NULL == dynamicObject)
         {
@@ -1636,10 +1667,10 @@ CommonNumber:
 
     BOOL JavascriptOperators::OP_HasOwnPropScoped(Var scope, PropertyId propertyId, Var defaultInstance, ScriptContext* scriptContext)
     {
-        AssertMsg(scope == scriptContext->GetLibrary()->GetNull() || JavascriptArray::Is(scope),
+        AssertMsg(scope == scriptContext->GetLibrary()->GetNull() || JavascriptArray::IsNonES5Array(scope),
                   "Invalid scope chain pointer passed - should be null or an array");
 
-        JavascriptArray* arrScope = JavascriptOperators::TryFromVar<JavascriptArray>(scope);
+        JavascriptArray* arrScope = JavascriptArray::TryVarToNonES5Array(scope);
         if (arrScope)
         {
             Var instance = arrScope->DirectGetItem(0);
@@ -1660,7 +1691,7 @@ CommonNumber:
 
     BOOL JavascriptOperators::GetRootProperty(Var instance, PropertyId propertyId, Var* value, ScriptContext* requestContext, PropertyValueInfo* info)
     {
-        return GetProperty_Internal<false>(instance, RecyclableObject::FromVar(instance), true, propertyId, value, requestContext, info);
+        return GetProperty_Internal<false>(instance, VarTo<RecyclableObject>(instance), true, propertyId, value, requestContext, info);
     }
 
     BOOL JavascriptOperators::GetProperty_InternalSimple(Var instance, RecyclableObject* object, PropertyId propertyId, _Outptr_result_maybenull_ Var* value, ScriptContext* requestContext)
@@ -1704,7 +1735,7 @@ CommonNumber:
         BOOL foundProperty = FALSE;
         if (isRoot)
         {
-            Assert(RootObjectBase::Is(object));
+            Assert(VarIs<RootObjectBase>(object));
 
             RootObjectBase* rootObject = static_cast<RootObjectBase*>(object);
             foundProperty = rootObject->GetRootProperty(instance, propertyId, value, info, requestContext);
@@ -1737,7 +1768,7 @@ CommonNumber:
         if (foundProperty)
         {
 #if ENABLE_FIXED_FIELDS && DBG
-            if (DynamicObject::Is(object))
+            if (DynamicObject::IsBaseDynamicObject(object))
             {
                 DynamicObject* dynamicObject = (DynamicObject*)object;
                 DynamicTypeHandler* dynamicTypeHandler = dynamicObject->GetDynamicType()->GetTypeHandler();
@@ -1745,10 +1776,10 @@ CommonNumber:
                 if (dynamicTypeHandler->CheckFixedProperty(requestContext->GetPropertyName(propertyId), &property, requestContext))
                 {
                     bool skipAssert = false;
-                    if (value != nullptr && Js::RecyclableObject::Is(property))
+                    if (value != nullptr && Js::VarIs<Js::RecyclableObject>(property))
                     {
-                        Js::RecyclableObject* pObject = Js::RecyclableObject::FromVar(property);
-                        Js::RecyclableObject* pValue = Js::RecyclableObject::FromVar(*value);
+                        Js::RecyclableObject* pObject = Js::VarTo<Js::RecyclableObject>(property);
+                        Js::RecyclableObject* pValue = Js::VarTo<Js::RecyclableObject>(*value);
 
                         if (pValue->GetScriptContext() != pObject->GetScriptContext())
                         {
@@ -1763,7 +1794,7 @@ CommonNumber:
             // Don't cache the information if the value is undecl block var
             // REVIEW: We might want to only check this if we need to (For LdRootFld or ScopedLdFld)
             //         Also we might want to throw here instead of checking it again in the caller
-            if (value && !requestContext->IsUndeclBlockVar(*value) && !WithScopeObject::Is(object))
+            if (value && !requestContext->IsUndeclBlockVar(*value) && !VarIs<UnscopablesWrapperObject>(object))
             {
                 CacheOperators::CachePropertyRead(propertyObject, object, isRoot, propertyId, false, info, requestContext);
             }
@@ -1813,12 +1844,12 @@ CommonNumber:
         // Here, any well-behaved subclasses of DynamicObject can opt in to getting included in the missing property cache.
         // For now, we only include basic objects and arrays. CustomExternalObject in particular is problematic because in
         // some cases it can add new properties without transitioning its type handler.
-        if (PHASE_OFF1(MissingPropertyCachePhase) || isRoot || !(DynamicObject::Is(instance) || DynamicObject::IsAnyArray(instance)))
+        if (PHASE_OFF1(MissingPropertyCachePhase) || isRoot || !(DynamicObject::IsBaseDynamicObject(instance) || DynamicObject::IsAnyArray(instance)))
         {
             return;
         }
 
-        DynamicTypeHandler* handler = DynamicObject::UnsafeFromVar(instance)->GetDynamicType()->GetTypeHandler();
+        DynamicTypeHandler* handler = UnsafeVarTo<DynamicObject>(instance)->GetDynamicType()->GetTypeHandler();
 
         // Only cache missing property lookups for non-root field loads on objects that have PathTypeHandlers, because only these types have the right behavior
         // when the missing property is later added. DictionaryTypeHandler's introduce the possibility that a stale TypePropertyCache entry with isMissing==true can
@@ -1876,7 +1907,7 @@ CommonNumber:
 
             if (result != PropertyQueryFlags::Property_NotFound)
             {
-                if (!WithScopeObject::Is(object) && info->GetPropertyRecordUsageCache())
+                if (!VarIs<UnscopablesWrapperObject>(object) && info->GetPropertyRecordUsageCache())
                 {
                     PropertyId propertyId = info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId();
                     CacheOperators::CachePropertyRead(instance, object, false, propertyId, false, info, requestContext);
@@ -1952,7 +1983,7 @@ CommonNumber:
             *propertyObject = scriptContext->GetLibrary()->GetNumberPrototype();
             return TRUE;
         }
-        RecyclableObject* object = RecyclableObject::UnsafeFromVar(instance);
+        RecyclableObject* object = UnsafeVarTo<RecyclableObject>(instance);
         *propertyObject = object;
         if (JavascriptOperators::IsUndefinedOrNull(object))
         {
@@ -1993,10 +2024,10 @@ CommonNumber:
 
     Var JavascriptOperators::OP_GetRootProperty(Var instance, PropertyId propertyId, PropertyValueInfo * info, ScriptContext* scriptContext)
     {
-        AssertMsg(RootObjectBase::Is(instance), "Root must be an object!");
+        AssertMsg(VarIs<RootObjectBase>(instance), "Root must be an object!");
 
         Var value = nullptr;
-        if (JavascriptOperators::GetRootProperty(RecyclableObject::FromVar(instance), propertyId, &value, scriptContext, info))
+        if (JavascriptOperators::GetRootProperty(VarTo<RecyclableObject>(instance), propertyId, &value, scriptContext, info))
         {
             if (scriptContext->IsUndeclBlockVar(value) && scriptContext->GetThreadContext()->RecordImplicitException())
             {
@@ -2034,7 +2065,7 @@ CommonNumber:
         for (int i = 0; i < length; i += 1)
         {
             Var value = nullptr;
-            RecyclableObject *obj = RecyclableObject::FromVar(pScope->GetItem(i));
+            RecyclableObject *obj = VarTo<RecyclableObject>(pScope->GetItem(i));
             if (JavascriptOperators::GetProperty(obj, Js::PropertyIds::_this, &value, scriptContext))
             {
                 return value;
@@ -2047,7 +2078,7 @@ CommonNumber:
     Var JavascriptOperators::OP_UnwrapWithObj(Var aValue)
     {
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_UnwrapWithObj);
-        return RecyclableObject::FromVar(aValue)->GetThisObjectOrUnWrap();
+        return VarTo<RecyclableObject>(aValue)->GetThisObjectOrUnWrap();
         JIT_HELPER_END(Op_UnwrapWithObj);
     }
     Var JavascriptOperators::OP_GetInstanceScoped(FrameDisplay *pScope, PropertyId propertyId, Var rootObject, Var* thisVar, ScriptContext* scriptContext)
@@ -2066,7 +2097,7 @@ CommonNumber:
 
             if (JavascriptOperators::HasProperty(obj, propertyId))
             {
-                // HasProperty will call WithObjects HasProperty which will do the filtering
+                // HasProperty will call UnscopablesWrapperObject's HasProperty which will do the filtering
                 // All we have to do here is unwrap the object hence the api call
 
                 *thisVar = obj->GetThisObjectOrUnWrap();
@@ -2163,7 +2194,7 @@ CommonNumber:
 
         if (isRoot)
         {
-            foundProperty = RootObjectBase::FromVar(object)->GetRootPropertyReference(instance, propertyId, value, info, requestContext);
+            foundProperty = VarTo<RootObjectBase>(object)->GetRootPropertyReference(instance, propertyId, value, info, requestContext);
         }
         if (!foundProperty)
         {
@@ -2191,7 +2222,7 @@ CommonNumber:
         }
 
 #if ENABLE_FIXED_FIELDS && DBG
-        if (DynamicObject::Is(object))
+        if (DynamicObject::IsBaseDynamicObject(object))
         {
             DynamicObject* dynamicObject = (DynamicObject*)object;
             DynamicTypeHandler* dynamicTypeHandler = dynamicObject->GetDynamicType()->GetTypeHandler();
@@ -2317,12 +2348,12 @@ CommonNumber:
                     }
                     if (setterValueOrProxy)
                     {
-                        if (!WithScopeObject::Is(receiver) && info->GetPropertyRecordUsageCache() && !JavascriptOperators::IsUndefinedAccessor(setterValueOrProxy, requestContext))
+                        if (!VarIs<UnscopablesWrapperObject>(receiver) && info->GetPropertyRecordUsageCache() && !JavascriptOperators::IsUndefinedAccessor(setterValueOrProxy, requestContext))
                         {
-                            CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), false, object->GetType(), info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId(), info, requestContext);
+                            CacheOperators::CachePropertyWrite(VarTo<RecyclableObject>(receiver), false, object->GetType(), info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId(), info, requestContext);
                         }
-                        receiver = (RecyclableObject::FromVar(receiver))->GetThisObjectOrUnWrap();
-                        RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
+                        receiver = (VarTo<RecyclableObject>(receiver))->GetThisObjectOrUnWrap();
+                        RecyclableObject* func = VarTo<RecyclableObject>(setterValueOrProxy);
 
                         JavascriptOperators::CallSetter(func, receiver, newValue, requestContext);
                     }
@@ -2330,8 +2361,8 @@ CommonNumber:
                 }
                 else if ((flags & Proxy) == Proxy)
                 {
-                    Assert(JavascriptProxy::Is(setterValueOrProxy));
-                    JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
+                    Assert(VarIs<JavascriptProxy>(setterValueOrProxy));
+                    JavascriptProxy* proxy = VarTo<JavascriptProxy>(setterValueOrProxy);
                     auto fn = [&](RecyclableObject* target) -> BOOL {
                         return JavascriptOperators::SetPropertyWPCache(receiver, target, propertyKey, newValue, requestContext, propertyOperationFlags, info);
                     };
@@ -2357,7 +2388,7 @@ CommonNumber:
                 return FALSE;
             }
 
-            RecyclableObject* receiverObject = RecyclableObject::FromVar(receiver);
+            RecyclableObject* receiverObject = VarTo<RecyclableObject>(receiver);
             if (receiver != object)
             {
                 // If the receiver object has the property and it is an accessor then return false
@@ -2373,9 +2404,9 @@ CommonNumber:
             // in 9.1.9, step 5, we should return false if receiver is not object, and that will happen in default RecyclableObject operation anyhow.
             if (receiverObject->SetProperty(propertyKey, newValue, propertyOperationFlags, info))
             {
-                if (!JavascriptProxy::Is(receiver) && info->GetPropertyRecordUsageCache() && info->GetFlags() != InlineCacheSetterFlag && !object->IsExternal())
+                if (!VarIs<JavascriptProxy>(receiver) && info->GetPropertyRecordUsageCache() && info->GetFlags() != InlineCacheSetterFlag && !object->IsExternal())
                 {
-                    CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), false, typeWithoutProperty, info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId(), info, requestContext);
+                    CacheOperators::CachePropertyWrite(VarTo<RecyclableObject>(receiver), false, typeWithoutProperty, info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId(), info, requestContext);
 
                     if (info->GetInstance() == receiverObject)
                     {
@@ -2413,15 +2444,15 @@ CommonNumber:
                     }
                     if (setterValueOrProxy)
                     {
-                        RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
+                        RecyclableObject* func = VarTo<RecyclableObject>(setterValueOrProxy);
                         JavascriptOperators::CallSetter(func, receiver, newValue, requestContext);
                         return TRUE;
                     }
                 }
                 else if ((flags & Proxy) == Proxy)
                 {
-                    Assert(JavascriptProxy::Is(setterValueOrProxy));
-                    JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
+                    Assert(VarIs<JavascriptProxy>(setterValueOrProxy));
+                    JavascriptProxy* proxy = VarTo<JavascriptProxy>(setterValueOrProxy);
                     const PropertyRecord* propertyRecord = nullptr;
                     proxy->PropertyIdFromInt(index, &propertyRecord);
                     return proxy->SetPropertyTrap(receiver, JavascriptProxy::SetPropertyTrapKind::SetItemOnTaggedNumberKind, propertyRecord->GetPropertyId(), newValue, requestContext, propertyOperationFlags);
@@ -2462,7 +2493,7 @@ CommonNumber:
                     }
                     if (setterValueOrProxy)
                     {
-                        RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
+                        RecyclableObject* func = VarTo<RecyclableObject>(setterValueOrProxy);
                         Assert(info.GetFlags() == InlineCacheSetterFlag || info.GetPropertyIndex() == Constants::NoSlot);
                         JavascriptOperators::CallSetter(func, receiver, newValue, requestContext);
                         return TRUE;
@@ -2470,8 +2501,8 @@ CommonNumber:
                 }
                 else if ((flags & Proxy) == Proxy)
                 {
-                    Assert(JavascriptProxy::Is(setterValueOrProxy));
-                    JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
+                    Assert(VarIs<JavascriptProxy>(setterValueOrProxy));
+                    JavascriptProxy* proxy = VarTo<JavascriptProxy>(setterValueOrProxy);
                     return proxy->SetPropertyTrap(receiver, JavascriptProxy::SetPropertyTrapKind::SetPropertyOnTaggedNumberKind, propertyId, newValue, requestContext, propertyOperationFlags);
                 }
                 else
@@ -2532,16 +2563,16 @@ CommonNumber:
                 }
                 if (setterValueOrProxy)
                 {
-                    RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
+                    RecyclableObject* func = VarTo<RecyclableObject>(setterValueOrProxy);
                     Assert(!info || info->GetFlags() == InlineCacheSetterFlag || info->GetPropertyIndex() == Constants::NoSlot);
 
-                    if (WithScopeObject::Is(receiver))
+                    if (VarIs<UnscopablesWrapperObject>(receiver))
                     {
-                        receiver = (RecyclableObject::FromVar(receiver))->GetThisObjectOrUnWrap();
+                        receiver = (VarTo<RecyclableObject>(receiver))->GetThisObjectOrUnWrap();
                     }
                     else if (!JavascriptOperators::IsUndefinedAccessor(setterValueOrProxy, requestContext))
                     {
-                        CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), isRoot, object->GetType(), propertyId, info, requestContext);
+                        CacheOperators::CachePropertyWrite(VarTo<RecyclableObject>(receiver), isRoot, object->GetType(), propertyId, info, requestContext);
                     }
 #ifdef ENABLE_MUTATION_BREAKPOINT
                     if (MutationBreakpoint::IsFeatureEnabled(requestContext))
@@ -2556,8 +2587,8 @@ CommonNumber:
             }
             else if ((flags & Proxy) == Proxy)
             {
-                Assert(JavascriptProxy::Is(setterValueOrProxy));
-                JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
+                Assert(VarIs<JavascriptProxy>(setterValueOrProxy));
+                JavascriptProxy* proxy = VarTo<JavascriptProxy>(setterValueOrProxy);
                 // We can't cache the property at this time. both target and handler can be changed outside of the proxy, so the inline cache needs to be
                 // invalidate when target, handler, or handler prototype has changed. We don't have a way to achieve this yet.
                 PropertyValueInfo::SetNoCache(info, proxy);
@@ -2627,7 +2658,7 @@ CommonNumber:
         }
         else
         {
-            RecyclableObject* instanceObject = RecyclableObject::FromVar(receiver);
+            RecyclableObject* instanceObject = VarTo<RecyclableObject>(receiver);
             while (!JavascriptOperators::IsNull(instanceObject))
             {
                 if (unscopables && JavascriptOperators::IsPropertyUnscopable(instanceObject, propertyId))
@@ -2655,9 +2686,9 @@ CommonNumber:
 
             if (updateCache)
             {
-                if (!JavascriptProxy::Is(receiver))
+                if (!VarIs<JavascriptProxy>(receiver))
                 {
-                    CacheOperators::CachePropertyWrite(RecyclableObject::FromVar(receiver), isRoot, typeWithoutProperty, propertyId, info, requestContext);
+                    CacheOperators::CachePropertyWrite(VarTo<RecyclableObject>(receiver), isRoot, typeWithoutProperty, propertyId, info, requestContext);
                 }
             }
             return TRUE;
@@ -2682,7 +2713,7 @@ CommonNumber:
             {
                 return FALSE;
             }
-            RecyclableObject* object = RecyclableObject::FromVar(instance);
+            RecyclableObject* object = VarTo<RecyclableObject>(instance);
             Var member = nullptr;
 
             // If the item is found in the array own body, then it is a number
@@ -2750,7 +2781,7 @@ CommonNumber:
 
         if (!TaggedNumber::Is(instance) && !TaggedNumber::Is(thisInstance))
         {
-            return JavascriptOperators::SetProperty(RecyclableObject::UnsafeFromVar(thisInstance), RecyclableObject::UnsafeFromVar(instance), propertyId, newValue, info, scriptContext, flags);
+            return JavascriptOperators::SetProperty(UnsafeVarTo<RecyclableObject>(thisInstance), UnsafeVarTo<RecyclableObject>(instance), propertyId, newValue, info, scriptContext, flags);
         }
 
         JavascriptError::ThrowCantAssignIfStrictMode(flags, scriptContext);
@@ -2759,7 +2790,7 @@ CommonNumber:
 
     BOOL JavascriptOperators::OP_StFunctionExpression(Var obj, PropertyId propertyId, Var newValue)
     {
-        RecyclableObject* instance = RecyclableObject::FromVar(obj);
+        RecyclableObject* instance = VarTo<RecyclableObject>(obj);
         JIT_HELPER_NOT_REENTRANT_HEADER(Op_StFunctionExpression, reentrancylock, instance->GetScriptContext()->GetThreadContext());
 
         instance->SetProperty(propertyId, newValue, PropertyOperation_None, NULL);
@@ -2773,7 +2804,7 @@ CommonNumber:
     BOOL JavascriptOperators::OP_InitClassMember(Var obj, PropertyId propertyId, Var newValue)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_InitClassMember);
-        RecyclableObject* instance = RecyclableObject::FromVar(obj);
+        RecyclableObject* instance = VarTo<RecyclableObject>(obj);
 
         PropertyOperationFlags flags = PropertyOperation_None;
         PropertyAttributes attributes = PropertyClassMemberDefaults;
@@ -2787,12 +2818,12 @@ CommonNumber:
     BOOL JavascriptOperators::OP_InitLetProperty(Var obj, PropertyId propertyId, Var newValue)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_InitLetFld);
-        RecyclableObject* instance = RecyclableObject::FromVar(obj);
+        RecyclableObject* instance = VarTo<RecyclableObject>(obj);
 
         PropertyOperationFlags flags = instance->GetScriptContext()->IsUndeclBlockVar(newValue) ? PropertyOperation_SpecialValue : PropertyOperation_None;
         PropertyAttributes attributes = PropertyLetDefaults;
 
-        if (RootObjectBase::Is(instance))
+        if (VarIs<RootObjectBase>(instance))
         {
             attributes |= PropertyLetConstGlobal;
         }
@@ -2805,13 +2836,13 @@ CommonNumber:
 
     BOOL JavascriptOperators::OP_InitConstProperty(Var obj, PropertyId propertyId, Var newValue)
     {
-        RecyclableObject* instance = RecyclableObject::FromVar(obj);
+        RecyclableObject* instance = VarTo<RecyclableObject>(obj);
         JIT_HELPER_REENTRANT_HEADER(Op_InitConstFld);
 
         PropertyOperationFlags flags = instance->GetScriptContext()->IsUndeclBlockVar(newValue) ? PropertyOperation_SpecialValue : PropertyOperation_None;
         PropertyAttributes attributes = PropertyConstDefaults;
 
-        if (RootObjectBase::Is(instance))
+        if (VarIs<RootObjectBase>(instance))
         {
             attributes |= PropertyLetConstGlobal;
         }
@@ -2824,7 +2855,7 @@ CommonNumber:
 
     BOOL JavascriptOperators::OP_InitUndeclRootLetProperty(Var obj, PropertyId propertyId)
     {
-        RecyclableObject* instance = RecyclableObject::FromVar(obj);
+        RecyclableObject* instance = VarTo<RecyclableObject>(obj);
         JIT_HELPER_NOT_REENTRANT_HEADER(Op_InitUndeclRootLetFld, reentrancylock, instance->GetScriptContext()->GetThreadContext());
 
         PropertyOperationFlags flags = static_cast<PropertyOperationFlags>(PropertyOperation_SpecialValue | PropertyOperation_AllowUndecl);
@@ -2838,7 +2869,7 @@ CommonNumber:
 
     BOOL JavascriptOperators::OP_InitUndeclRootConstProperty(Var obj, PropertyId propertyId)
     {
-        RecyclableObject* instance = RecyclableObject::FromVar(obj);
+        RecyclableObject* instance = VarTo<RecyclableObject>(obj);
         JIT_HELPER_NOT_REENTRANT_HEADER(Op_InitUndeclRootConstFld, reentrancylock, instance->GetScriptContext()->GetThreadContext());
 
         PropertyOperationFlags flags = static_cast<PropertyOperationFlags>(PropertyOperation_SpecialValue | PropertyOperation_AllowUndecl);
@@ -2853,8 +2884,8 @@ CommonNumber:
     BOOL JavascriptOperators::OP_InitUndeclConsoleLetProperty(Var obj, PropertyId propertyId)
     {
         FrameDisplay *pScope = (FrameDisplay*)obj;
-        AssertMsg(ConsoleScopeActivationObject::Is((DynamicObject*)pScope->GetItem(pScope->GetLength() - 1)), "How come we got this opcode without ConsoleScopeActivationObject?");
-        RecyclableObject* instance = RecyclableObject::FromVar(pScope->GetItem(0));
+        AssertMsg(VarIs<ConsoleScopeActivationObject>((DynamicObject*)pScope->GetItem(pScope->GetLength() - 1)), "How come we got this opcode without ConsoleScopeActivationObject?");
+        RecyclableObject* instance = VarTo<RecyclableObject>(pScope->GetItem(0));
         JIT_HELPER_NOT_REENTRANT_HEADER(Op_InitUndeclConsoleLetFld, reentrancylock, instance->GetScriptContext()->GetThreadContext());
 
         PropertyOperationFlags flags = static_cast<PropertyOperationFlags>(PropertyOperation_SpecialValue | PropertyOperation_AllowUndecl);
@@ -2867,8 +2898,8 @@ CommonNumber:
     BOOL JavascriptOperators::OP_InitUndeclConsoleConstProperty(Var obj, PropertyId propertyId)
     {
         FrameDisplay *pScope = (FrameDisplay*)obj;
-        AssertMsg(ConsoleScopeActivationObject::Is((DynamicObject*)pScope->GetItem(pScope->GetLength() - 1)), "How come we got this opcode without ConsoleScopeActivationObject?");
-        RecyclableObject* instance = RecyclableObject::FromVar(pScope->GetItem(0));
+        AssertMsg(VarIs<ConsoleScopeActivationObject>((DynamicObject*)pScope->GetItem(pScope->GetLength() - 1)), "How come we got this opcode without ConsoleScopeActivationObject?");
+        RecyclableObject* instance = VarTo<RecyclableObject>(pScope->GetItem(0));
         JIT_HELPER_NOT_REENTRANT_HEADER(Op_InitUndeclConsoleConstFld, reentrancylock, instance->GetScriptContext()->GetThreadContext());
 
         PropertyOperationFlags flags = static_cast<PropertyOperationFlags>(PropertyOperation_SpecialValue | PropertyOperation_AllowUndecl);
@@ -2886,7 +2917,7 @@ CommonNumber:
     BOOL JavascriptOperators::OP_InitProperty(Var instance, PropertyId propertyId, Var newValue)
     {
         if(TaggedNumber::Is(instance)) { return false; }
-        return JavascriptOperators::InitProperty(RecyclableObject::FromVar(instance), propertyId, newValue);
+        return JavascriptOperators::InitProperty(VarTo<RecyclableObject>(instance), propertyId, newValue);
     }
 
     BOOL JavascriptOperators::DeleteProperty(RecyclableObject* instance, PropertyId propertyId, PropertyOperationFlags propertyOperationFlags)
@@ -2958,7 +2989,7 @@ CommonNumber:
             return scriptContext->GetLibrary()->GetTrue();
         }
 
-        RecyclableObject* recyclableObject = RecyclableObject::FromVar(instance);
+        RecyclableObject* recyclableObject = VarTo<RecyclableObject>(instance);
         if (JavascriptOperators::IsUndefinedOrNull(recyclableObject))
         {
             JavascriptError::ThrowTypeError(scriptContext, JSERR_Property_CannotDelete_NullOrUndefined,
@@ -2974,7 +3005,7 @@ CommonNumber:
     {
         // In Edge the root is an External Object which can call Dispose and thus, can have reentrancy.
         JIT_HELPER_REENTRANT_HEADER(Op_DeleteRootProperty);
-        AssertMsg(RootObjectBase::Is(instance), "Root must be a global object!");
+        AssertMsg(VarIs<RootObjectBase>(instance), "Root must be a global object!");
         RootObjectBase* rootObject = static_cast<RootObjectBase*>(instance);
 
         return scriptContext->GetLibrary()->CreateBoolean(
@@ -3003,9 +3034,9 @@ CommonNumber:
 
         for (uint16 i = 0; i < length; i++)
         {
-            object = RecyclableObject::UnsafeFromVar(pDisplay->GetItem(i));
+            object = UnsafeVarTo<RecyclableObject>(pDisplay->GetItem(i));
 
-            AssertMsg(!ConsoleScopeActivationObject::Is(object) || (i == length - 1), "Invalid location for ConsoleScopeActivationObject");
+            AssertMsg(!VarIs<ConsoleScopeActivationObject>(object) || (i == length - 1), "Invalid location for ConsoleScopeActivationObject");
 
             Type* type = object->GetType();
             if (CacheOperators::TrySetProperty<true, true, true, true, true, !TInlineCache::IsPolymorphic, TInlineCache::IsPolymorphic, false>(
@@ -3059,7 +3090,7 @@ CommonNumber:
                     CacheOperators::TraceCache(inlineCache, _u("PatchSetPropertyScoped"), propertyId, scriptContext, object);
                 }
 #endif
-                if (!JavascriptProxy::Is(object) && !allowUndecInConsoleScope)
+                if (!VarIs<JavascriptProxy>(object) && !allowUndecInConsoleScope)
                 {
                     CacheOperators::CachePropertyWrite(object, false, type, propertyId, &info2, scriptContext);
                 }
@@ -3071,7 +3102,7 @@ CommonNumber:
         Assert(!isLexicalThisSlotSymbol);
 
         // If we have console scope and no one in the scope had the property add it to console scope
-        if ((length > 0) && ConsoleScopeActivationObject::Is(pDisplay->GetItem(length - 1)))
+        if ((length > 0) && VarIs<ConsoleScopeActivationObject>(pDisplay->GetItem(length - 1)))
         {
             // CheckPrototypesForAccessorOrNonWritableProperty does not check for const in global object. We should check it here.
             if (length > 1)
@@ -3099,7 +3130,7 @@ CommonNumber:
                 }
             }
 
-            RecyclableObject* obj = RecyclableObject::FromVar((DynamicObject*)pDisplay->GetItem(length - 1));
+            RecyclableObject* obj = VarTo<RecyclableObject>(pDisplay->GetItem(length - 1));
             OUTPUT_TRACE(Js::ConsoleScopePhase, _u("Adding property '%s' to console scope object\n"), scriptContext->GetPropertyName(propertyId)->GetBuffer());
             JavascriptOperators::SetProperty(obj, obj, propertyId, newValue, scriptContext, propertyOperationFlags);
             return;
@@ -3108,7 +3139,7 @@ CommonNumber:
         // No one in the scope stack has the property, so add it to the default instance provided by the caller.
         AssertMsg(!TaggedNumber::Is(defaultInstance), "Root object is an int or tagged float?");
         Assert(defaultInstance != nullptr);
-        RecyclableObject* obj = RecyclableObject::FromVar(defaultInstance);
+        RecyclableObject* obj = VarTo<RecyclableObject>(defaultInstance);
         {
             //SetPropertyScoped does not use inline cache for default instance
             PropertyValueInfo info2;
@@ -3140,7 +3171,7 @@ CommonNumber:
         }
 
         AssertMsg(!TaggedNumber::Is(defaultInstance), "Root object is an int or tagged float?");
-        return RecyclableObject::FromVar(defaultInstance)->InitFuncScoped(propertyId, newValue);
+        return VarTo<RecyclableObject>(defaultInstance)->InitFuncScoped(propertyId, newValue);
         JIT_HELPER_END(Op_InitFuncScoped);
     }
 
@@ -3160,7 +3191,7 @@ CommonNumber:
         }
 
         AssertMsg(!TaggedNumber::Is(defaultInstance), "Root object is an int or tagged float?");
-        return RecyclableObject::FromVar(defaultInstance)->InitPropertyScoped(propertyId, newValue);
+        return VarTo<RecyclableObject>(defaultInstance)->InitPropertyScoped(propertyId, newValue);
     }
 
     Var JavascriptOperators::OP_DeletePropertyScoped(
@@ -3184,7 +3215,7 @@ CommonNumber:
             }
         }
 
-        return JavascriptOperators::OP_DeleteRootProperty(RecyclableObject::FromVar(defaultInstance), propertyId, scriptContext, propertyOperationFlags);
+        return JavascriptOperators::OP_DeleteRootProperty(VarTo<RecyclableObject>(defaultInstance), propertyId, scriptContext, propertyOperationFlags);
         JIT_HELPER_END(Op_DeletePropertyScoped);
     }
 
@@ -3203,7 +3234,7 @@ CommonNumber:
             }
         }
 
-        return JavascriptOperators::TypeofRootFld(RecyclableObject::FromVar(defaultInstance), propertyId, scriptContext);
+        return JavascriptOperators::TypeofRootFld(VarTo<RecyclableObject>(defaultInstance), propertyId, scriptContext);
         JIT_HELPER_END(Op_TypeofPropertyScoped);
     }
 
@@ -3308,15 +3339,15 @@ CommonNumber:
                 }
                 if (setterValueOrProxy)
                 {
-                    RecyclableObject* func = RecyclableObject::FromVar(setterValueOrProxy);
+                    RecyclableObject* func = VarTo<RecyclableObject>(setterValueOrProxy);
                     JavascriptOperators::CallSetter(func, receiver, value, scriptContext);
                 }
                 return TRUE;
             }
             else if ((flags & Proxy) == Proxy)
             {
-                Assert(JavascriptProxy::Is(setterValueOrProxy));
-                JavascriptProxy* proxy = JavascriptProxy::FromVar(setterValueOrProxy);
+                Assert(VarIs<JavascriptProxy>(setterValueOrProxy));
+                JavascriptProxy* proxy = VarTo<JavascriptProxy>(setterValueOrProxy);
                 const PropertyRecord* propertyRecord = nullptr;
                 proxy->PropertyIdFromInt(index, &propertyRecord);
                 return proxy->SetPropertyTrap(receiver, JavascriptProxy::SetPropertyTrapKind::SetItemKind, propertyRecord->GetPropertyId(), value, scriptContext, propertyOperationFlags, skipPrototypeCheck);
@@ -3340,7 +3371,7 @@ CommonNumber:
             return FALSE;
         }
 
-        return (RecyclableObject::FromVar(receiver))->SetItem(index, value, propertyOperationFlags);
+        return (VarTo<RecyclableObject>(receiver))->SetItem(index, value, propertyOperationFlags);
     }
 
     BOOL JavascriptOperators::DeleteItem(RecyclableObject* object, uint32 index, PropertyOperationFlags propertyOperationFlags)
@@ -3358,7 +3389,7 @@ CommonNumber:
     {
         RecyclableObject* object = TaggedNumber::Is(instance) ?
             scriptContext->GetLibrary()->GetNumberPrototype() :
-            RecyclableObject::FromVar(instance);
+            VarTo<RecyclableObject>(instance);
 
         uint32 indexVal;
         PropertyRecord const * propertyRecord = nullptr;
@@ -3446,7 +3477,7 @@ CommonNumber:
         {
             JavascriptError::ThrowTypeError(scriptContext, JSERR_NeedFunction /* TODO-ERROR: get arg name - aFunc */);
         }
-        return RecyclableObject::UnsafeFromVar(callee);
+        return UnsafeVarTo<RecyclableObject>(callee);
     }
 
     Var JavascriptOperators::OP_GetElementI_JIT(Var instance, Var index, ScriptContext *scriptContext)
@@ -3494,7 +3525,7 @@ CommonNumber:
             return false;
         }
 
-        JavascriptArray* arrayPrototype = JavascriptArray::UnsafeFromVar(prototype); //Prototype must be Array.prototype (unless changed through __proto__)
+        JavascriptArray* arrayPrototype = UnsafeVarTo<JavascriptArray>(prototype); //Prototype must be Array.prototype (unless changed through __proto__)
         if (arrayPrototype->GetLength() && arrayPrototype->GetItem(arrayPrototype, (uint32)indexInt, result, scriptContext))
         {
             return true;
@@ -3506,7 +3537,7 @@ CommonNumber:
             return false;
         }
 
-        if (DynamicObject::FromVar(prototype)->HasNonEmptyObjectArray())
+        if (VarTo<DynamicObject>(prototype)->HasNonEmptyObjectArray())
         {
             if (prototype->GetItem(arr, (uint32)indexInt, result, scriptContext))
             {
@@ -3527,7 +3558,7 @@ CommonNumber:
         case TypeIds_Array: //fast path for array
         {
             Var result;
-            if (OP_GetElementI_ArrayFastPath(JavascriptArray::UnsafeFromVar(instance), TaggedInt::ToInt32(index), &result, scriptContext))
+            if (OP_GetElementI_ArrayFastPath(UnsafeVarTo<JavascriptArray>(instance), TaggedInt::ToInt32(index), &result, scriptContext))
             {
                 return result;
             }
@@ -3539,7 +3570,7 @@ CommonNumber:
             JavascriptLibrary::CheckAndConvertCopyOnAccessNativeIntArray<Var>(instance);
 #endif
             Var result;
-            if (OP_GetElementI_ArrayFastPath(JavascriptNativeIntArray::UnsafeFromVar(instance), TaggedInt::ToInt32(index), &result, scriptContext))
+            if (OP_GetElementI_ArrayFastPath(UnsafeVarTo<JavascriptNativeIntArray>(instance), TaggedInt::ToInt32(index), &result, scriptContext))
             {
                 return result;
             }
@@ -3548,7 +3579,7 @@ CommonNumber:
         case TypeIds_NativeFloatArray:
         {
             Var result;
-            if (OP_GetElementI_ArrayFastPath(JavascriptNativeFloatArray::UnsafeFromVar(instance), TaggedInt::ToInt32(index), &result, scriptContext))
+            if (OP_GetElementI_ArrayFastPath(UnsafeVarTo<JavascriptNativeFloatArray>(instance), TaggedInt::ToInt32(index), &result, scriptContext))
             {
                 return result;
             }
@@ -3558,7 +3589,7 @@ CommonNumber:
         case TypeIds_String: // fast path for string
         {
             charcount_t indexInt = TaggedInt::ToUInt32(index);
-            JavascriptString* string = JavascriptString::UnsafeFromVar(instance);
+            JavascriptString* string = UnsafeVarTo<JavascriptString>(instance);
             Var result;
             if (JavascriptConversion::PropertyQueryFlagsToBoolean(string->JavascriptString::GetItemQuery(instance, indexInt, &result, scriptContext)))
             {
@@ -3573,7 +3604,7 @@ CommonNumber:
             int32 indexInt = TaggedInt::ToInt32(index);
             if (VirtualTableInfo<Int8VirtualArray>::HasVirtualTable(instance))
             {
-                Int8VirtualArray* int8Array = Int8VirtualArray::UnsafeFromVar(instance);
+                Int8VirtualArray* int8Array = UnsafeVarTo<Int8VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return int8Array->DirectGetItem(indexInt);
@@ -3581,7 +3612,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Int8Array>::HasVirtualTable(instance))
             {
-                Int8Array* int8Array = Int8Array::UnsafeFromVar(instance);
+                Int8Array* int8Array = UnsafeVarTo<Int8Array>(instance);
                 if (indexInt >= 0)
                 {
                     return int8Array->DirectGetItem(indexInt);
@@ -3596,7 +3627,7 @@ CommonNumber:
             int32 indexInt = TaggedInt::ToInt32(index);
             if (VirtualTableInfo<Uint8VirtualArray>::HasVirtualTable(instance))
             {
-                Uint8VirtualArray* uint8Array = Uint8VirtualArray::UnsafeFromVar(instance);
+                Uint8VirtualArray* uint8Array = UnsafeVarTo<Uint8VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return uint8Array->DirectGetItem(indexInt);
@@ -3604,7 +3635,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Uint8Array>::HasVirtualTable(instance))
             {
-                Uint8Array* uint8Array = Uint8Array::UnsafeFromVar(instance);
+                Uint8Array* uint8Array = UnsafeVarTo<Uint8Array>(instance);
                 if (indexInt >= 0)
                 {
                     return uint8Array->DirectGetItem(indexInt);
@@ -3619,7 +3650,7 @@ CommonNumber:
             int32 indexInt = TaggedInt::ToInt32(index);
             if (VirtualTableInfo<Uint8ClampedVirtualArray>::HasVirtualTable(instance))
             {
-                Uint8ClampedVirtualArray* uint8ClampedArray = Uint8ClampedVirtualArray::UnsafeFromVar(instance);
+                Uint8ClampedVirtualArray* uint8ClampedArray = UnsafeVarTo<Uint8ClampedVirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return uint8ClampedArray->DirectGetItem(indexInt);
@@ -3627,7 +3658,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Uint8ClampedArray>::HasVirtualTable(instance))
             {
-                Uint8ClampedArray* uint8ClampedArray = Uint8ClampedArray::UnsafeFromVar(instance);
+                Uint8ClampedArray* uint8ClampedArray = UnsafeVarTo<Uint8ClampedArray>(instance);
                 if (indexInt >= 0)
                 {
                     return uint8ClampedArray->DirectGetItem(indexInt);
@@ -3643,7 +3674,7 @@ CommonNumber:
 
             if (VirtualTableInfo<Int16VirtualArray>::HasVirtualTable(instance))
             {
-                Int16VirtualArray* int16Array = Int16VirtualArray::UnsafeFromVar(instance);
+                Int16VirtualArray* int16Array = UnsafeVarTo<Int16VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return int16Array->DirectGetItem(indexInt);
@@ -3651,7 +3682,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Int16Array>::HasVirtualTable(instance))
             {
-                Int16Array* int16Array = Int16Array::UnsafeFromVar(instance);
+                Int16Array* int16Array = UnsafeVarTo<Int16Array>(instance);
                 if (indexInt >= 0)
                 {
                     return int16Array->DirectGetItem(indexInt);
@@ -3667,7 +3698,7 @@ CommonNumber:
 
             if (VirtualTableInfo<Uint16VirtualArray>::HasVirtualTable(instance))
             {
-                Uint16VirtualArray* uint16Array = Uint16VirtualArray::UnsafeFromVar(instance);
+                Uint16VirtualArray* uint16Array = UnsafeVarTo<Uint16VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return uint16Array->DirectGetItem(indexInt);
@@ -3675,7 +3706,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Uint16Array>::HasVirtualTable(instance))
             {
-                Uint16Array* uint16Array = Uint16Array::UnsafeFromVar(instance);
+                Uint16Array* uint16Array = UnsafeVarTo<Uint16Array>(instance);
                 if (indexInt >= 0)
                 {
                     return uint16Array->DirectGetItem(indexInt);
@@ -3689,7 +3720,7 @@ CommonNumber:
             int32 indexInt = TaggedInt::ToInt32(index);
             if (VirtualTableInfo<Int32VirtualArray>::HasVirtualTable(instance))
             {
-                Int32VirtualArray* int32Array = Int32VirtualArray::UnsafeFromVar(instance);
+                Int32VirtualArray* int32Array = UnsafeVarTo<Int32VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return int32Array->DirectGetItem(indexInt);
@@ -3697,7 +3728,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Int32Array>::HasVirtualTable(instance))
             {
-                Int32Array* int32Array = Int32Array::UnsafeFromVar(instance);
+                Int32Array* int32Array = UnsafeVarTo<Int32Array>(instance);
                 if (indexInt >= 0)
                 {
                     return int32Array->DirectGetItem(indexInt);
@@ -3712,7 +3743,7 @@ CommonNumber:
             int32 indexInt = TaggedInt::ToInt32(index);
             if (VirtualTableInfo<Uint32VirtualArray>::HasVirtualTable(instance))
             {
-                Uint32VirtualArray* uint32Array = Uint32VirtualArray::UnsafeFromVar(instance);
+                Uint32VirtualArray* uint32Array = UnsafeVarTo<Uint32VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return uint32Array->DirectGetItem(indexInt);
@@ -3720,7 +3751,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Uint32Array>::HasVirtualTable(instance))
             {
-                Uint32Array* uint32Array = Uint32Array::UnsafeFromVar(instance);
+                Uint32Array* uint32Array = UnsafeVarTo<Uint32Array>(instance);
                 if (indexInt >= 0)
                 {
                     return uint32Array->DirectGetItem(indexInt);
@@ -3735,7 +3766,7 @@ CommonNumber:
 
             if (VirtualTableInfo<Float32VirtualArray>::HasVirtualTable(instance))
             {
-                Float32VirtualArray* float32Array = Float32VirtualArray::UnsafeFromVar(instance);
+                Float32VirtualArray* float32Array = UnsafeVarTo<Float32VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return float32Array->DirectGetItem(indexInt);
@@ -3743,7 +3774,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Float32Array>::HasVirtualTable(instance))
             {
-                Float32Array* float32Array = Float32Array::UnsafeFromVar(instance);
+                Float32Array* float32Array = UnsafeVarTo<Float32Array>(instance);
                 if (indexInt >= 0)
                 {
                     return float32Array->DirectGetItem(indexInt);
@@ -3757,7 +3788,7 @@ CommonNumber:
             int32 indexInt = TaggedInt::ToInt32(index);
             if (VirtualTableInfo<Float64VirtualArray>::HasVirtualTable(instance))
             {
-                Float64VirtualArray* float64Array = Float64VirtualArray::UnsafeFromVar(instance);
+                Float64VirtualArray* float64Array = UnsafeVarTo<Float64VirtualArray>(instance);
                 if (indexInt >= 0)
                 {
                     return float64Array->DirectGetItem(indexInt);
@@ -3765,7 +3796,7 @@ CommonNumber:
             }
             else if (VirtualTableInfo<Float64Array>::HasVirtualTable(instance))
             {
-                Float64Array* float64Array = Float64Array::UnsafeFromVar(instance);
+                Float64Array* float64Array = UnsafeVarTo<Float64Array>(instance);
                 if (indexInt >= 0)
                 {
                     return float64Array->DirectGetItem(indexInt);
@@ -3825,7 +3856,7 @@ CommonNumber:
                 return GetElementIIntIndex(instance, index, scriptContext);
             }
         }
-        else if (RecyclableObject::Is(instance))
+        else if (VarIs<RecyclableObject>(instance))
         {
             RecyclableObject* cacheOwner;
             PropertyRecordUsageCache* propertyRecordUsageCache;
@@ -4074,7 +4105,7 @@ CommonNumber:
             {
                 return JavascriptNativeIntArray::MissingItem;
             }
-            JavascriptArray * arr = JavascriptArray::FromVar(instance);
+            JavascriptArray * arr = VarTo<JavascriptArray>(instance);
             int32 result;
             if (arr->DirectGetItemAt((uint32)indexInt, &result))
             {
@@ -4092,7 +4123,7 @@ CommonNumber:
                 {
                     return JavascriptNativeIntArray::MissingItem;
                 }
-                JavascriptArray * arr = JavascriptArray::FromVar(instance);
+                JavascriptArray * arr = VarTo<JavascriptArray>(instance);
                 int32 result;
                 if (arr->DirectGetItemAt((uint32)indexInt, &result))
                 {
@@ -4151,7 +4182,7 @@ CommonNumber:
             }
             else
             {
-                JavascriptArray * arr = JavascriptArray::FromVar(instance);
+                JavascriptArray * arr = VarTo<JavascriptArray>(instance);
                 if (!arr->DirectGetItemAt((uint32)indexInt, &result))
                 {
                     result = JavascriptNativeFloatArray::MissingItem;
@@ -4171,7 +4202,7 @@ CommonNumber:
                 }
                 else
                 {
-                    JavascriptArray * arr = JavascriptArray::FromVar(instance);
+                    JavascriptArray * arr = VarTo<JavascriptArray>(instance);
                     if (!arr->DirectGetItemAt((uint32)indexInt, &result))
                     {
                         result = JavascriptNativeFloatArray::MissingItem;
@@ -4378,7 +4409,7 @@ CommonNumber:
 
         if (isTypedArray)
         {
-            if (TaggedInt::Is(index) || JavascriptNumber::Is_NoTaggedIntCheck(index) || JavascriptString::Is(index))
+            if (TaggedInt::Is(index) || JavascriptNumber::Is_NoTaggedIntCheck(index) || VarIs<JavascriptString>(index))
             {
                 BOOL returnValue = FALSE;
                 bool isNumericIndex = false;
@@ -4393,12 +4424,12 @@ CommonNumber:
 
                     if (VirtualTableInfo<Int8VirtualArray>::HasVirtualTable(instance))
                     {
-                        Int8VirtualArray* int8Array = Int8VirtualArray::UnsafeFromVar(instance);
+                        Int8VirtualArray* int8Array = UnsafeVarTo<Int8VirtualArray>(instance);
                         returnValue = int8Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if( VirtualTableInfo<Int8Array>::HasVirtualTable(instance))
                     {
-                        Int8Array* int8Array = Int8Array::UnsafeFromVar(instance);
+                        Int8Array* int8Array = UnsafeVarTo<Int8Array>(instance);
                         returnValue = int8Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4409,12 +4440,12 @@ CommonNumber:
                     // The typed array will deal with all possible values for the index
                     if (VirtualTableInfo<Uint8VirtualArray>::HasVirtualTable(instance))
                     {
-                        Uint8VirtualArray* uint8Array = Uint8VirtualArray::UnsafeFromVar(instance);
+                        Uint8VirtualArray* uint8Array = UnsafeVarTo<Uint8VirtualArray>(instance);
                         returnValue = uint8Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if (VirtualTableInfo<Uint8Array>::HasVirtualTable(instance))
                     {
-                        Uint8Array* uint8Array = Uint8Array::UnsafeFromVar(instance);
+                        Uint8Array* uint8Array = UnsafeVarTo<Uint8Array>(instance);
                         returnValue = uint8Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4425,12 +4456,12 @@ CommonNumber:
                     // The typed array will deal with all possible values for the index
                     if (VirtualTableInfo<Uint8ClampedVirtualArray>::HasVirtualTable(instance))
                     {
-                        Uint8ClampedVirtualArray* uint8ClampedArray = Uint8ClampedVirtualArray::UnsafeFromVar(instance);
+                        Uint8ClampedVirtualArray* uint8ClampedArray = UnsafeVarTo<Uint8ClampedVirtualArray>(instance);
                         returnValue = uint8ClampedArray->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if(VirtualTableInfo<Uint8ClampedArray>::HasVirtualTable(instance))
                     {
-                        Uint8ClampedArray* uint8ClampedArray = Uint8ClampedArray::UnsafeFromVar(instance);
+                        Uint8ClampedArray* uint8ClampedArray = UnsafeVarTo<Uint8ClampedArray>(instance);
                         returnValue = uint8ClampedArray->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4441,12 +4472,12 @@ CommonNumber:
                     // The type array will deal with all possible values for the index
                     if (VirtualTableInfo<Int16VirtualArray>::HasVirtualTable(instance))
                     {
-                        Int16VirtualArray* int16Array = Int16VirtualArray::UnsafeFromVar(instance);
+                        Int16VirtualArray* int16Array = UnsafeVarTo<Int16VirtualArray>(instance);
                         returnValue = int16Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if (VirtualTableInfo<Int16Array>::HasVirtualTable(instance))
                     {
-                        Int16Array* int16Array = Int16Array::UnsafeFromVar(instance);
+                        Int16Array* int16Array = UnsafeVarTo<Int16Array>(instance);
                         returnValue = int16Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4458,12 +4489,12 @@ CommonNumber:
 
                     if (VirtualTableInfo<Uint16VirtualArray>::HasVirtualTable(instance))
                     {
-                        Uint16VirtualArray* uint16Array = Uint16VirtualArray::UnsafeFromVar(instance);
+                        Uint16VirtualArray* uint16Array = UnsafeVarTo<Uint16VirtualArray>(instance);
                         returnValue = uint16Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if (VirtualTableInfo<Uint16Array>::HasVirtualTable(instance))
                     {
-                        Uint16Array* uint16Array = Uint16Array::UnsafeFromVar(instance);
+                        Uint16Array* uint16Array = UnsafeVarTo<Uint16Array>(instance);
                         returnValue = uint16Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4473,12 +4504,12 @@ CommonNumber:
                     // The type array will deal with all possible values for the index
                     if (VirtualTableInfo<Int32VirtualArray>::HasVirtualTable(instance))
                     {
-                        Int32VirtualArray* int32Array = Int32VirtualArray::UnsafeFromVar(instance);
+                        Int32VirtualArray* int32Array = UnsafeVarTo<Int32VirtualArray>(instance);
                         returnValue = int32Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if(VirtualTableInfo<Int32Array>::HasVirtualTable(instance))
                     {
-                        Int32Array* int32Array = Int32Array::UnsafeFromVar(instance);
+                        Int32Array* int32Array = UnsafeVarTo<Int32Array>(instance);
                         returnValue = int32Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4489,12 +4520,12 @@ CommonNumber:
 
                     if (VirtualTableInfo<Uint32VirtualArray>::HasVirtualTable(instance))
                     {
-                        Uint32VirtualArray* uint32Array = Uint32VirtualArray::UnsafeFromVar(instance);
+                        Uint32VirtualArray* uint32Array = UnsafeVarTo<Uint32VirtualArray>(instance);
                         returnValue = uint32Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if (VirtualTableInfo<Uint32Array>::HasVirtualTable(instance))
                     {
-                        Uint32Array* uint32Array = Uint32Array::UnsafeFromVar(instance);
+                        Uint32Array* uint32Array = UnsafeVarTo<Uint32Array>(instance);
                         returnValue = uint32Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4504,12 +4535,12 @@ CommonNumber:
                     // The type array will deal with all possible values for the index
                     if (VirtualTableInfo<Float32VirtualArray>::HasVirtualTable(instance))
                     {
-                        Float32VirtualArray* float32Array = Float32VirtualArray::UnsafeFromVar(instance);
+                        Float32VirtualArray* float32Array = UnsafeVarTo<Float32VirtualArray>(instance);
                         returnValue = float32Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if (VirtualTableInfo<Float32Array>::HasVirtualTable(instance))
                     {
-                        Float32Array* float32Array = Float32Array::UnsafeFromVar(instance);
+                        Float32Array* float32Array = UnsafeVarTo<Float32Array>(instance);
                         returnValue = float32Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4519,12 +4550,12 @@ CommonNumber:
                     // The type array will deal with all possible values for the index
                     if (VirtualTableInfo<Float64VirtualArray>::HasVirtualTable(instance))
                     {
-                        Float64VirtualArray* float64Array = Float64VirtualArray::UnsafeFromVar(instance);
+                        Float64VirtualArray* float64Array = UnsafeVarTo<Float64VirtualArray>(instance);
                         returnValue = float64Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     else if (VirtualTableInfo<Float64Array>::HasVirtualTable(instance))
                     {
-                        Float64Array* float64Array = Float64Array::UnsafeFromVar(instance);
+                        Float64Array* float64Array = UnsafeVarTo<Float64Array>(instance);
                         returnValue = float64Array->ValidateIndexAndDirectSetItem(index, value, &isNumericIndex);
                     }
                     break;
@@ -4551,7 +4582,7 @@ CommonNumber:
                     int indexInt = TaggedInt::ToInt32(index);
                     if (indexInt >= 0 && scriptContext->optimizationOverrides.IsEnabledArraySetElementFastPath())
                     {
-                        JavascriptArray::UnsafeFromVar(instance)->SetItem((uint32)indexInt, value, flags);
+                        UnsafeVarTo<JavascriptArray>(instance)->SetItem((uint32)indexInt, value, flags);
                         return TRUE;
                     }
                     break;
@@ -4601,7 +4632,7 @@ CommonNumber:
         }
 
 #if DBG_DUMP
-        scriptContext->forinNoCache += (!TaggedInt::Is(index) && JavascriptString::Is(index));
+        scriptContext->forinNoCache += (!TaggedInt::Is(index) && VarIs<JavascriptString>(index));
 #endif
         indexType = GetIndexType(index, scriptContext, &indexVal, &propertyRecord, &propertyNameString, false, true);
         if (scriptContext->GetThreadContext()->IsDisableImplicitCall() &&
@@ -4658,7 +4689,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             int32 indexInt = TaggedInt::ToInt32(aElementIndex);
             if (indexInt >= 0 && scriptContext->optimizationOverrides.IsEnabledArraySetElementFastPath())
             {
-                JavascriptNativeIntArray *arr = JavascriptNativeIntArray::FromVar(instance);
+                JavascriptNativeIntArray *arr = VarTo<JavascriptNativeIntArray>(instance);
                 if (!(arr->TryGrowHeadSegmentAndSetItem<int32, JavascriptNativeIntArray>((uint32)indexInt, iValue)))
                 {
                     arr->SetItem(indexInt, iValue);
@@ -4727,7 +4758,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             int32 indexInt = TaggedInt::ToInt32(aElementIndex);
             if (indexInt >= 0 && scriptContext->optimizationOverrides.IsEnabledArraySetElementFastPath())
             {
-                JavascriptNativeFloatArray *arr = JavascriptNativeFloatArray::FromVar(instance);
+                JavascriptNativeFloatArray *arr = VarTo<JavascriptNativeFloatArray>(instance);
                 if (!(arr->TryGrowHeadSegmentAndSetItem<double, JavascriptNativeFloatArray>((uint32)indexInt, dValue)))
                 {
                     arr->SetItem(indexInt, dValue);
@@ -4799,7 +4830,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
 
         BOOL  returnValue = false;
-#define MEMCOPY_TYPED_ARRAY(type, conversion) type ## ::FromVar(dstInstance)->DirectSetItemAtRange( type ## ::FromVar(srcInstance), srcStart, dstStart, length, JavascriptConversion:: ## conversion)
+#define MEMCOPY_TYPED_ARRAY(type, conversion) VarTo< type ## >(dstInstance)->DirectSetItemAtRange( VarTo< type ## >(srcInstance), srcStart, dstStart, length, JavascriptConversion:: ## conversion)
         switch (instanceType)
         {
         case TypeIds_Int8Array:
@@ -4857,8 +4888,8 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 break;
             }
             // Upper bounds check for source array
-            JavascriptArray* srcArray = JavascriptArray::UnsafeFromVar(srcInstance);
-            JavascriptArray* dstArray = JavascriptArray::FromVar(dstInstance);
+            JavascriptArray* srcArray = UnsafeVarTo<JavascriptArray>(srcInstance);
+            JavascriptArray* dstArray = VarTo<JavascriptArray>(dstInstance);
             if (scriptContext->optimizationOverrides.IsEnabledArraySetElementFastPath())
             {
                 INT_PTR vt = VirtualTableInfoBase::GetVirtualTable(dstInstance);
@@ -4913,7 +4944,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         { \
             type## ::TypedArrayType typedValue = 0; \
             if (!MemsetConversion<type## ::TypedArrayType, JavascriptConversion:: ##conversion>(value, scriptContext, &typedValue)) return false; \
-            returnValue = type## ::FromVar(instance)->DirectSetItemAtRange(start, length, typedValue); \
+            returnValue = VarTo< type## >(instance)->DirectSetItemAtRange(start, length, typedValue); \
             break; \
         }
         switch (instanceType)
@@ -4946,11 +4977,11 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 INT_PTR vt = VirtualTableInfoBase::GetVirtualTable(instance);
                 if (instanceType == TypeIds_Array)
                 {
-                    returnValue = JavascriptArray::UnsafeFromVar(instance)->DirectSetItemAtRange<Var>(start, length, value);
+                    returnValue = UnsafeVarTo<JavascriptArray>(instance)->DirectSetItemAtRange<Var>(start, length, value);
                 }
                 else if (instanceType == TypeIds_NativeIntArray)
                 {
-                    // Only accept tagged int. Also covers case for MissingItem
+                    // Only accept tagged int.
                     if (!TaggedInt::Is(value))
                     {
                         return false;
@@ -4960,7 +4991,12 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                     {
                         return false;
                     }
-                    returnValue = JavascriptArray::UnsafeFromVar(instance)->DirectSetItemAtRange<int32>(start, length, intValue);
+                     // Special case for missing item
+                    if (SparseArraySegment<int32>::IsMissingItem(&intValue))
+                    {
+                        return false;
+                    }
+                    returnValue = UnsafeVarTo<JavascriptArray>(instance)->DirectSetItemAtRange<int32>(start, length, intValue);
                 }
                 else
                 {
@@ -4980,7 +5016,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                     {
                         return false;
                     }
-                    returnValue = JavascriptArray::UnsafeFromVar(instance)->DirectSetItemAtRange<double>(start, length, doubleValue);
+                    returnValue = UnsafeVarTo<JavascriptArray>(instance)->DirectSetItemAtRange<double>(start, length, doubleValue);
                 }
                 returnValue &= vt == VirtualTableInfoBase::GetVirtualTable(instance);
             }
@@ -5035,7 +5071,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_COPYONACCESS_ARRAY
         JavascriptLibrary::CheckAndConvertCopyOnAccessNativeIntArray<Var>(instance);
 #endif
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
         if (JavascriptOperators::IsUndefinedOrNull(object))
         {
             JavascriptError::ThrowTypeError(scriptContext, JSERR_Property_CannotDelete_NullOrUndefined, GetPropertyDisplayNameForError(index, scriptContext));
@@ -5116,7 +5152,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         else if (typeId == TypeIds_HostDispatch)
         {
             TypeId remoteTypeId = TypeIds_Limit;
-            if (RecyclableObject::FromVar(thisVar)->GetRemoteTypeId(&remoteTypeId))
+            if (VarTo<RecyclableObject>(thisVar)->GetRemoteTypeId(&remoteTypeId))
             {
                 if (remoteTypeId == TypeIds_Null || remoteTypeId == TypeIds_Undefined || remoteTypeId == TypeIds_ActivationObject)
                 {
@@ -5232,7 +5268,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         {
             return FALSE;
         }
-        return RecyclableObject::FromVar(aValue)->GetRemoteTypeId(typeId);
+        return VarTo<RecyclableObject>(aValue)->GetRemoteTypeId(typeId);
     }
 
     BOOL JavascriptOperators::IsJsNativeType(TypeId type)
@@ -5358,7 +5394,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
         else
         {
-            RecyclableObject* object = RecyclableObject::FromVar(instance);
+            RecyclableObject* object = VarTo<RecyclableObject>(instance);
             if (JavascriptOperators::IsNull(object))
             {
                 return object;
@@ -5531,14 +5567,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_END(OP_CmGe_A);
     }
 
-    DetachedStateBase* JavascriptOperators::DetachVarAndGetState(Var var)
+    DetachedStateBase* JavascriptOperators::DetachVarAndGetState(Var var, bool queueForDelayFree/* = true*/)
     {
         switch (GetTypeId(var))
         {
         case TypeIds_ArrayBuffer:
-            return Js::ArrayBuffer::FromVar(var)->DetachAndGetState();
+            return Js::VarTo<Js::ArrayBuffer>(var)->DetachAndGetState(queueForDelayFree);
         default:
-            if (!Js::RecyclableObject::FromVar(var)->IsExternal())
+            if (!Js::VarTo<Js::RecyclableObject>(var)->IsExternal())
             {
                 AssertMsg(false, "We should explicitly have a case statement for each non-external object that can be detached.");
             }
@@ -5551,7 +5587,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         switch (GetTypeId(var))
         {
         case TypeIds_ArrayBuffer:
-            return Js::ArrayBuffer::FromVar(var)->IsDetached();
+            return Js::VarTo<Js::ArrayBuffer>(var)->IsDetached();
         default:
             return false;
         }
@@ -5654,17 +5690,17 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     Var JavascriptOperators::OP_InitCachedScope(Var varFunc, const Js::PropertyIdArray *propIds, Field(DynamicType*)* literalType, bool formalsAreLetDecls, ScriptContext *scriptContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(OP_InitCachedScope, reentrancylock, scriptContext->GetThreadContext());
-        bool isGAFunction = JavascriptFunction::Is(varFunc);
+        bool isGAFunction = VarIs<JavascriptFunction>(varFunc);
         Assert(isGAFunction);
         if (isGAFunction)
         {
-            JavascriptFunction *function = JavascriptFunction::FromVar(varFunc);
+            JavascriptFunction *function = VarTo<JavascriptFunction>(varFunc);
             isGAFunction = JavascriptGeneratorFunction::Test(function) || JavascriptAsyncFunction::Test(function);
         }
 
         ScriptFunction *func = isGAFunction ?
-            JavascriptGeneratorFunction::FromVar(varFunc)->GetGeneratorVirtualScriptFunction() :
-            ScriptFunction::FromVar(varFunc);
+            VarTo<JavascriptGeneratorFunction>(varFunc)->GetGeneratorVirtualScriptFunction() :
+            VarTo<ScriptFunction>(varFunc);
 
 #ifdef PROFILE_OBJECT_LITERALS
         // Empty objects not counted in the object literal counts
@@ -5762,8 +5798,8 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         Var item = disp->GetItem(envIndex);
         if (item != nullptr)
         {
-            Assert(ActivationObjectEx::Is(item));
-            RecyclableObject *objScope = RecyclableObject::FromVar(item);
+            Assert(VarIs<ActivationObjectEx>(item));
+            RecyclableObject *objScope = VarTo<RecyclableObject>(item);
             objScope->InvalidateCachedScope();
         }
         JIT_HELPER_END(OP_InvalidateCachedScope);
@@ -5772,7 +5808,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::OP_InitCachedFuncs(Var varScope, FrameDisplay *pDisplay, const FuncInfoArray *info, ScriptContext *scriptContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(OP_InitCachedFuncs, reentrancylock, scriptContext->GetThreadContext());
-        ActivationObjectEx *scopeObj = ActivationObjectEx::FromVar(varScope);
+        ActivationObjectEx *scopeObj = VarTo<ActivationObjectEx>(varScope);
         Assert(scopeObj->GetTypeHandler()->GetInlineSlotCapacity() == 0);
 
         uint funcCount = info->count;
@@ -5930,7 +5966,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         if (JavascriptOperators::IsObjectType(prototypeType))
         {
-            *prototypeObject = RecyclableObject::FromVar(prototypeProperty);
+            *prototypeObject = VarTo<RecyclableObject>(prototypeProperty);
             return true;
         }
         *prototypeObject = constructorFunction->GetLibrary()->GetObjectPrototype();
@@ -5942,7 +5978,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         TypeId typeId = JavascriptOperators::GetTypeId(instance);
         if (typeId == TypeIds_Function)
         {
-            JavascriptFunction * function =  JavascriptFunction::UnsafeFromVar(instance);
+            JavascriptFunction * function =  UnsafeVarTo<JavascriptFunction>(instance);
             return function->GetFunctionInfo();
         }
         if (typeId != TypeIds_HostDispatch && typeId != TypeIds_Proxy)
@@ -5965,7 +6001,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_DEBUG_CONFIG_OPTIONS
         if (Js::Configuration::Global.flags.IsEnabled(Js::autoProxyFlag))
         {
-            newObject = DynamicObject::FromVar(JavascriptProxy::AutoProxyWrapper(newObject));
+            newObject = VarTo<DynamicObject>(JavascriptProxy::AutoProxyWrapper(newObject));
         }
 #endif
         return newObject;
@@ -6009,7 +6045,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     Var JavascriptOperators::NewScObjectNoArgNoCtorCommon(Var instance, ScriptContext* requestContext, bool isBaseClassConstructorNewScObject)
     {
-        RecyclableObject * object = RecyclableObject::FromVar(instance);
+        RecyclableObject * object = VarTo<RecyclableObject>(instance);
         FunctionInfo* functionInfo = JavascriptOperators::GetConstructorFunctionInfo(instance, requestContext);
         Assert(functionInfo != &JavascriptObject::EntryInfo::NewInstance); // built-ins are not inlined
         Assert(functionInfo != &JavascriptArray::EntryInfo::NewInstance); // built-ins are not inlined
@@ -6033,7 +6069,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
 
         FunctionInfo* functionInfo = JavascriptOperators::GetConstructorFunctionInfo(instance, requestContext);
-        RecyclableObject * object = RecyclableObject::FromVar(instance);
+        RecyclableObject * object = VarTo<RecyclableObject>(instance);
 
         if (functionInfo == &JavascriptObject::EntryInfo::NewInstance)
         {
@@ -6046,7 +6082,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_DEBUG_CONFIG_OPTIONS
             if (Js::Configuration::Global.flags.IsEnabled(Js::autoProxyFlag))
             {
-                newObject = DynamicObject::FromVar(JavascriptProxy::AutoProxyWrapper(newObject));
+                newObject = VarTo<DynamicObject>(JavascriptProxy::AutoProxyWrapper(newObject));
             }
 #endif
 
@@ -6054,7 +6090,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             DynamicType* newObjectType = newObject->GetDynamicType();
             Assert(newObjectType->GetIsShared());
 
-            JavascriptFunction* constructor = JavascriptFunction::FromVar(instance);
+            JavascriptFunction* constructor = VarTo<JavascriptFunction>(instance);
             Assert(!constructor->GetConstructorCache()->NeedsUpdateAfterCtor());
 #endif
 
@@ -6084,7 +6120,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             DynamicType* newArrayType = newArray->GetDynamicType();
             Assert(newArrayType->GetIsShared());
 
-            JavascriptFunction* constructor = JavascriptFunction::FromVar(instance);
+            JavascriptFunction* constructor = VarTo<JavascriptFunction>(instance);
             Assert(!constructor->GetConstructorCache()->NeedsUpdateAfterCtor());
 #endif
 
@@ -6125,7 +6161,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_DEBUG_CONFIG_OPTIONS
         if (Js::Configuration::Global.flags.IsEnabled(Js::autoProxyFlag))
         {
-            DynamicObject* newDynamicObject = DynamicObject::FromVar(JavascriptProxy::AutoProxyWrapper(newObject));
+            DynamicObject* newDynamicObject = VarTo<DynamicObject>(JavascriptProxy::AutoProxyWrapper(newObject));
             // this might come from a different scriptcontext.
             newObject = CrossSite::MarshalVar(requestContext, newDynamicObject, newDynamicObject->GetScriptContext());
         }
@@ -6154,7 +6190,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         // We can still call into NewScObjectNoCtor variations in JIT code for performance; however for proxy we don't
         // really need the new object as the trap will handle the "this" pointer separately. pass back nullptr to ensure
         // failure in invalid case.
-        return (JavascriptProxy::Is(instance)) ? nullptr : NewScObjectNoCtorCommon(instance, requestContext, false);
+        return (VarIs<JavascriptProxy>(instance)) ? nullptr : NewScObjectNoCtorCommon(instance, requestContext, false);
         JIT_HELPER_END(NewScObjectNoCtor);
     }
 
@@ -6164,11 +6200,11 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         if (functionInfo)
         {
-            return JavascriptOperators::NewScObjectCommon(RecyclableObject::UnsafeFromVar(instance), functionInfo, requestContext, isBaseClassConstructorNewScObject);
+            return JavascriptOperators::NewScObjectCommon(UnsafeVarTo<RecyclableObject>(instance), functionInfo, requestContext, isBaseClassConstructorNewScObject);
         }
         else
         {
-            return JavascriptOperators::NewScObjectHostDispatchOrProxy(RecyclableObject::FromVar(instance), requestContext);
+            return JavascriptOperators::NewScObjectHostDispatchOrProxy(VarTo<RecyclableObject>(instance), requestContext);
         }
     }
 
@@ -6177,14 +6213,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         ScriptContext* functionScriptContext = function->GetScriptContext();
 
         RecyclableObject * prototype = JavascriptOperators::GetPrototypeObject(function, functionScriptContext);
-        prototype = RecyclableObject::FromVar(CrossSite::MarshalVar(requestContext, prototype, functionScriptContext));
+        prototype = VarTo<RecyclableObject>(CrossSite::MarshalVar(requestContext, prototype, functionScriptContext));
 
         Var object = requestContext->GetLibrary()->CreateObject(prototype);
         JS_ETW(EventWriteJSCRIPT_RECYCLER_ALLOCATE_OBJECT(object));
 #if ENABLE_DEBUG_CONFIG_OPTIONS
         if (Js::Configuration::Global.flags.IsEnabled(Js::autoProxyFlag))
         {
-            object = DynamicObject::FromVar(JavascriptProxy::AutoProxyWrapper(object));
+            object = VarTo<DynamicObject>(JavascriptProxy::AutoProxyWrapper(object));
         }
 #endif
         return object;
@@ -6200,7 +6236,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         // the inline cache arena to allow it to be zeroed, but retain a recycler-allocated portion to hold on to the size of
         // inlined slots.
 
-        JavascriptFunction* constructor = JavascriptFunction::UnsafeFromVar(function);
+        JavascriptFunction* constructor = UnsafeVarTo<JavascriptFunction>(function);
         if (functionInfo->IsClassConstructor() && !isBaseClassConstructorNewScObject)
         {
             // If we are calling new on a class constructor, the contract is that we pass new.target as the 'this' argument.
@@ -6232,7 +6268,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_DEBUG_CONFIG_OPTIONS
             if (Js::Configuration::Global.flags.IsEnabled(Js::autoProxyFlag))
             {
-                object = DynamicObject::FromVar(JavascriptProxy::AutoProxyWrapper(object));
+                object = VarTo<DynamicObject>(JavascriptProxy::AutoProxyWrapper(object));
             }
 #endif
             return object;
@@ -6308,7 +6344,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         bool prototypeCanBeCached;
         RecyclableObject* prototype = JavascriptOperators::GetPrototypeObjectForConstructorCache(
           function, constructorScriptContext, prototypeCanBeCached);
-        prototype = RecyclableObject::FromVar(CrossSite::MarshalVar(requestContext,
+        prototype = VarTo<RecyclableObject>(CrossSite::MarshalVar(requestContext,
           prototype, constructorScriptContext));
 
         DynamicObject* newObject = requestContext->GetLibrary()->CreateObject(prototype, 8);
@@ -6317,14 +6353,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_DEBUG_CONFIG_OPTIONS
         if (Js::Configuration::Global.flags.IsEnabled(Js::autoProxyFlag))
         {
-            newObject = DynamicObject::FromVar(JavascriptProxy::AutoProxyWrapper(newObject));
+            newObject = VarTo<DynamicObject>(JavascriptProxy::AutoProxyWrapper(newObject));
         }
 #endif
 
         Assert(newObject->GetTypeHandler()->GetPropertyCount() == 0);
 
         if (prototypeCanBeCached && functionBody != nullptr && requestContext == constructorScriptContext &&
-            !Js::JavascriptProxy::Is(newObject) &&
+            !Js::VarIs<Js::JavascriptProxy>(newObject) &&
             !PHASE_OFF1(ConstructorCachePhase) && !PHASE_OFF(ConstructorCachePhase, functionBody))
         {
             DynamicType* newObjectType = newObject->GetDynamicType();
@@ -6380,7 +6416,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::UpdateNewScObjectCache(Var function, Var instance, ScriptContext* requestContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(UpdateNewScObjectCache, reentrancylock, requestContext->GetThreadContext());
-        JavascriptFunction* constructor = JavascriptFunction::FromVar(function);
+        JavascriptFunction* constructor = VarTo<JavascriptFunction>(function);
         if(constructor->GetScriptContext() != requestContext)
         {
             // The cache is populated only when the constructor function's context is the same as the calling context. However,
@@ -6416,7 +6452,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         FunctionBody* constructorBody = constructor->GetFunctionBody();
         AssertMsg(constructorBody != nullptr, "Constructor function doesn't have a function body.");
-        Assert(RecyclableObject::Is(instance));
+        Assert(VarIs<RecyclableObject>(instance));
 
         // The cache might have been invalidated between NewScObjectCommon and UpdateNewScObjectCache.  This could occur, for example, if
         // the constructor updates its own prototype property.  If that happens we don't want to re-populate it here.  A new cache will
@@ -6431,9 +6467,9 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         Assert(constructorCache->GetGuardValueAsType() != nullptr);
 
-        if (DynamicType::Is(RecyclableObject::FromVar(instance)->GetTypeId()))
+        if (DynamicType::Is(VarTo<RecyclableObject>(instance)->GetTypeId()))
         {
-            DynamicObject *object = DynamicObject::UnsafeFromVar(instance);
+            DynamicObject *object = UnsafeVarTo<DynamicObject>(instance);
             DynamicType* type = object->GetDynamicType();
             DynamicTypeHandler* typeHandler = type->GetTypeHandler();
 
@@ -6695,8 +6731,12 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     void JavascriptOperators::BuildHandlerScope(Var argThis, RecyclableObject * hostObject, FrameDisplay * pDisplay, ScriptContext * scriptContext)
     {
+        // Event handlers need implicit lookups of @@unscopables on parent scopes.
+        // We can intercept the property accesses by wrapping the object with the unscopables handler.
+        // WebIDL: https://heycam.github.io/webidl/#ref-for-Unscopable
+
         Assert(argThis != nullptr);
-        pDisplay->SetItem(0, TaggedNumber::Is(argThis) ? scriptContext->GetLibrary()->CreateNumberObject(argThis) : argThis);
+        pDisplay->SetItem(0, TaggedNumber::Is(argThis) ? scriptContext->GetLibrary()->CreateNumberObject(argThis) : ToUnscopablesWrapperObject(argThis, scriptContext));
         uint16 i = 1;
 
         Var aChild = argThis;
@@ -6720,7 +6760,10 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 js_memcpy_s((char*)tmp + tmp->GetOffsetOfScopes(), tmp->GetLength() * sizeof(void *), (char*)pDisplay + pDisplay->GetOffsetOfScopes(), pDisplay->GetLength() * sizeof(void*));
                 pDisplay = tmp;
             }
-            pDisplay->SetItem(i, aParent);
+
+            Var aParentWrapped = ToUnscopablesWrapperObject(aParent, scriptContext);
+            pDisplay->SetItem(i, aParentWrapped);
+
             aChild = aParent;
             i++;
         }
@@ -6853,7 +6896,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             AssertMsg(false, "Illegal byte code: stack object as with scope");
             Js::Throw::FatalInternalError();
         }
-        if (!RecyclableObject::Is(argHead))
+        if (!VarIs<RecyclableObject>(argHead))
         {
             AssertMsg(false, "Illegal byte code: non-object as with scope");
             Js::Throw::FatalInternalError();
@@ -6888,7 +6931,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::OP_InitSetter(Var object, PropertyId propertyId, Var setter)
     {
         AssertMsg(!TaggedNumber::Is(object), "SetMember on a non-object?");
-        RecyclableObject* recylableObject = RecyclableObject::FromVar(object);
+        RecyclableObject* recylableObject = VarTo<RecyclableObject>(object);
         JIT_HELPER_NOT_REENTRANT_HEADER(OP_InitSetter, reentrancylock, recylableObject->GetScriptContext()->GetThreadContext());
         recylableObject->SetAccessors(propertyId, nullptr, setter);
         JIT_HELPER_END(OP_InitSetter);
@@ -6900,7 +6943,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_SAME_ATTRIBUTES(Op_InitClassMemberSet, OP_InitSetter);
         JavascriptOperators::OP_InitSetter(object, propertyId, setter);
 
-        RecyclableObject::FromVar(object)->SetAttributes(propertyId, PropertyClassMemberDefaults);
+        VarTo<RecyclableObject>(object)->SetAttributes(propertyId, PropertyClassMemberDefaults);
         JIT_HELPER_END(Op_InitClassMemberSet);
     }
 
@@ -6911,7 +6954,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         PropertyId propertyId = JavascriptOperators::GetPropertyId(elementName, scriptContext);
 
-        RecyclableObject::FromVar(object)->SetAccessors(propertyId, nullptr, setter);
+        VarTo<RecyclableObject>(object)->SetAccessors(propertyId, nullptr, setter);
 
         return propertyId;
         JIT_HELPER_END(OP_InitElemSetter);
@@ -6954,10 +6997,10 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     {
         JIT_HELPER_REENTRANT_HEADER(Op_InitClassMemberSetComputedName);
         Js::PropertyId propertyId = JavascriptOperators::OP_InitElemSetter(object, elementName, value, scriptContext);
-        RecyclableObject* instance = RecyclableObject::FromVar(object);
+        RecyclableObject* instance = VarTo<RecyclableObject>(object);
 
         // instance will be a function if it is the class constructor (otherwise it would be an object)
-        if (JavascriptFunction::Is(instance) && Js::PropertyIds::prototype == propertyId)
+        if (VarIs<JavascriptFunction>(instance) && Js::PropertyIds::prototype == propertyId)
         {
             // It is a TypeError to have a static member with a computed name that evaluates to 'prototype'
             JavascriptError::ThrowTypeError(scriptContext, JSERR_ClassStaticMethodCannotBePrototype);
@@ -6992,7 +7035,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::OP_InitGetter(Var object, PropertyId propertyId, Var getter)
     {
         AssertMsg(!TaggedNumber::Is(object), "GetMember on a non-object?");
-        RecyclableObject* recylableObject = RecyclableObject::FromVar(object);
+        RecyclableObject* recylableObject = VarTo<RecyclableObject>(object);
         JIT_HELPER_NOT_REENTRANT_HEADER(OP_InitGetter, reentrancylock, recylableObject->GetScriptContext()->GetThreadContext());
         recylableObject->SetAccessors(propertyId, getter, nullptr);
         JIT_HELPER_END(OP_InitGetter);
@@ -7004,7 +7047,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_SAME_ATTRIBUTES(Op_InitClassMemberGet, OP_InitGetter);
         JavascriptOperators::OP_InitGetter(object, propertyId, getter);
 
-        RecyclableObject::FromVar(object)->SetAttributes(propertyId, PropertyClassMemberDefaults);
+        VarTo<RecyclableObject>(object)->SetAttributes(propertyId, PropertyClassMemberDefaults);
         JIT_HELPER_END(Op_InitClassMemberGet);
     }
 
@@ -7015,7 +7058,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         PropertyId propertyId = JavascriptOperators::GetPropertyId(elementName, scriptContext);
 
-        RecyclableObject::FromVar(object)->SetAccessors(propertyId, getter, nullptr);
+        VarTo<RecyclableObject>(object)->SetAccessors(propertyId, getter, nullptr);
 
         return propertyId;
         JIT_HELPER_END(OP_InitElemGetter);
@@ -7025,10 +7068,10 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     {
         JIT_HELPER_REENTRANT_HEADER(Op_InitClassMemberGetComputedName);
         Js::PropertyId propertyId = JavascriptOperators::OP_InitElemGetter(object, elementName, value, scriptContext);
-        RecyclableObject* instance = RecyclableObject::FromVar(object);
+        RecyclableObject* instance = VarTo<RecyclableObject>(object);
 
         // instance will be a function if it is the class constructor (otherwise it would be an object)
-        if (JavascriptFunction::Is(instance) && Js::PropertyIds::prototype == propertyId)
+        if (VarIs<JavascriptFunction>(instance) && Js::PropertyIds::prototype == propertyId)
         {
             // It is a TypeError to have a static member with a computed name that evaluates to 'prototype'
             JavascriptError::ThrowTypeError(scriptContext, JSERR_ClassStaticMethodCannotBePrototype);
@@ -7043,7 +7086,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_REENTRANT_HEADER(OP_InitComputedProperty);
         PropertyId propertyId = JavascriptOperators::GetPropertyId(elementName, scriptContext);
 
-        RecyclableObject::FromVar(object)->InitProperty(propertyId, value, flags);
+        VarTo<RecyclableObject>(object)->InitProperty(propertyId, value, flags);
         JIT_HELPER_END(OP_InitComputedProperty);
     }
 
@@ -7051,10 +7094,10 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     {
         JIT_HELPER_REENTRANT_HEADER(Op_InitClassMemberComputedName);
         PropertyId propertyId = JavascriptOperators::GetPropertyId(elementName, scriptContext);
-        RecyclableObject* instance = RecyclableObject::FromVar(object);
+        RecyclableObject* instance = VarTo<RecyclableObject>(object);
 
         // instance will be a function if it is the class constructor (otherwise it would be an object)
-        if (JavascriptFunction::Is(instance) && Js::PropertyIds::prototype == propertyId)
+        if (VarIs<JavascriptFunction>(instance) && Js::PropertyIds::prototype == propertyId)
         {
             // It is a TypeError to have a static member with a computed name that evaluates to 'prototype'
             JavascriptError::ThrowTypeError(scriptContext, JSERR_ClassStaticMethodCannotBePrototype);
@@ -7069,10 +7112,10 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     //
     void JavascriptOperators::OP_InitProto(Var instance, PropertyId propertyId, Var value)
     {
-        AssertMsg(RecyclableObject::Is(instance), "__proto__ member on a non-object?");
+        AssertMsg(VarIs<RecyclableObject>(instance), "__proto__ member on a non-object?");
         Assert(propertyId == PropertyIds::__proto__);
 
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
         ScriptContext* scriptContext = object->GetScriptContext();
         JIT_HELPER_NOT_REENTRANT_HEADER(OP_InitProto, reentrancylock, scriptContext->GetThreadContext());
 
@@ -7083,7 +7126,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         //    b.Return NormalCompletion(empty).
         if (JavascriptOperators::IsObjectOrNull(value))
         {
-            JavascriptObject::ChangePrototype(object, RecyclableObject::FromVar(value), /*validate*/false, scriptContext);
+            JavascriptObject::ChangePrototype(object, VarTo<RecyclableObject>(value), /*validate*/false, scriptContext);
         }
         JIT_HELPER_END(OP_InitProto);
     }
@@ -7164,7 +7207,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             DynamicObject* frameObject = nullptr;
             if (useCachedScope)
             {
-                frameObject = DynamicObject::FromVar(frameObj);
+                frameObject = VarTo<DynamicObject>(frameObj);
                 __analysis_assume((uint32)frameObject->GetDynamicType()->GetTypeHandler()->GetSlotCapacity() >= formalsCount);
             }
             else
@@ -7178,8 +7221,8 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 DynamicType* newType = nullptr;
                 if (nonSimpleParamList)
                 {
-                    bool skipLetAttrForArguments = ((JavascriptGeneratorFunction::Is(funcCallee) || JavascriptAsyncFunction::Is(funcCallee)) ?
-                        JavascriptGeneratorFunction::FromVar(funcCallee)->GetGeneratorVirtualScriptFunction()->GetFunctionBody()->HasReferenceableBuiltInArguments()
+                    bool skipLetAttrForArguments = ((JavascriptGeneratorFunction::IsBaseGeneratorFunction(funcCallee) || VarIs<JavascriptAsyncFunction>(funcCallee)) ?
+                        VarTo<JavascriptGeneratorFunction>(funcCallee)->GetGeneratorVirtualScriptFunction()->GetFunctionBody()->HasReferenceableBuiltInArguments()
                         : funcCallee->GetFunctionBody()->HasReferenceableBuiltInArguments());
 
                     if (skipLetAttrForArguments)
@@ -7392,12 +7435,12 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     Var JavascriptOperators::OP_IsInst(Var instance, Var aClass, ScriptContext* scriptContext, IsInstInlineCache* inlineCache)
     {
         JIT_HELPER_REENTRANT_HEADER(ScrObj_OP_IsInst);
-        if (!RecyclableObject::Is(aClass))
+        if (!VarIs<RecyclableObject>(aClass))
         {
             JavascriptError::ThrowTypeError(scriptContext, JSERR_Operand_Invalid_NeedFunction, _u("instanceof"));
         }
 
-        RecyclableObject* constructor = RecyclableObject::FromVar(aClass);
+        RecyclableObject* constructor = VarTo<RecyclableObject>(aClass);
         if (scriptContext->GetConfig()->IsES6HasInstanceEnabled())
         {
             Var instOfHandler = JavascriptOperators::GetPropertyNoCache(constructor,
@@ -7415,7 +7458,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 }
 
                 ThreadContext * threadContext = scriptContext->GetThreadContext();
-                RecyclableObject *instFunc = RecyclableObject::FromVar(instOfHandler);
+                RecyclableObject *instFunc = VarTo<RecyclableObject>(instOfHandler);
                 Var result = threadContext->ExecuteImplicitCall(instFunc, ImplicitCall_Accessor, [=]()->Js::Var
                 {
                     return CALL_FUNCTION(scriptContext->GetThreadContext(), instFunc, CallInfo(CallFlags_Value, 2), constructor, instance);
@@ -7439,7 +7482,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
              JavascriptError::ThrowTypeError(scriptContext, JSERR_Operand_Invalid_NeedFunction, _u("class"));
         }
 
-        RecyclableObject * ctor = RecyclableObject::FromVar(constructor);
+        RecyclableObject * ctor = VarTo<RecyclableObject>(constructor);
 
         if (extends)
         {
@@ -7448,9 +7491,9 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 case Js::TypeId::TypeIds_Null:
                 {
                     Var ctorProto = JavascriptOperators::GetProperty(constructor, ctor, Js::PropertyIds::prototype, scriptContext);
-                    RecyclableObject * ctorProtoObj = RecyclableObject::FromVar(ctorProto);
+                    RecyclableObject * ctorProtoObj = VarTo<RecyclableObject>(ctorProto);
 
-                    ctorProtoObj->SetPrototype(RecyclableObject::FromVar(extends));
+                    ctorProtoObj->SetPrototype(VarTo<RecyclableObject>(extends));
 
                     ctorProtoObj->EnsureProperty(Js::PropertyIds::constructor);
                     ctorProtoObj->SetEnumerable(Js::PropertyIds::constructor, FALSE);
@@ -7460,11 +7503,11 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
                 default:
                 {
-                    if (!RecyclableObject::Is(extends))
+                    if (!VarIs<RecyclableObject>(extends))
                     {
                         JavascriptError::ThrowTypeError(scriptContext, JSERR_ErrorOnNew);
                     }
-                    RecyclableObject * extendsObj = RecyclableObject::FromVar(extends);
+                    RecyclableObject * extendsObj = VarTo<RecyclableObject>(extends);
                     if (!JavascriptOperators::IsConstructor(extendsObj))
                     {
                         JavascriptError::ThrowTypeError(scriptContext, JSERR_ErrorOnNew);
@@ -7482,15 +7525,15 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                     }
 
                     Var ctorProto = JavascriptOperators::GetPropertyNoCache(constructor, ctor, Js::PropertyIds::prototype, scriptContext);
-                    RecyclableObject * ctorProtoObj = RecyclableObject::FromVar(ctorProto);
+                    RecyclableObject * ctorProtoObj = VarTo<RecyclableObject>(ctorProto);
 
-                    ctorProtoObj->SetPrototype(RecyclableObject::FromVar(extendsProto));
+                    ctorProtoObj->SetPrototype(VarTo<RecyclableObject>(extendsProto));
 
                     ctorProtoObj->EnsureProperty(Js::PropertyIds::constructor);
                     ctorProtoObj->SetEnumerable(Js::PropertyIds::constructor, FALSE);
 
                     Var protoCtor = JavascriptOperators::GetPropertyNoCache(ctorProto, ctorProtoObj, Js::PropertyIds::constructor, scriptContext);
-                    RecyclableObject * protoCtorObj = RecyclableObject::FromVar(protoCtor);
+                    RecyclableObject * protoCtorObj = VarTo<RecyclableObject>(protoCtor);
                     protoCtorObj->SetPrototype(extendsObj);
 
                     break;
@@ -7506,7 +7549,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     void JavascriptOperators::OP_LoadUndefinedToElement(Var instance, PropertyId propertyId)
     {
-        JIT_HELPER_NOT_REENTRANT_HEADER(Op_LdElemUndef, reentrancylock, RecyclableObject::FromVar(instance)->GetScriptContext()->GetThreadContext());
+        JIT_HELPER_NOT_REENTRANT_HEADER(Op_LdElemUndef, reentrancylock, VarTo<RecyclableObject>(instance)->GetScriptContext()->GetThreadContext());
         AssertMsg(!TaggedNumber::Is(instance), "Invalid scope/root object");
         JavascriptOperators::EnsureProperty(instance, propertyId);
         JIT_HELPER_END(Op_LdElemUndef);
@@ -7540,22 +7583,22 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_NOT_REENTRANT_HEADER(Op_LdElemUndefDynamic, reentrancylock, scriptContext->GetThreadContext());
         if (!JavascriptOperators::HasOwnPropertyNoHostObject(instance, propertyId))
         {
-            RecyclableObject::FromVar(instance)->InitPropertyScoped(propertyId, scriptContext->GetLibrary()->GetUndefined());
+            VarTo<RecyclableObject>(instance)->InitPropertyScoped(propertyId, scriptContext->GetLibrary()->GetUndefined());
         }
         JIT_HELPER_END(Op_LdElemUndefDynamic);
     }
 
     BOOL JavascriptOperators::EnsureProperty(Var instance, PropertyId propertyId)
     {
-        RecyclableObject *obj = RecyclableObject::FromVar(instance);
+        RecyclableObject *obj = VarTo<RecyclableObject>(instance);
         return (obj && obj->EnsureProperty(propertyId));
     }
 
     void JavascriptOperators::OP_EnsureNoRootProperty(Var instance, PropertyId propertyId)
     {
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_EnsureNoRootProperty);
-        Assert(RootObjectBase::Is(instance));
-        RootObjectBase *obj = RootObjectBase::FromVar(instance);
+        Assert(VarIs<RootObjectBase>(instance));
+        RootObjectBase *obj = VarTo<RootObjectBase>(instance);
         obj->EnsureNoProperty(propertyId);
         JIT_HELPER_END(Op_EnsureNoRootProperty);
     }
@@ -7563,10 +7606,19 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::OP_EnsureNoRootRedeclProperty(Var instance, PropertyId propertyId)
     {
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_EnsureNoRootRedeclProperty);
-        Assert(RootObjectBase::Is(instance));
-        RecyclableObject *obj = RecyclableObject::FromVar(instance);
+        Assert(VarIs<RootObjectBase>(instance));
+        RecyclableObject *obj = VarTo<RecyclableObject>(instance);
         obj->EnsureNoRedeclProperty(propertyId);
         JIT_HELPER_END(Op_EnsureNoRootRedeclProperty);
+    }
+
+    void JavascriptOperators::OP_EnsureCanDeclGloFunc(Var instance, PropertyId propertyId)
+    {
+        JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_EnsureCanDeclGloFunc);
+        Assert(VarIs<RootObjectBase>(instance));
+        RootObjectBase *obj = VarTo<RootObjectBase>(instance);
+        obj->EnsureCanDeclGloFunc(propertyId);
+        JIT_HELPER_END(Op_EnsureCanDeclGloFunc);
     }
 
     void JavascriptOperators::OP_ScopedEnsureNoRedeclProperty(FrameDisplay *pDisplay, PropertyId propertyId, Var defaultInstance)
@@ -7578,14 +7630,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         for (i = 0; i < length; i++)
         {
-            object = RecyclableObject::FromVar(pDisplay->GetItem(i));
+            object = VarTo<RecyclableObject>(pDisplay->GetItem(i));
             if (object->EnsureNoRedeclProperty(propertyId))
             {
                 return;
             }
         }
 
-        object = RecyclableObject::FromVar(defaultInstance);
+        object = VarTo<RecyclableObject>(defaultInstance);
         object->EnsureNoRedeclProperty(propertyId);
         JIT_HELPER_END(Op_EnsureNoRedeclPropertyScoped);
     }
@@ -7600,7 +7652,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             JavascriptError::ThrowTypeError(scriptContext, JSERR_Operand_Invalid_NeedObject, _u("in"));
         }
 
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
         BOOL result;
         PropertyRecord const * propertyRecord = nullptr;
         uint32 index;
@@ -7618,7 +7670,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 PropertyValueInfo info;
                 if (propertyRecordUsageCache->TryGetPropertyFromCache<false /* OwnPropertyOnly */, true /* OutputExistence */, false /* ReturnOperationInfo */>(instance, object, &value, scriptContext, &info, cacheOwner, nullptr))
                 {
-                    Assert(JavascriptBoolean::Is(value));
+                    Assert(VarIs<JavascriptBoolean>(value));
                     return value;
                 }
                 result = JavascriptOperators::GetPropertyWPCache<true /* OutputExistence */>(instance, object, propertyRecordUsageCache->GetPropertyRecord()->GetPropertyId(), &value, scriptContext, &info);
@@ -7824,7 +7876,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     inline Var JavascriptOperators::PatchGetRootValue(FunctionBody *const functionBody, TInlineCache *const inlineCache, const InlineCacheIndex inlineCacheIndex, DynamicObject * object, PropertyId propertyId)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_PatchGetRootValue);
-        AssertMsg(RootObjectBase::Is(object), "Root must be a global object!");
+        AssertMsg(VarIs<RootObjectBase>(object), "Root must be a global object!");
 
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
@@ -7857,7 +7909,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     Var JavascriptOperators::PatchGetRootValueForTypeOf(FunctionBody *const functionBody, TInlineCache *const inlineCache, const InlineCacheIndex inlineCacheIndex, DynamicObject * object, PropertyId propertyId)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_PatchGetRootValueForTypeOf);
-        AssertMsg(RootObjectBase::Is(object), "Root must be a global object!");
+        AssertMsg(VarIs<RootObjectBase>(object), "Root must be a global object!");
 
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
@@ -7878,7 +7930,8 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #endif
         value = nullptr;
         BEGIN_TYPEOF_ERROR_HANDLER(scriptContext);
-        if (JavascriptOperators::GetRootProperty(RecyclableObject::FromVar(object), propertyId, &value, scriptContext, &info))
+        AssertOrFailFast(VarIsCorrectType(static_cast<RecyclableObject*>(object)));
+        if (JavascriptOperators::GetRootProperty(object, propertyId, &value, scriptContext, &info))
         {
             if (scriptContext->IsUndeclBlockVar(value))
             {
@@ -7906,13 +7959,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 functionBody,
                 inlineCache,
                 inlineCacheIndex,
-                DynamicObject::FromVar(instance),
+                VarTo<DynamicObject>(instance),
                 propertyId);
     }
 
     Var JavascriptOperators::PatchGetRootValueNoFastPath(FunctionBody *const functionBody, InlineCache *const inlineCache, const InlineCacheIndex inlineCacheIndex, DynamicObject* object, PropertyId propertyId)
     {
-        AssertMsg(RootObjectBase::Is(object), "Root must be a global object!");
+        AssertMsg(VarIs<RootObjectBase>(object), "Root must be a global object!");
 
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
@@ -7935,7 +7988,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, !IsFromFullJit);
         for (uint16 i = 0; i < length; i++)
         {
-            RecyclableObject* object = RecyclableObject::UnsafeFromVar(pDisplay->GetItem(i));
+            RecyclableObject* object = UnsafeVarTo<RecyclableObject>(pDisplay->GetItem(i));
 
             Var value;
             if (CacheOperators::TryGetProperty<true, true, true, false, true, true, !TInlineCache::IsPolymorphic, TInlineCache::IsPolymorphic, false, false>(
@@ -7972,7 +8025,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
 
         // No one in the scope stack has the property, so get it from the default instance provided by the caller.
-        Var value = JavascriptOperators::PatchGetRootValue<IsFromFullJit>(functionBody, inlineCache, inlineCacheIndex, DynamicObject::FromVar(defaultInstance), propertyId);
+        Var value = JavascriptOperators::PatchGetRootValue<IsFromFullJit>(functionBody, inlineCache, inlineCacheIndex, VarTo<DynamicObject>(defaultInstance), propertyId);
         if (scriptContext->IsUndeclBlockVar(value))
         {
             JavascriptError::ThrowReferenceError(scriptContext, JSERR_UseBeforeDeclaration);
@@ -8077,7 +8130,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_REENTRANT_HEADER(Op_PatchGetRootMethod);
         Assert(inlineCache != nullptr);
 
-        AssertMsg(RootObjectBase::Is(object), "Root must be a global object!");
+        AssertMsg(VarIs<RootObjectBase>(object), "Root must be a global object!");
 
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
@@ -8139,7 +8192,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, !IsFromFullJit);
-        const bool isRoot = RootObjectBase::Is(object);
+        const bool isRoot = VarIs<RootObjectBase>(object);
         Var value;
         if (CacheOperators::TryGetProperty<true, true, true, false, true, false, !TInlineCache::IsPolymorphic, TInlineCache::IsPolymorphic, false, false>(
                 instance, isRoot, object, propertyId, &value, scriptContext, nullptr, &info))
@@ -8194,13 +8247,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 functionBody,
                 inlineCache,
                 inlineCacheIndex,
-                DynamicObject::FromVar(instance),
+                VarTo<DynamicObject>(instance),
                 propertyId);
     }
 
     Var JavascriptOperators::PatchGetRootMethodNoFastPath(FunctionBody *const functionBody, InlineCache *const inlineCache, const InlineCacheIndex inlineCacheIndex, DynamicObject* object, PropertyId propertyId)
     {
-        AssertMsg(RootObjectBase::Is(object), "Root must be a global object!");
+        AssertMsg(VarIs<RootObjectBase>(object), "Root must be a global object!");
 
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, true);
@@ -8216,7 +8269,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         if (isRootLd)
         {
-            RootObjectBase* rootObject = RootObjectBase::FromVar(instance);
+            RootObjectBase* rootObject = VarTo<RootObjectBase>(instance);
             foundValue = JavascriptOperators::GetRootPropertyReference(rootObject, propertyId, &value, scriptContext, info);
         }
         else
@@ -8300,7 +8353,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_COPYONACCESS_ARRAY
         JavascriptLibrary::CheckAndConvertCopyOnAccessNativeIntArray<Var>(instance);
 #endif
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, !IsFromFullJit);
         if (CacheOperators::TrySetProperty<true, true, true, true, true, !TInlineCache::IsPolymorphic, TInlineCache::IsPolymorphic, false>(
@@ -8347,7 +8400,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_REENTRANT_HEADER(Op_PatchPutRootValue);
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, !IsFromFullJit);
         if (CacheOperators::TrySetProperty<true, true, true, true, false, !TInlineCache::IsPolymorphic, TInlineCache::IsPolymorphic, false>(
@@ -8421,7 +8474,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 #if ENABLE_COPYONACCESS_ARRAY
         JavascriptLibrary::CheckAndConvertCopyOnAccessNativeIntArray<Var>(instance);
 #endif
-        RecyclableObject *object = RecyclableObject::UnsafeFromVar(instance);
+        RecyclableObject *object = UnsafeVarTo<RecyclableObject>(instance);
 
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, !IsFromFullJit);
@@ -8469,7 +8522,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_REENTRANT_HEADER(Op_PatchPutRootValueNoLocalFastPath);
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
-        RecyclableObject *object = RecyclableObject::FromVar(instance);
+        RecyclableObject *object = VarTo<RecyclableObject>(instance);
 
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, !IsFromFullJit);
@@ -8525,7 +8578,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             JavascriptOperators::SetPropertyOnTaggedNumber(instance, nullptr, propertyId, newValue, scriptContext, flags);
             return;
         }
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
 
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, true);
@@ -8540,7 +8593,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     {
         ScriptContext *const scriptContext = functionBody->GetScriptContext();
 
-        RecyclableObject* object = RecyclableObject::FromVar(instance);
+        RecyclableObject* object = VarTo<RecyclableObject>(instance);
 
         PropertyValueInfo info;
         PropertyValueInfo::SetCacheInfo(&info, functionBody, inlineCache, inlineCacheIndex, true);
@@ -8674,7 +8727,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         Assert(obj);
         Assert(scriptContext);
 
-        if (JavascriptProxy::Is(obj))
+        if (VarIs<JavascriptProxy>(obj))
         {
             return JavascriptProxy::DefineOwnPropertyDescriptor(obj, propId, descriptor, throwOnError, scriptContext);
         }
@@ -8719,7 +8772,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                         BOOL tempResult = obj->SetPropertyWithAttributes(propId, filledDescriptor.GetValue(), filledDescriptor.GetAttributes(), nullptr);
                         if (!obj->IsExternal() && !tempResult)
                         {
-                            Assert(TypedArrayBase::Is(obj)); // typed array returns false when canonical numeric index is not integer or out of range
+                            Assert(VarIs<TypedArrayBase>(obj)); // typed array returns false when canonical numeric index is not integer or out of range
                             return FALSE;
                         }
                     }
@@ -9100,7 +9153,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 return Reject(throwOnError, scriptContext, JSERR_InvalidTypedArrayIndex, propId);
             }
         }
-        // 4. Return ! OrdinaryDefineOwnProperty(O, P, Desc). 
+        // 4. Return ! OrdinaryDefineOwnProperty(O, P, Desc).
         return DefineOwnPropertyDescriptor(typedArray, propId, descriptor, throwOnError, scriptContext);
     }
 
@@ -9141,7 +9194,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
 
         Var value;
-        RecyclableObject* propertySpecObj = RecyclableObject::FromVar(propertySpec);
+        RecyclableObject* propertySpecObj = VarTo<RecyclableObject>(propertySpec);
 
         if (JavascriptOperators::HasProperty(propertySpecObj, PropertyIds::enumerable) == TRUE)
         {
@@ -9240,7 +9293,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
 
         Var value;
-        RecyclableObject* propertySpecObj = RecyclableObject::FromVar(propertySpec);
+        RecyclableObject* propertySpecObj = VarTo<RecyclableObject>(propertySpec);
 
         if (JavascriptOperators::GetPropertyNoCache(propertySpecObj, PropertyIds::enumerable, &value, scriptContext))
         {
@@ -9285,9 +9338,9 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     BOOL JavascriptOperators::ToPropertyDescriptor(Var propertySpec, PropertyDescriptor* descriptor, ScriptContext* scriptContext)
     {
-        if (JavascriptProxy::Is(propertySpec) || (
-            RecyclableObject::Is(propertySpec) &&
-            JavascriptOperators::CheckIfPrototypeChainContainsProxyObject(RecyclableObject::FromVar(propertySpec)->GetPrototype())))
+        if (VarIs<JavascriptProxy>(propertySpec) || (
+            VarIs<RecyclableObject>(propertySpec) &&
+            JavascriptOperators::CheckIfPrototypeChainContainsProxyObject(VarTo<RecyclableObject>(propertySpec)->GetPrototype())))
         {
             if (ToPropertyDescriptorForProxyObjects(propertySpec, descriptor, scriptContext) == FALSE)
             {
@@ -9387,7 +9440,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         }
         else if (descriptor.IsAccessorDescriptor())
         {
-            // The reason is that JavascriptOperators::OP_SetProperty checks for RecyclableObject::FromVar(instance)->IsWritableOrAccessor(propertyId),
+            // The reason is that JavascriptOperators::OP_SetProperty checks for VarTo<RecyclableObject>(instance)->IsWritableOrAccessor(propertyId),
             // which should in fact check for 'is writable or accessor' but since there is no GetAttributes, we can't do that efficiently.
             isWritable = TRUE;
         }
@@ -9413,9 +9466,9 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(OP_ClearAttributes);
         Assert(instance);
 
-        if (RecyclableObject::Is(instance))
+        if (VarIs<RecyclableObject>(instance))
         {
-            RecyclableObject* obj = RecyclableObject::FromVar(instance);
+            RecyclableObject* obj = VarTo<RecyclableObject>(instance);
             obj->SetAttributes(propertyId, PropertyNone);
         }
         JIT_HELPER_END(OP_ClearAttributes);
@@ -9581,7 +9634,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
             Var thisVar = RootToThisObject(object, scriptContext);
 
-            RecyclableObject* marshalledFunction = RecyclableObject::UnsafeFromVar(
+            RecyclableObject* marshalledFunction = UnsafeVarTo<RecyclableObject>(
               CrossSite::MarshalVar(requestContext, function, scriptContext));
 
             Var result = CALL_ENTRYPOINT(threadContext, marshalledFunction->GetEntryPoint(), function, CallInfo(flags, 1), thisVar);
@@ -9623,7 +9676,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             RecyclableObject* marshalledFunction = function;
             if (requestContext)
             {
-                marshalledFunction = RecyclableObject::UnsafeFromVar(CrossSite::MarshalVar(requestContext, function, function->GetScriptContext()));
+                marshalledFunction = UnsafeVarTo<RecyclableObject>(CrossSite::MarshalVar(requestContext, function, function->GetScriptContext()));
             }
 
             Var result = CALL_ENTRYPOINT(threadContext, marshalledFunction->GetEntryPoint(), function, CallInfo(flags, 2), thisVar, putValue);
@@ -9676,14 +9729,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void
     JavascriptOperators::SetConcatStrMultiItem(Var concatStr, Var str, uint index, ScriptContext * scriptContext)
     {
-        ConcatStringMulti::FromVar(concatStr)->SetItem(index,
+        VarTo<ConcatStringMulti>(concatStr)->SetItem(index,
             JavascriptConversion::ToPrimitiveString(str, scriptContext));
     }
 
     void
     JavascriptOperators::SetConcatStrMultiItem2(Var concatStr, Var str1, Var str2, uint index, ScriptContext * scriptContext)
     {
-        ConcatStringMulti * cs = ConcatStringMulti::FromVar(concatStr);
+        ConcatStringMulti * cs = VarTo<ConcatStringMulti>(concatStr);
         cs->SetItem(index, JavascriptConversion::ToPrimitiveString(str1, scriptContext));
         cs->SetItem(index + 1, JavascriptConversion::ToPrimitiveString(str2, scriptContext));
     }
@@ -9691,27 +9744,29 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     void JavascriptOperators::OP_SetComputedNameVar(Var method, Var computedNameVar)
     {
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(SetComputedNameVar);
-        ScriptFunctionBase *scriptFunction = ScriptFunctionBase::FromVar(method);
+        ScriptFunctionBase *scriptFunction = VarTo<ScriptFunctionBase>(method);
         scriptFunction->SetComputedNameVar(computedNameVar);
         JIT_HELPER_END(SetComputedNameVar);
     }
 
     void JavascriptOperators::OP_SetHomeObj(Var method, Var homeObj)
     {
-        ScriptFunctionBase *scriptFunction = ScriptFunctionBase::FromVar(method);
+        ScriptFunctionBase *scriptFunction = VarTo<ScriptFunctionBase>(method);
+        JIT_HELPER_NOT_REENTRANT_HEADER(SetHomeObj, reentrancylock, scriptFunction->GetScriptContext()->GetThreadContext());
         scriptFunction->SetHomeObj(homeObj);
+        JIT_HELPER_END(SetHomeObj);
     }
 
     Var JavascriptOperators::OP_LdHomeObj(Var scriptFunction, ScriptContext * scriptContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(LdHomeObj, reentrancylock, scriptContext->GetThreadContext());
         // Ensure this is not a stack ScriptFunction
-        if (!ScriptFunction::Is(scriptFunction) || ThreadContext::IsOnStack(scriptFunction))
+        if (!VarIs<ScriptFunction>(scriptFunction) || ThreadContext::IsOnStack(scriptFunction))
         {
             return scriptContext->GetLibrary()->GetUndefined();
         }
 
-        ScriptFunction *instance = ScriptFunction::UnsafeFromVar(scriptFunction);
+        ScriptFunction *instance = UnsafeVarTo<ScriptFunction>(scriptFunction);
 
         // We keep a reference to the current class rather than its super prototype
         // since the prototype could change.
@@ -9724,12 +9779,12 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     Var JavascriptOperators::OP_LdHomeObjProto(Var homeObj, ScriptContext* scriptContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(LdHomeObjProto, reentrancylock, scriptContext->GetThreadContext());
-        if (homeObj == nullptr || !RecyclableObject::Is(homeObj))
+        if (homeObj == nullptr || !VarIs<RecyclableObject>(homeObj))
         {
             return scriptContext->GetLibrary()->GetUndefined();
         }
 
-        RecyclableObject *thisObjPrototype = RecyclableObject::FromVar(homeObj);
+        RecyclableObject *thisObjPrototype = VarTo<RecyclableObject>(homeObj);
 
         TypeId typeId = thisObjPrototype->GetTypeId();
 
@@ -9742,7 +9797,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         RecyclableObject *superBase = thisObjPrototype->GetPrototype();
 
-        if (superBase == nullptr || !RecyclableObject::Is(superBase))
+        if (superBase == nullptr || !VarIsCorrectType(superBase))
         {
             return scriptContext->GetLibrary()->GetUndefined();
         }
@@ -9756,7 +9811,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(LdFuncObj);
         // use self as value of [[FunctionObject]] - this is true only for constructors
 
-        Assert(RecyclableObject::Is(scriptFunction));
+        Assert(VarIs<RecyclableObject>(scriptFunction));
 
         return scriptFunction;
         JIT_HELPER_END(LdFuncObj);
@@ -9765,7 +9820,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     Var JavascriptOperators::OP_LdFuncObjProto(Var funcObj, ScriptContext* scriptContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(LdFuncObjProto, reentrancylock, scriptContext->GetThreadContext());
-        RecyclableObject *superCtor = RecyclableObject::FromVar(funcObj)->GetPrototype();
+        RecyclableObject *superCtor = VarTo<RecyclableObject>(funcObj)->GetPrototype();
 
         if (superCtor == nullptr || !IsConstructor(superCtor))
         {
@@ -9778,7 +9833,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     Var JavascriptOperators::OP_ImportCall(__in JavascriptFunction *function, __in Var specifier, __in ScriptContext* scriptContext)
     {
-        JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(ImportCall);
+        JIT_HELPER_REENTRANT_HEADER(ImportCall);
         ModuleRecordBase *moduleRecordBase = nullptr;
         SourceTextModuleRecord *moduleRecord = nullptr;
 
@@ -9919,7 +9974,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                         }
 
                         Var result = nullptr;
-                        RecyclableObject* method = RecyclableObject::FromVar(prop);
+                        RecyclableObject* method = VarTo<RecyclableObject>(prop);
                         BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
                         {
                             Var args[] = { iterator, yieldData->data };
@@ -9949,7 +10004,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 JavascriptError::ThrowTypeError(scriptContext, JSERR_Property_NeedFunction, isNext ? _u("next") : isThrow ? _u("throw") : _u("return"));
             }
 
-            RecyclableObject* method = RecyclableObject::FromVar(prop);
+            RecyclableObject* method = VarTo<RecyclableObject>(prop);
             Var result = scriptContext->GetThreadContext()->ExecuteImplicitCall(method, Js::ImplicitCall_Accessor, [=]()->Js::Var
             {
                 Var args[] = { iterator, yieldData->data };
@@ -9970,7 +10025,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 return result;
             }
 
-            RecyclableObject* obj = RecyclableObject::FromVar(result);
+            RecyclableObject* obj = VarTo<RecyclableObject>(result);
             Var done = JavascriptOperators::GetProperty(obj, PropertyIds::done, scriptContext);
             if (done == iterator->GetLibrary()->GetTrue())
             {
@@ -10036,15 +10091,15 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         case Js::TypeIds_Integer:
             return instance;
         case Js::TypeIds_RegEx:
-            return JavascriptRegExp::BoxStackInstance(JavascriptRegExp::FromVar(instance), deepCopy);
+            return JavascriptRegExp::BoxStackInstance(VarTo<JavascriptRegExp>(instance), deepCopy);
         case Js::TypeIds_Object:
-            return DynamicObject::BoxStackInstance(DynamicObject::FromVar(instance), deepCopy);
+            return DynamicObject::BoxStackInstance(VarTo<DynamicObject>(instance), deepCopy);
         case Js::TypeIds_Array:
-            return JavascriptArray::BoxStackInstance(JavascriptArray::UnsafeFromVar(instance), deepCopy);
+            return JavascriptArray::BoxStackInstance(UnsafeVarTo<JavascriptArray>(instance), deepCopy);
         case Js::TypeIds_NativeIntArray:
-            return JavascriptNativeIntArray::BoxStackInstance(JavascriptNativeIntArray::UnsafeFromVar(instance), deepCopy);
+            return JavascriptNativeIntArray::BoxStackInstance(UnsafeVarTo<JavascriptNativeIntArray>(instance), deepCopy);
         case Js::TypeIds_NativeFloatArray:
-            return JavascriptNativeFloatArray::BoxStackInstance(JavascriptNativeFloatArray::UnsafeFromVar(instance), deepCopy);
+            return JavascriptNativeFloatArray::BoxStackInstance(UnsafeVarTo<JavascriptNativeFloatArray>(instance), deepCopy);
         case Js::TypeIds_Function:
             Assert(allowStackFunction);
             // Stack functions are deal with not mar mark them, but by nested function escape analysis
@@ -10260,7 +10315,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         __out_bcount(length*elementSize) byte* buffer,
         Js::ScriptContext* scriptContext)
     {
-        Js::DynamicObject* dynamicObject = DynamicObject::FromVar(arrayObject);
+        Js::DynamicObject* dynamicObject = VarTo<DynamicObject>(arrayObject);
         if (dynamicObject->IsCrossSiteObject() || Js::TaggedInt::IsOverflow(length))
         {
             Js::JavascriptOperators::ObjectToNativeArray(&arrayObject, valueType, length, elementSize, buffer, scriptContext);
@@ -10273,13 +10328,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             switch (Js::JavascriptOperators::GetTypeId(arrayObject))
             {
             case TypeIds_Array:
-                Js::JavascriptOperators::ObjectToNativeArray(Js::JavascriptArray::UnsafeFromVar(arrayObject), valueType, length, elementSize, buffer, scriptContext);
+                Js::JavascriptOperators::ObjectToNativeArray(Js::UnsafeVarTo<Js::JavascriptArray>(arrayObject), valueType, length, elementSize, buffer, scriptContext);
                 break;
             case TypeIds_NativeFloatArray:
-                Js::JavascriptOperators::ObjectToNativeArray(Js::JavascriptNativeFloatArray::UnsafeFromVar(arrayObject), valueType, length, elementSize, buffer, scriptContext);
+                Js::JavascriptOperators::ObjectToNativeArray(Js::UnsafeVarTo<Js::JavascriptNativeFloatArray>(arrayObject), valueType, length, elementSize, buffer, scriptContext);
                 break;
             case TypeIds_NativeIntArray:
-                Js::JavascriptOperators::ObjectToNativeArray(Js::JavascriptNativeIntArray::UnsafeFromVar(arrayObject), valueType, length, elementSize, buffer, scriptContext);
+                Js::JavascriptOperators::ObjectToNativeArray(Js::UnsafeVarTo<Js::JavascriptNativeIntArray>(arrayObject), valueType, length, elementSize, buffer, scriptContext);
                 break;
                 // We can have more specialized template if needed.
             default:
@@ -10313,7 +10368,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             //6.Let S be Get(C, @@species).
             //7.ReturnIfAbrupt(S).
             Var species = nullptr;
-            if (!JavascriptOperators::GetProperty(RecyclableObject::FromVar(constructor),
+            if (!JavascriptOperators::GetProperty(VarTo<RecyclableObject>(constructor),
                 PropertyIds::_symbolSpecies, &species, scriptContext)
                 || JavascriptOperators::IsUndefinedOrNull(species))
             {
@@ -10470,7 +10525,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_SAME_ATTRIBUTES(Op_Equal, Op_Equal_Full);
         if (aLeft == aRight)
         {
-            if (TaggedInt::Is(aLeft) || JavascriptObject::Is(aLeft))
+            if (TaggedInt::Is(aLeft) || DynamicObject::IsBaseDynamicObject(aLeft))
             {
                 return true;
             }
@@ -10480,7 +10535,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             }
         }
 
-        if (JavascriptString::Is(aLeft) && JavascriptString::Is(aRight))
+        if (VarIs<JavascriptString>(aLeft) && VarIs<JavascriptString>(aRight))
         {
             JavascriptString* left = (JavascriptString*)aLeft;
             JavascriptString* right = (JavascriptString*)aRight;
@@ -10588,14 +10643,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_END(Op_ConvObject);
     }
 
-    Var JavascriptOperators::ToWithObject(Var aRight, ScriptContext* scriptContext)
+    Var JavascriptOperators::ToUnscopablesWrapperObject(Var aRight, ScriptContext* scriptContext)
     {
-        JIT_HELPER_NOT_REENTRANT_HEADER(Op_NewWithObject, reentrancylock, scriptContext->GetThreadContext());
-        RecyclableObject* object = RecyclableObject::FromVar(aRight);
+        JIT_HELPER_NOT_REENTRANT_HEADER(Op_NewUnscopablesWrapperObject, reentrancylock, scriptContext->GetThreadContext());
+        RecyclableObject* object = VarTo<RecyclableObject>(aRight);
 
-        WithScopeObject* withWrapper = RecyclerNew(scriptContext->GetRecycler(), WithScopeObject, object, scriptContext->GetLibrary()->GetWithType());
+        UnscopablesWrapperObject* withWrapper = RecyclerNew(scriptContext->GetRecycler(), UnscopablesWrapperObject, object, scriptContext->GetLibrary()->GetWithType());
         return withWrapper;
-        JIT_HELPER_END(Op_NewWithObject);
+        JIT_HELPER_END(Op_NewUnscopablesWrapperObject);
     }
 
     Var JavascriptOperators::ToNumber(Var aRight, ScriptContext* scriptContext)
@@ -10608,6 +10663,15 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
         return JavascriptNumber::ToVarIntCheck(JavascriptConversion::ToNumber_Full(aRight, scriptContext), scriptContext);
         JIT_HELPER_END(Op_ConvNumber_Full);
+    }
+
+    Var JavascriptOperators::ToNumeric(Var aRight, ScriptContext* scriptContext)
+    {
+        if (JavascriptOperators::GetTypeId(aRight) == TypeIds_BigInt)
+        {
+            return aRight;
+        }
+        return JavascriptOperators::ToNumber(aRight, scriptContext);
     }
 
     BOOL JavascriptOperators::IsObject(_In_ RecyclableObject* instance)
@@ -10686,7 +10750,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     BOOL JavascriptOperators::IsNull(Var instance, JavascriptLibrary* library)
     {
-        Assert(!RecyclableObject::Is(instance) ? TRUE : ((RecyclableObject*)instance)->GetScriptContext()->GetLibrary() == library );
+        Assert(!VarIs<RecyclableObject>(instance) ? TRUE : ((RecyclableObject*)instance)->GetScriptContext()->GetLibrary() == library );
         return library->GetNull() == instance;
     }
 
@@ -10725,7 +10789,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
     BOOL JavascriptOperators::IsUndefinedObject(Var instance, JavascriptLibrary* library)
     {
-        Assert(!RecyclableObject::Is(instance) ? TRUE : ((RecyclableObject*)instance)->GetScriptContext()->GetLibrary() == library );
+        Assert(!VarIs<RecyclableObject>(instance) ? TRUE : ((RecyclableObject*)instance)->GetScriptContext()->GetLibrary() == library );
         return JavascriptOperators::IsUndefinedObject(instance, library->GetUndefined());
     }
 
@@ -10762,7 +10826,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             JavascriptError::ThrowTypeError(scriptContext, JSERR_Property_NeedFunction);
         }
 
-        RecyclableObject* function = RecyclableObject::FromVar(func);
+        RecyclableObject* function = VarTo<RecyclableObject>(func);
         return function;
     }
 
@@ -10786,7 +10850,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             JavascriptError::ThrowTypeError(scriptContext, JSERR_NeedObject);
         }
 
-        return RecyclableObject::FromVar(iterator);
+        return VarTo<RecyclableObject>(iterator);
     }
 
     void JavascriptOperators::IteratorClose(RecyclableObject* iterator, ScriptContext* scriptContext)
@@ -10797,7 +10861,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
             if (JavascriptConversion::IsCallable(func))
             {
-                RecyclableObject* callable = RecyclableObject::FromVar(func);
+                RecyclableObject* callable = VarTo<RecyclableObject>(func);
                 scriptContext->GetThreadContext()->ExecuteImplicitCall(callable, ImplicitCall_Accessor, [=]()->Var
                 {
                     Js::Var args[] = { iterator };
@@ -10829,7 +10893,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             JavascriptError::ThrowTypeError(scriptContext, JSERR_NeedFunction);
         }
 
-        RecyclableObject* callable = RecyclableObject::FromVar(func);
+        RecyclableObject* callable = VarTo<RecyclableObject>(func);
         Var result = threadContext->ExecuteImplicitCall(callable, ImplicitCall_Accessor, [=]() -> Var
             {
                 Js::Var args[] = { iterator, value };
@@ -10846,7 +10910,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             JavascriptError::ThrowTypeError(scriptContext, JSERR_NeedObject);
         }
 
-        return RecyclableObject::FromVar(result);
+        return VarTo<RecyclableObject>(result);
     }
 
     // IteratorComplete as described in ES6.0 (draft 22) Section 7.4.3
@@ -10902,9 +10966,9 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         // If constructor.prototype is an object, we should use that as the [[Prototype]] for our obj.
         // Else, we set the [[Prototype]] internal slot of obj to %intrinsicProto% - which should be the default.
         if (JavascriptOperators::IsObjectType(JavascriptOperators::GetTypeId(proto)) &&
-            DynamicObject::FromVar(proto) != intrinsicProto)
+            VarTo<DynamicObject>(proto) != intrinsicProto)
         {
-            JavascriptObject::ChangePrototype(obj, RecyclableObject::FromVar(proto), /*validate*/true, scriptContext);
+            JavascriptObject::ChangePrototype(obj, VarTo<RecyclableObject>(proto), /*validate*/true, scriptContext);
         }
 
         return obj;
