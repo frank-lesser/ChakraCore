@@ -189,7 +189,8 @@ enum RecyclerCollectCallBackFlags
     Collect_Begin_Partial            = 0x21,
     Collect_Begin_Concurrent_Partial = Collect_Begin_Concurrent | Collect_Begin_Partial,
     Collect_End                      = 0x02,
-    Collect_Wait                     = 0x04     // callback can be from another thread
+    Collect_Wait                     = 0x04,     // callback can be from another thread
+    Collect_Begin_Sweep              = 0x08
 };
 typedef void (__cdecl *RecyclerCollectCallBackFunction)(void * context, RecyclerCollectCallBackFlags flags);
 
@@ -345,6 +346,25 @@ public:
         // Abstract notion to hold onto threadHandle of worker thread
         HANDLE threadHandle;
         WorkerThread(HANDLE handle = nullptr) :threadHandle(handle){};
+    };
+
+    struct AutoRestoreImplicitFlags
+    {
+        ThreadContext * threadContext;
+        Js::ImplicitCallFlags savedImplicitCallFlags;
+        DisableImplicitFlags savedDisableImplicitFlags;
+        AutoRestoreImplicitFlags(ThreadContext *threadContext, Js::ImplicitCallFlags implicitCallFlags, DisableImplicitFlags disableImplicitFlags) :
+            threadContext(threadContext),
+            savedImplicitCallFlags(implicitCallFlags),
+            savedDisableImplicitFlags(disableImplicitFlags)
+        {
+        }
+
+        ~AutoRestoreImplicitFlags()
+        {
+            threadContext->SetImplicitCallFlags((Js::ImplicitCallFlags)(savedImplicitCallFlags));
+            threadContext->SetDisableImplicitFlags((DisableImplicitFlags)savedDisableImplicitFlags);
+        }
     };
 
     void SetCurrentThreadId(DWORD threadId) { this->currentThreadId = threadId; }

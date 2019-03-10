@@ -87,6 +87,7 @@ PHASE(All)
             PHASE(InlineApply)
             PHASE(InlineApplyTarget)
             PHASE(InlineApplyWithoutArrayArg)
+            PHASE(InlineAnyCallApplyTarget)
             PHASE(BailOutOnNotStackArgs)
             PHASE(InlineCall)
             PHASE(InlineCallTarget)
@@ -188,6 +189,7 @@ PHASE(All)
                 PHASE(UseFixedDataProps)
                 PHASE(UseFixedDataPropsInInliner)
                 PHASE(LazyBailout)
+                    PHASE(LazyBailoutOnImplicitCalls)
                     PHASE(LazyFixedDataBailout)
                     PHASE(LazyFixedTypeBailout)
                 PHASE(FixedMethods)
@@ -523,7 +525,10 @@ PHASE(All)
 #define DEFAULT_CONFIG_MaxJitThreadCount        (2)
 #define DEFAULT_CONFIG_ForceMaxJitThreadCount   (false)
 
+#ifdef ENABLE_SPECTRE_RUNTIME_MITIGATIONS
 #define DEFAULT_CONFIG_MitigateSpectre (true)
+
+#define DEFAULT_CONFIG_AddMaskingBlocks (true)
 
 #define DEFAULT_CONFIG_PoisonVarArrayLoad (true)
 #define DEFAULT_CONFIG_PoisonIntArrayLoad (true)
@@ -538,6 +543,25 @@ PHASE(All)
 #define DEFAULT_CONFIG_PoisonTypedArrayStore (true)
 #define DEFAULT_CONFIG_PoisonStringStore (true)
 #define DEFAULT_CONFIG_PoisonObjectsForStores (true)
+#else
+#define DEFAULT_CONFIG_MitigateSpectre (false)
+
+#define DEFAULT_CONFIG_AddMaskingBlocks (false)
+
+#define DEFAULT_CONFIG_PoisonVarArrayLoad (false)
+#define DEFAULT_CONFIG_PoisonIntArrayLoad (false)
+#define DEFAULT_CONFIG_PoisonFloatArrayLoad (false)
+#define DEFAULT_CONFIG_PoisonTypedArrayLoad (false)
+#define DEFAULT_CONFIG_PoisonStringLoad (false)
+#define DEFAULT_CONFIG_PoisonObjectsForLoads (false)
+
+#define DEFAULT_CONFIG_PoisonVarArrayStore (false)
+#define DEFAULT_CONFIG_PoisonIntArrayStore (false)
+#define DEFAULT_CONFIG_PoisonFloatArrayStore (false)
+#define DEFAULT_CONFIG_PoisonTypedArrayStore (false)
+#define DEFAULT_CONFIG_PoisonStringStore (false)
+#define DEFAULT_CONFIG_PoisonObjectsForStores (false)
+#endif
 
 #ifdef RECYCLER_PAGE_HEAP
 #define DEFAULT_CONFIG_PageHeap             ((Js::Number) PageHeapMode::PageHeapModeOff)
@@ -653,9 +677,10 @@ PHASE(All)
 #define DEFAULT_CONFIG_ES6UnicodeVerbose       (true)
 #define DEFAULT_CONFIG_ES6Unscopables          (true)
 #define DEFAULT_CONFIG_ES6RegExSticky          (true)
-#define DEFAULT_CONFIG_ES2018RegExDotAll          (true)
-#define DEFAULT_CONFIG_ESBigInt          (false)
+#define DEFAULT_CONFIG_ES2018RegExDotAll       (true)
+#define DEFAULT_CONFIG_ESBigInt                (false)
 #define DEFAULT_CONFIG_ESSymbolDescription     (true)
+#define DEFAULT_CONFIG_ESGlobalThis            (true)
 #ifdef COMPILE_DISABLE_ES6RegExPrototypeProperties
     // If ES6RegExPrototypeProperties needs to be disabled by compile flag, DEFAULT_CONFIG_ES6RegExPrototypeProperties should be false
     #define DEFAULT_CONFIG_ES6RegExPrototypeProperties (false)
@@ -1193,6 +1218,9 @@ FLAGR(Boolean, ESBigInt, "Enable ESBigInt flag", DEFAULT_CONFIG_ESBigInt)
 // ES Symbol.prototype.description flag
 FLAGR(Boolean, ESSymbolDescription, "Enable Symbol.prototype.description", DEFAULT_CONFIG_ESSymbolDescription)
 
+//ES globalThis flag
+FLAGR(Boolean, ESGlobalThis, "Enable globalThis", DEFAULT_CONFIG_ESGlobalThis)
+
 // This flag to be removed once JITing generator functions is stable
 FLAGNR(Boolean, JitES6Generators        , "Enable JITing of ES6 generators", false)
 
@@ -1320,6 +1348,8 @@ FLAGNR(Number,  MaxJitThreadCount     , "Number of maximum allowed parallel jit 
 FLAGNR(Boolean, ForceMaxJitThreadCount, "Force the number of parallel jit threads as specified by MaxJitThreadCount flag (creation guaranteed)", DEFAULT_CONFIG_ForceMaxJitThreadCount)
 
 FLAGR(Boolean, MitigateSpectre, "Use mitigations for Spectre", DEFAULT_CONFIG_MitigateSpectre)
+
+FLAGPR(Boolean, MitigateSpectre, AddMaskingBlocks, "Optimize Spectre mitigations by masking on loop out edges", DEFAULT_CONFIG_AddMaskingBlocks)
 
 FLAGPR(Boolean, MitigateSpectre, PoisonVarArrayLoad, "Poison loads from Var arrays", DEFAULT_CONFIG_PoisonVarArrayLoad)
 FLAGPR(Boolean, MitigateSpectre, PoisonIntArrayLoad, "Poison loads from Int arrays", DEFAULT_CONFIG_PoisonIntArrayLoad)

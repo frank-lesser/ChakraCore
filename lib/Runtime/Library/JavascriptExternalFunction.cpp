@@ -58,7 +58,7 @@ namespace Js
 
     bool __cdecl JavascriptExternalFunction::DeferredLengthInitializer(DynamicObject * instance, DeferredTypeHandlerBase * typeHandler, DeferredInitializeMode mode)
     {
-        Js::JavascriptLibrary::InitializeFunction<true, true, true>(instance, typeHandler, mode);
+        Js::JavascriptLibrary::InitializeFunction<true, true, true, true>(instance, typeHandler, mode);
 
         JavascriptExternalFunction* object = static_cast<JavascriptExternalFunction*>(instance);
 
@@ -314,24 +314,6 @@ namespace Js
         END_LEAVE_SCRIPT(scriptContext);
 #endif
 
-        bool marshallingMayBeNeeded = false;
-        if (result != nullptr)
-        {
-            marshallingMayBeNeeded = Js::VarIs<Js::RecyclableObject>(result);
-            if (marshallingMayBeNeeded)
-            {
-            Js::RecyclableObject * obj = Js::VarTo<Js::RecyclableObject>(result);
-
-            // For JSRT, we could get result marshalled in different context.
-            bool isJSRT = scriptContext->GetThreadContext()->IsJSRT();
-                marshallingMayBeNeeded = obj->GetScriptContext() != scriptContext;
-                if (!isJSRT && marshallingMayBeNeeded)
-            {
-                Js::Throw::InternalError();
-            }
-        }
-        }
-
         if (scriptContext->HasRecordedException())
         {
             bool considerPassingToDebugger = false;
@@ -354,7 +336,7 @@ namespace Js
         {
             result = scriptContext->GetLibrary()->GetUndefined();
         }
-        else if (marshallingMayBeNeeded)
+        else
         {
             result = CrossSite::MarshalVar(scriptContext, result);
         }

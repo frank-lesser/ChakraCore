@@ -15,7 +15,12 @@ namespace Js {
     inline BOOL JavascriptConversion::ToBoolean(Var aValue,ScriptContext* scriptContext)
     {
         JIT_HELPER_NOT_REENTRANT_HEADER(Conv_ToBoolean, reentrancylock, scriptContext->GetThreadContext());
-        if (TaggedInt::Is(aValue))
+
+        if (VarIs<JavascriptBoolean>(aValue))
+        {
+            return UnsafeVarTo<JavascriptBoolean>(aValue)->GetValue();
+        }
+        else if (TaggedInt::Is(aValue))
         {
             return aValue != reinterpret_cast<Var>(AtomTag_IntPtr);
         }
@@ -297,10 +302,11 @@ namespace Js {
 #if FLOATVAR
            if (typeId == TypeIds_Number)
            {
-               // NaN could have sign bit set, but that isn't observable so canonicalize to positive NaN
                double numberValue = JavascriptNumber::GetValue(value);
                return JavascriptNumber::IsNan(numberValue)
-                   ? JavascriptNumber::ToVar(JavascriptNumber::NaN)
+                   ? JavascriptNumber::IsNegative(numberValue)
+                        ? JavascriptNumber::ToVar(JavascriptNumber::NegativeNaN)
+                        : JavascriptNumber::ToVar(JavascriptNumber::NaN)
                    : value;
            }
 #else

@@ -310,6 +310,7 @@ namespace Js
         virtual BOOL IsCrossSiteObject() const { return FALSE; }
 
         virtual DynamicType* DuplicateType();
+        DynamicType* DuplicateTypeAndTypeHandler();
         virtual void PrepareForConversionToNonPathType();
         static bool IsTypeHandlerCompatibleForObjectHeaderInlining(DynamicTypeHandler * oldTypeHandler, DynamicTypeHandler * newTypeHandler);
 
@@ -332,6 +333,8 @@ namespace Js
         RecyclerWeakReference<DynamicObject>* CreateWeakReferenceToSelf();
 
         void SetObjectArray(ArrayObject* objectArray);
+
+        virtual DynamicObject* Copy(bool deepCopy);
     protected:
         BOOL GetEnumeratorWithPrefix(JavascriptEnumerator * prefixEnumerator, JavascriptStaticEnumerator * enumerator, EnumeratorFlags flags, ScriptContext * scriptContext, EnumeratorCache * enumeratorCache);
 
@@ -347,6 +350,7 @@ namespace Js
         static DynamicObject * BoxStackInstance(DynamicObject * instance, bool deepCopy);
 
     private:
+
         ArrayObject* EnsureObjectArray();
         ArrayObject* GetObjectArrayOrFlagsAsArray() const { return objectArray; }
 

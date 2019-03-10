@@ -195,7 +195,11 @@ namespace Js
         {
             DynamicObject* obj = UnsafeVarTo<DynamicObject>(this);
             return obj->GetTypeHandler()->GetHasOnlyWritableDataProperties() &&
-                (!obj->HasObjectArray() || obj->GetObjectArrayOrFlagsAsArray()->HasOnlyWritableDataProperties());
+                (!obj->HasObjectArray() || obj->GetObjectArrayOrFlagsAsArray()->HasOnlyWritableDataProperties())
+#ifdef _CHAKRACOREBUILD
+                && (!VarIs<CustomExternalWrapperObject>(obj) || UnsafeVarTo<CustomExternalWrapperObject>(obj)->IsInitialized())
+#endif
+                ;
         }
 
         return true;
@@ -207,7 +211,11 @@ namespace Js
         {
             DynamicObject* obj = UnsafeVarTo<DynamicObject>(this);
             return obj->GetTypeHandler()->GetHasSpecialProperties() ||
-                (obj->HasObjectArray() && obj->GetObjectArrayOrFlagsAsArray()->HasAnySpecialProperties());
+                (obj->HasObjectArray() && obj->GetObjectArrayOrFlagsAsArray()->HasAnySpecialProperties())
+#ifdef _CHAKRACOREBUILD
+                || (VarIs<CustomExternalWrapperObject>(obj) && !UnsafeVarTo<CustomExternalWrapperObject>(obj)->IsInitialized())
+#endif
+                ;
         }
 
         return true;
@@ -640,7 +648,7 @@ namespace Js
             case TypeIds_UInt64Number:
             {
                 unsigned __int64 leftValue = VarTo<JavascriptUInt64Number>(aLeft)->GetValue();
-                unsigned __int64 rightValue = VarTo<JavascriptInt64Number>(aRight)->GetValue();
+                unsigned __int64 rightValue = VarTo<JavascriptUInt64Number>(aRight)->GetValue();
                 *value = leftValue == rightValue;
                 return TRUE;
             }

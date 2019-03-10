@@ -67,6 +67,7 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     m_hasInlineArgsOpt(false),
     m_canDoInlineArgsOpt(true),
     unoptimizableArgumentsObjReference(0),
+    unoptimizableArgumentsObjReferenceInInlinees(0),
     m_doFastPaths(false),
     hasBailout(false),
     firstIRTemp(0),
@@ -142,7 +143,6 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
     , constantAddressRegOpnd(alloc)
     , lastConstantAddressRegLoadInstr(nullptr)
     , m_totalJumpTableSizeInBytesForSwitchStatements(0)
-    , slotArrayCheckTable(nullptr)
     , frameDisplayCheckTable(nullptr)
     , stackArgWithFormalsTracker(nullptr)
     , m_forInLoopBaseDepth(0)
@@ -155,6 +155,8 @@ Func::Func(JitArenaAllocator *alloc, JITTimeWorkItem * workItem,
 #ifdef RECYCLER_WRITE_BARRIER_JIT
     , m_lowerer(nullptr)
 #endif
+    , m_lazyBailOutRecordSlot(nullptr)
+    , hasLazyBailOut(false)
 {
 
     Assert(this->IsInlined() == !!runtimeInfo);
@@ -1028,29 +1030,6 @@ Func::GetLocalsPointer() const
 
 #endif
 
-void Func::AddSlotArrayCheck(IR::SymOpnd *fieldOpnd)
-{
-    if (PHASE_OFF(Js::ClosureRangeCheckPhase, this))
-    {
-        return;
-    }
-
-    Assert(IsTopFunc());
-    if (this->slotArrayCheckTable == nullptr)
-    {
-        this->slotArrayCheckTable = SlotArrayCheckTable::New(m_alloc, 4);
-    }
-
-    PropertySym *propertySym = fieldOpnd->m_sym->AsPropertySym();
-    uint32 slot = propertySym->m_propertyId;
-    uint32 *pSlotId = this->slotArrayCheckTable->FindOrInsert(slot, propertySym->m_stackSym->m_id);
-
-    if (pSlotId && (*pSlotId == (uint32)-1 || *pSlotId < slot))
-    {
-        *pSlotId = propertySym->m_propertyId;
-    }
-}
-
 void Func::AddFrameDisplayCheck(IR::SymOpnd *fieldOpnd, uint32 slotId)
 {
     if (PHASE_OFF(Js::ClosureRangeCheckPhase, this))
@@ -1345,6 +1324,10 @@ Func::EndPhase(Js::Phase tag, bool dump)
     {
         Assert(!this->isPostLower);
         this->isPostLower = true;
+#ifndef _M_ARM    // Need to verify ARM is clean.
+        DbCheckPostLower dbCheck(this);
+        dbCheck.CheckNestedHelperCalls();
+#endif
     }
     else if (tag == Js::RegAllocPhase)
     {
@@ -1682,14 +1665,14 @@ Func::LinkCtorCacheToPropertyId(Js::PropertyId propertyId, JITTimeConstructorCac
 
 JITTimeConstructorCache* Func::GetConstructorCache(const Js::ProfileId profiledCallSiteId)
 {
-    Assert(profiledCallSiteId < GetJITFunctionBody()->GetProfiledCallSiteCount());
+    AssertOrFailFast(profiledCallSiteId < GetJITFunctionBody()->GetProfiledCallSiteCount());
     Assert(this->constructorCaches != nullptr);
     return this->constructorCaches[profiledCallSiteId];
 }
 
 void Func::SetConstructorCache(const Js::ProfileId profiledCallSiteId, JITTimeConstructorCache* constructorCache)
 {
-    Assert(profiledCallSiteId < GetJITFunctionBody()->GetProfiledCallSiteCount());
+    AssertOrFailFast(profiledCallSiteId < GetJITFunctionBody()->GetProfiledCallSiteCount());
     Assert(constructorCache != nullptr);
     Assert(this->constructorCaches != nullptr);
     Assert(this->constructorCaches[profiledCallSiteId] == nullptr);
@@ -2066,6 +2049,60 @@ Func::GetForInEnumeratorArrayOffset() const
     Assert(this->m_forInLoopBaseDepth + this->GetJITFunctionBody()->GetForInLoopDepth() <= topFunc->m_forInLoopMaxDepth);
     return topFunc->m_forInEnumeratorArrayOffset
         + this->m_forInLoopBaseDepth * sizeof(Js::ForInObjectEnumerator);
+}
+
+void
+Func::SetHasLazyBailOut()
+{
+    this->hasLazyBailOut = true;
+}
+
+bool
+Func::HasLazyBailOut() const
+{
+    AssertMsg(
+        this->isPostRegAlloc,
+        "We don't know whether a function has lazy bailout until after RegAlloc"
+    );
+    return this->hasLazyBailOut;
+}
+
+void
+Func::EnsureLazyBailOutRecordSlot()
+{
+    if (this->m_lazyBailOutRecordSlot == nullptr)
+    {
+        this->m_lazyBailOutRecordSlot = StackSym::New(TyMachPtr, this);
+        this->StackAllocate(this->m_lazyBailOutRecordSlot, MachPtr);
+    }
+}
+
+StackSym *
+Func::GetLazyBailOutRecordSlot() const
+{
+    Assert(this->m_lazyBailOutRecordSlot != nullptr);
+    return this->m_lazyBailOutRecordSlot;
+}
+
+bool
+Func::ShouldDoLazyBailOut() const
+{
+#if defined(_M_X64)
+    if (!PHASE_ON1(Js::LazyBailoutPhase) ||
+        this->GetJITFunctionBody()->IsAsmJsMode() || // don't have bailouts in asm.js
+        this->HasTry() ||                            // lazy bailout in function with try/catch not supported for now
+                                                     // `EHBailoutPatchUp` set a `hasBailedOut` bit to rethrow the exception in the interpreter
+                                                     // if the instruction has ANY bailout. In the future, to implement lazy bailout with try/catch,
+                                                     // we would need to change how this bit is generated.
+        this->IsLoopBody())                          // don't do lazy bailout on jit'd loop body either
+    {
+        return false;
+    }
+
+    return true;
+#else
+    return false;
+#endif
 }
 
 #if DBG_DUMP

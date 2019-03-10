@@ -788,7 +788,7 @@ NativeCodeGenerator::IsValidVar(const Js::Var var, Recycler *const recycler)
         return false;
     }
 
-    // Not using DynamicObject::FromVar since there's a virtual call in there
+    // Not using VarTo<DynamicObject> since there's a virtual call in there
     DynamicObject *const object = static_cast<DynamicObject *>(recyclableObject);
     if(!recycler->IsValidObject(object, sizeof(*object)))
     {
@@ -2813,6 +2813,38 @@ NativeCodeGenerator::GatherCodeGenData(
                 if (!isJitTimeDataComputed)
                 {
                     jitTimeData->AddInlinee(recycler, profiledCallSiteId, inlinee);
+                    
+                    if (inlinee->IsBuiltInApplyFunction() || inlinee->IsBuiltInCallFunction())
+                    {
+                        // .call/.apply targets
+                        Js::FunctionInfo *const targetFunctionInfo = inliningDecider.InlineCallApplyTarget(functionBody, profiledCallSiteId, recursiveInlineDepth);
+                        if (targetFunctionInfo != nullptr)
+                        {
+                            Js::FunctionBody *const targetFunctionBody = targetFunctionInfo->GetFunctionBody();
+                            Js::ProfileId callApplyCallSiteId = functionBody->GetCallSiteToCallApplyCallSiteArray()[profiledCallSiteId];
+                            if (!targetFunctionBody)
+                            {
+                                jitTimeData->AddCallApplyTargetInlinee(recycler, profiledCallSiteId, callApplyCallSiteId, targetFunctionInfo);
+                            }
+                            else if (targetFunctionBody != functionBody)
+                            {
+                                Js::FunctionCodeGenJitTimeData * targetJittimeData = jitTimeData->AddCallApplyTargetInlinee(recycler, profiledCallSiteId, callApplyCallSiteId, targetFunctionInfo);
+                                Js::FunctionCodeGenRuntimeData * targetRuntimeData = IsInlinee ? runtimeData->EnsureCallApplyTargetInlinee(recycler, callApplyCallSiteId, targetFunctionBody) : functionBody->EnsureCallApplyTargetInlineeCodeGenRuntimeData(recycler, callApplyCallSiteId, targetFunctionBody);
+
+                                GatherCodeGenData<true>(
+                                    recycler,
+                                    topFunctionBody,
+                                    targetFunctionBody,
+                                    entryPoint,
+                                    inliningDecider,
+                                    objTypeSpecFldInfoList,
+                                    targetJittimeData,
+                                    targetRuntimeData);
+
+                                AddInlineCacheStats(jitTimeData, targetJittimeData);
+                            }
+                        }
+                    }
                 }
                 continue;
             }

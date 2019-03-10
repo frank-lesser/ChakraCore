@@ -822,6 +822,10 @@ namespace Js
             {
                 this->UpdateActiveFunctionsForOneDataSet(pActiveFuncs, callSiteData, callSiteData->GetCallbackInlinees(), this->GetProfiledCallSiteCount());
             }
+            if (callSiteData->GetCallApplyTargetInlinees())
+            {
+                this->UpdateActiveFunctionsForOneDataSet(pActiveFuncs, callSiteData, callSiteData->GetCallApplyTargetInlinees(), this->GetProfiledCallApplyCallSiteCount());
+            }
         }
 
         // Now walk the top-level data, but only do it once, since it's always the same.
@@ -850,6 +854,15 @@ namespace Js
             {
                 this->UpdateActiveFunctionsForOneDataSet(pActiveFuncs, nullptr, data, this->GetProfiledCallSiteCount());
             }
+        }
+        {
+#if ENABLE_NATIVE_CODEGEN
+            Field(FunctionCodeGenRuntimeData*)* data = this->GetCodeGenCallApplyTargetRuntimeData();
+            if (data != nullptr)
+            {
+                this->UpdateActiveFunctionsForOneDataSet(pActiveFuncs, nullptr, data, this->GetProfiledCallApplyCallSiteCount());
+            }
+#endif
         }
     }
 
@@ -5093,6 +5106,9 @@ namespace Js
         this->cacheIdToPropertyIdMap = nullptr;
         this->SetFormalsPropIdArray(nullptr);
         this->SetReferencedPropertyIdMap(nullptr);
+#if ENABLE_NATIVE_CODEGEN
+        this->SetCallSiteToCallApplyCallSiteArray(nullptr);
+#endif
         this->SetLiteralRegexs(nullptr);
         this->SetSlotIdInCachedScopeToNestedIndexArray(nullptr);
         this->SetStatementMaps(nullptr);
@@ -6540,6 +6556,23 @@ namespace Js
         return slotIdToNestedIndexArray;
     }
 
+#if ENABLE_NATIVE_CODEGEN
+    ProfileId* FunctionBody::CreateCallSiteToCallApplyCallSiteArray()
+    {
+        Assert(this->GetCallSiteToCallApplyCallSiteArray() == nullptr);
+        uint count = this->GetProfiledCallSiteCount();
+        if (count != 0)
+        {
+            this->SetCallSiteToCallApplyCallSiteArray(RecyclerNewArrayLeaf(this->m_scriptContext->GetRecycler(), ProfileId, count));
+            for (uint i = 0; i < count; i++)
+            {
+                this->GetCallSiteToCallApplyCallSiteArray()[i] = Js::Constants::NoProfileId;
+            }
+        }
+        return this->GetCallSiteToCallApplyCallSiteArray();
+    }
+#endif
+
     void FunctionBody::ResetProfileIds()
     {
 #if ENABLE_PROFILE_INFO
@@ -6697,6 +6730,23 @@ namespace Js
         return EnsureCodeGenRuntimeDataCommon<AuxPointerType::CodeGenCallbackRuntimeData>(recycler, profiledCallSiteId, inlinee);
     }
 
+    const FunctionCodeGenRuntimeData * FunctionBody::GetCallApplyTargetInlineeCodeGenRuntimeData(const ProfileId callApplyCallSiteId) const
+    {
+        Assert(callApplyCallSiteId < GetProfiledCallApplyCallSiteCount());
+
+        Field(FunctionCodeGenRuntimeData*)* codeGenRuntimeData = this->GetCodeGenCallApplyTargetRuntimeDataWithLock();
+        return codeGenRuntimeData ? codeGenRuntimeData[callApplyCallSiteId] : nullptr;
+    }
+
+    FunctionCodeGenRuntimeData * FunctionBody::EnsureCallApplyTargetInlineeCodeGenRuntimeData(
+        Recycler *const recycler,
+        const ProfileId callApplyCallSiteId,
+        FunctionBody *const inlinee)
+    {
+        Assert(callApplyCallSiteId < this->GetProfiledCallApplyCallSiteCount());
+        return EnsureCodeGenRuntimeDataCommon<AuxPointerType::CodeGenCallApplyTargetRuntimeData>(recycler, callApplyCallSiteId, inlinee);
+    }
+    
     const FunctionCodeGenRuntimeData *FunctionBody::GetLdFldInlineeCodeGenRuntimeData(const InlineCacheIndex inlineCacheIndex) const
     {
         Assert(inlineCacheIndex < this->GetInlineCacheCount());
@@ -8317,7 +8367,7 @@ namespace Js
             Js::PropertyGuard* sharedPropertyGuard = nullptr;
             bool hasSharedPropertyGuard = nativeEntryPointData->TryGetSharedPropertyGuard(propertyId, sharedPropertyGuard);
             Assert(hasSharedPropertyGuard);
-            bool isValid = hasSharedPropertyGuard ? sharedPropertyGuard->IsValid() : false;
+            bool isValid = hasSharedPropertyGuard && sharedPropertyGuard->IsValid();
             if (isValid)
             {
                 scriptContext->GetThreadContext()->RegisterLazyBailout(propertyId, this);
@@ -8673,7 +8723,14 @@ namespace Js
 
     }
 
-    void EntryPointInfo::DoLazyBailout(BYTE** addressOfInstructionPointer, Js::FunctionBody* functionBody, const PropertyRecord* propertyRecord)
+    void EntryPointInfo::DoLazyBailout(
+        BYTE **addressOfInstructionPointer,
+        BYTE *framePointer
+#if DBG
+        , Js::FunctionBody *functionBody
+        , const PropertyRecord *propertyRecord
+#endif
+    )
     {
         BYTE* instructionPointer = *addressOfInstructionPointer;
         NativeEntryPointData * nativeEntryPointData = this->GetNativeEntryPointData();
@@ -8681,40 +8738,53 @@ namespace Js
         ptrdiff_t codeSize = nativeEntryPointData->GetCodeSize();
         Assert(instructionPointer > (BYTE*)nativeAddress && instructionPointer < ((BYTE*)nativeAddress + codeSize));
         size_t offset = instructionPointer - (BYTE*)nativeAddress;
-        BailOutRecordMap * bailoutRecordMap = this->GetInProcNativeEntryPointData()->GetBailOutRecordMap();
-        int found = bailoutRecordMap->BinarySearch([=](const LazyBailOutRecord& record, int index)
+        NativeLazyBailOutRecordList * bailOutRecordList = this->GetInProcNativeEntryPointData()->GetSortedLazyBailOutRecordList();
+
+        AssertMsg(bailOutRecordList != nullptr, "Lazy Bailout: bailOutRecordList is missing");
+
+        int found = bailOutRecordList->BinarySearch([=](const LazyBailOutRecord& record, int index)
         {
-            // find the closest entry which is greater than the current offset.
-            if (record.offset >= offset)
+            if (record.offset == offset)
             {
-                if (index == 0 || (index > 0 && bailoutRecordMap->Item(index - 1).offset < offset))
-                {
-                    return 0;
-                }
-                else
-                {
-                    return 1;
-                }
+                return 0;
             }
-            return -1;
+            else if (record.offset > offset)
+            {
+                return 1;
+            }
+            else
+            {
+                return -1;
+            }
         });
+
         if (found != -1)
         {
-            LazyBailOutRecord& record = bailoutRecordMap->Item(found);
-            *addressOfInstructionPointer = record.instructionPointer;
-            record.SetBailOutKind();
+            auto inProcNativeEntryPointData = this->GetInProcNativeEntryPointData();
+            const LazyBailOutRecord& record = bailOutRecordList->Item(found);
+            const uint32 lazyBailOutThunkOffset = inProcNativeEntryPointData->GetLazyBailOutThunkOffset();
+            BYTE * const lazyBailOutThunkAddress = (BYTE *) nativeAddress + lazyBailOutThunkOffset;
+
+            // Change the instruction pointer of the frame to our thunk so that
+            // when execution returns back to this frame, we will execute the thunk instead
+            *addressOfInstructionPointer = lazyBailOutThunkAddress;
+
+            // Put the BailOutRecord corresponding to our LazyBailOut point on the pre-allocated slot on the stack
+            BYTE *addressOfLazyBailOutRecordSlot = framePointer + inProcNativeEntryPointData->GetLazyBailOutRecordSlotOffset();
+            *(reinterpret_cast<intptr_t *>(addressOfLazyBailOutRecordSlot)) = reinterpret_cast<intptr_t>(record.bailOutRecord);
+            
             if (PHASE_TRACE1(Js::LazyBailoutPhase))
             {
-                Output::Print(_u("On stack lazy bailout. Property: %s Old IP: 0x%x New IP: 0x%x "), propertyRecord->GetBuffer(), instructionPointer, record.instructionPointer);
 #if DBG
+                Output::Print(_u("On stack lazy bailout. Property: %s Old IP: 0x%x New IP: 0x%x "), propertyRecord->GetBuffer(), instructionPointer, lazyBailOutThunkAddress);
                 record.Dump(functionBody);
-#endif
                 Output::Print(_u("\n"));
+#endif
             }
         }
         else
         {
-            AssertMsg(false, "Lazy Bailout address mapping missing");
+            AssertMsg(false, "Lazy Bailout: Address mapping missing");
         }
     }
 

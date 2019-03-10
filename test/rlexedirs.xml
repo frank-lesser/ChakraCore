@@ -125,6 +125,11 @@
 </dir>
 <dir>
   <default>
+    <files>TryCatch</files>
+  </default>
+</dir>
+<dir>
+  <default>
     <files>Optimizer</files>
     <tags>require_backend</tags>
   </default>
@@ -147,6 +152,11 @@
 <dir>
   <default>
     <files>Prototypes</files>
+  </default>
+</dir>
+<dir>
+  <default>
+    <files>RegAlloc</files>
   </default>
 </dir>
 <dir>

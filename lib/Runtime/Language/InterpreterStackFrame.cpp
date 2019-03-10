@@ -3896,7 +3896,31 @@ skipThunk:
             VarTo<JavascriptFunction>(function)->GetFunctionInfo() : nullptr;
         bool isConstructorCall = (CallFlags_New & flags) == CallFlags_New;
         dynamicProfileInfo->RecordCallSiteInfo(functionBody, profileId, functionInfo, functionInfo ? static_cast<JavascriptFunction*>(function) : nullptr, playout->ArgCount, isConstructorCall, inlineCacheIndex);
+        
+        JavascriptFunction * targetFunction = VarIs<JavascriptFunction>(m_outParams[0]) ? UnsafeVarTo<JavascriptFunction>(m_outParams[0]) : nullptr;
+        
         OP_CallCommon<T>(playout, function, flags, spreadIndices);
+
+        if (functionInfo && !functionInfo->HasBody())
+        {
+            if ((functionInfo->IsBuiltInApplyFunction() || functionInfo->IsBuiltInCallFunction()) && targetFunction)
+            {
+                Js::ProfileId * callSiteToCallApplyCallSiteMap = this->m_functionBody->GetCallSiteToCallApplyCallSiteArray();
+                if (callSiteToCallApplyCallSiteMap)
+                {
+                    Js::ProfileId callApplyCallSiteId = callSiteToCallApplyCallSiteMap[profileId];
+                    if (callApplyCallSiteId < functionBody->GetProfiledCallApplyCallSiteCount())
+                    {
+                        dynamicProfileInfo->RecordCallApplyTargetInfo(functionBody, callApplyCallSiteId, targetFunction->GetFunctionInfo(), targetFunction);
+                    }
+                    else
+                    {
+                        Assert(callApplyCallSiteId == Js::Constants::NoProfileId);
+                    }
+                }
+            }
+        }
+
         if (playout->Return != Js::Constants::NoRegister)
         {
             dynamicProfileInfo->RecordReturnTypeOnCallSiteInfo(functionBody, profileId, GetReg((RegSlot)playout->Return));

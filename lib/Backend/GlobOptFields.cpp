@@ -211,7 +211,6 @@ void
 GlobOpt::KillLiveElems(IR::IndirOpnd * indirOpnd, BVSparse<JitArenaAllocator> * bv, bool inGlobOpt, Func *func)
 {
     IR::RegOpnd *indexOpnd = indirOpnd->GetIndexOpnd();
-
     // obj.x = 10;
     // obj["x"] = ...;   // This needs to kill obj.x...  We need to kill all fields...
     //
@@ -225,17 +224,15 @@ GlobOpt::KillLiveElems(IR::IndirOpnd * indirOpnd, BVSparse<JitArenaAllocator> * 
     // - We check the type specialization status for the sym as well. For the purpose of doing kills, we can assume that
     //   if type specialization happened, that fields don't need to be killed. Note that they may be killed in the next
     //   pass based on the value.
-    if (func->GetThisOrParentInlinerHasArguments() ||
-        (
-            indexOpnd &&
-            (
-                indexOpnd->m_sym->m_isNotNumber ||
-                (inGlobOpt && !indexOpnd->GetValueType().IsNumber() && !currentBlock->globOptData.IsTypeSpecialized(indexOpnd->m_sym))
-            )
-        ))
+    if (func->GetThisOrParentInlinerHasArguments() || this->IsNonNumericRegOpnd(indexOpnd, inGlobOpt))
     {
         this->KillAllFields(bv); // This also kills all property type values, as the same bit-vector tracks those stack syms
         SetAnyPropertyMayBeWrittenTo();
+    }
+    else if (inGlobOpt && indexOpnd && !indexOpnd->GetValueType().IsInt() && !currentBlock->globOptData.IsInt32TypeSpecialized(indexOpnd->m_sym))
+    {
+        // Write/delete to a non-integer numeric index can't alias a name on the RHS of a dot, but it change object layout
+        this->KillAllObjectTypes(bv);
     }
 }
 
@@ -328,10 +325,20 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
         Assert(dstOpnd != nullptr);
         KillLiveFields(this->lengthEquivBv, bv);
         KillLiveElems(dstOpnd->AsIndirOpnd(), bv, inGlobOpt, instr->m_func);
+        if (inGlobOpt)
+        {
+            KillObjectHeaderInlinedTypeSyms(this->currentBlock, false);
+        }
         break;
 
     case Js::OpCode::InitComputedProperty:
+    case Js::OpCode::InitGetElemI:
+    case Js::OpCode::InitSetElemI:
         KillLiveElems(dstOpnd->AsIndirOpnd(), bv, inGlobOpt, instr->m_func);
+        if (inGlobOpt)
+        {
+            KillObjectHeaderInlinedTypeSyms(this->currentBlock, false);
+        }
         break;
 
     case Js::OpCode::DeleteElemI_A:
@@ -394,6 +401,11 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
     case Js::OpCode::InlineArrayPush:
     case Js::OpCode::InlineArrayPop:
         KillLiveFields(this->lengthEquivBv, bv);
+        if (inGlobOpt)
+        {
+            // Deleting an item, or pushing a property to a non-array, may change object layout
+            KillAllObjectTypes(bv);
+        }
         break;
 
     case Js::OpCode::InlineeStart:
@@ -409,19 +421,32 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
     case Js::OpCode::CallDirect:
         fnHelper = instr->GetSrc1()->AsHelperCallOpnd()->m_fnHelper;
 
-        // Kill length field for built-ins that can update it.
-        if(nullptr != this->lengthEquivBv && (fnHelper == IR::JnHelperMethod::HelperArray_Shift || fnHelper == IR::JnHelperMethod::HelperArray_Splice
-            || fnHelper == IR::JnHelperMethod::HelperArray_Unshift))
+        switch (fnHelper)
         {
-            KillLiveFields(this->lengthEquivBv, bv);
-        }
+            case IR::JnHelperMethod::HelperArray_Shift:
+            case IR::JnHelperMethod::HelperArray_Splice:
+            case IR::JnHelperMethod::HelperArray_Unshift:
+                // Kill length field for built-ins that can update it.
+                if (nullptr != this->lengthEquivBv)
+                {
+                    KillLiveFields(this->lengthEquivBv, bv);
+                }
+                // fall through
 
-        if ((fnHelper == IR::JnHelperMethod::HelperRegExp_Exec)
-           || (fnHelper == IR::JnHelperMethod::HelperString_Match)
-           || (fnHelper == IR::JnHelperMethod::HelperString_Replace))
-        {
-            // Consider: We may not need to kill all fields here.
-            this->KillAllFields(bv);
+            case IR::JnHelperMethod::HelperArray_Reverse:
+                // Deleting an item may change object layout
+                if (inGlobOpt)
+                {
+                    KillAllObjectTypes(bv);
+                }
+                break;
+
+            case IR::JnHelperMethod::HelperRegExp_Exec:
+            case IR::JnHelperMethod::HelperString_Match:
+            case IR::JnHelperMethod::HelperString_Replace:
+                // Consider: We may not need to kill all fields here.
+                this->KillAllFields(bv);
+                break;
         }
         break;
 
@@ -431,6 +456,15 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
     case Js::OpCode::LdLetHeapArgsCached:
         if (inGlobOpt) {
             this->KillLiveFields(this->slotSyms, bv);
+        }
+        break;
+
+    case Js::OpCode::InitClass:
+    case Js::OpCode::InitProto:
+    case Js::OpCode::NewScObjectNoCtor:
+        if (inGlobOpt)
+        {
+            KillObjectHeaderInlinedTypeSyms(this->currentBlock, false);
         }
         break;
 

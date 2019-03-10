@@ -132,13 +132,13 @@
               "resolvedOptions": "function <large string>",
               "compare": "function <large string>"
             },
+            "length": "number 0",
             "name": "string Collator",
             "supportedLocalesOf": {
               "#__proto__": "function <large string>",
-              "name": "string <large string>",
-              "length": "number 1"
-            },
-            "length": "number 0"
+              "length": "number 1",
+              "name": "string <large string>"
+            }
           },
           "resolvedOptions": {
             "#__proto__": {
@@ -154,8 +154,8 @@
               "caller": "Error <large string>",
               "arguments": "Error <large string>"
             },
-            "name": "string resolvedOptions",
-            "length": "number 0"
+            "length": "number 0",
+            "name": "string resolvedOptions"
           },
           "compare": {
             "#__proto__": {
@@ -281,13 +281,13 @@
               "resolvedOptions": "function <large string>",
               "format": "function <large string>"
             },
+            "length": "number 0",
             "name": "string NumberFormat",
             "supportedLocalesOf": {
               "#__proto__": "function <large string>",
-              "name": "string <large string>",
-              "length": "number 1"
-            },
-            "length": "number 0"
+              "length": "number 1",
+              "name": "string <large string>"
+            }
           },
           "resolvedOptions": {
             "#__proto__": {
@@ -303,8 +303,8 @@
               "caller": "Error <large string>",
               "arguments": "Error <large string>"
             },
-            "name": "string resolvedOptions",
-            "length": "number 0"
+            "length": "number 0",
+            "name": "string resolvedOptions"
           },
           "format": {
             "#__proto__": {
@@ -430,6 +430,7 @@
               "format": "function <large string>",
               "resolvedOptions": "function <large string>"
             },
+            "length": "number 0",
             "name": "string DateTimeFormat",
             "__relevantExtensionKeys": {
               "#__proto__": "Array []",
@@ -439,10 +440,9 @@
             },
             "supportedLocalesOf": {
               "#__proto__": "function <large string>",
-              "name": "string <large string>",
-              "length": "number 1"
-            },
-            "length": "number 0"
+              "length": "number 1",
+              "name": "string <large string>"
+            }
           },
           "format": {
             "#__proto__": {
@@ -474,8 +474,8 @@
               "caller": "Error <large string>",
               "arguments": "Error <large string>"
             },
-            "name": "string resolvedOptions",
-            "length": "number 0"
+            "length": "number 0",
+            "name": "string resolvedOptions"
           }
         }
       }

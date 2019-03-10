@@ -578,7 +578,12 @@ namespace Js
         virtual void Invalidate(bool prolongEntryPoint) { Assert(false); }
         InlineeFrameRecord* FindInlineeFrame(void* returnAddress);
         bool HasInlinees();
-        void DoLazyBailout(BYTE** addressOfReturnAddress, Js::FunctionBody* functionBody, const PropertyRecord* propertyRecord);
+
+#if DBG
+        void DoLazyBailout(BYTE **addressOfInstructionPointer, BYTE *framePointer, Js::FunctionBody *functionBody, const PropertyRecord *propertyRecord);
+#else
+        void DoLazyBailout(BYTE **addressOfInstructionPointer, BYTE *framePointer);
+#endif
 
         void CleanupNativeCode(ScriptContext * scriptContext);
 #if DBG_DUMP
@@ -896,6 +901,10 @@ namespace Js
 #if ENABLE_PROFILE_INFO
             CallbackArgOutInfoList = 25,
 #endif
+#if ENABLE_NATIVE_CODEGEN
+            CodeGenCallApplyTargetRuntimeData = 26,
+            CallSiteToCallApplyCallSiteArray = 27,
+#endif
 
             Max,
             Invalid = 0xff
@@ -940,6 +949,10 @@ namespace Js
         AuxPointerTypeEntry(AuxPointerType::CodeGenCallbackRuntimeData, Field(FunctionCodeGenRuntimeData*)*);
 #if ENABLE_PROFILE_INFO
         AuxPointerTypeEntry(AuxPointerType::CallbackArgOutInfoList, CallbackInfoList*);
+#endif
+#if ENABLE_NATIVE_CODEGEN
+        AuxPointerTypeEntry(AuxPointerType::CodeGenCallApplyTargetRuntimeData, Field(FunctionCodeGenRuntimeData*)*);
+        AuxPointerTypeEntry(AuxPointerType::CallSiteToCallApplyCallSiteArray, ProfileId*);
 #endif
 #undef AuxPointerTypeEntry
 
@@ -1916,16 +1929,17 @@ namespace Js
                 ObjLiteralCount                         = 15,
                 LiteralRegexCount                       = 16,
                 InnerScopeCount                         = 17,
+                ProfiledCallApplyCallSiteCount          = 18,
 
                 // Following counters uses ((uint32)-1) as default value
-                LocalClosureRegister                    = 18,
-                ParamClosureRegister                    = 19,
-                LocalFrameDisplayRegister               = 20,
-                EnvRegister                             = 21,
-                ThisRegisterForEventHandler             = 22,
-                FirstInnerScopeRegister                 = 23,
-                FuncExprScopeRegister                   = 24,
-                FirstTmpRegister                        = 25,
+                LocalClosureRegister                    = 19,
+                ParamClosureRegister                    = 20,
+                LocalFrameDisplayRegister               = 21,
+                EnvRegister                             = 22,
+                ThisRegisterForEventHandler             = 23,
+                FirstInnerScopeRegister                 = 24,
+                FuncExprScopeRegister                   = 25,
+                FirstTmpRegister                        = 26,
 
                 Max
             };
@@ -2597,6 +2611,11 @@ namespace Js
         Field(FunctionCodeGenRuntimeData*)* GetCodeGenCallbackRuntimeDataWithLock() const { return this->GetAuxPtrWithLock<AuxPointerType::CodeGenCallbackRuntimeData>(); }
         void SetCodeGenCallbackRuntimeData(FunctionCodeGenRuntimeData** codeGenArgumentRuntimeData) { this->SetAuxPtr<AuxPointerType::CodeGenCallbackRuntimeData>(codeGenArgumentRuntimeData); }
 
+#if ENABLE_NATIVE_CODEGEN
+        Field(FunctionCodeGenRuntimeData*)* GetCodeGenCallApplyTargetRuntimeData() const { return this->GetAuxPtr<AuxPointerType::CodeGenCallApplyTargetRuntimeData>(); }
+        Field(FunctionCodeGenRuntimeData*)* GetCodeGenCallApplyTargetRuntimeDataWithLock() const { return this->GetAuxPtrWithLock<AuxPointerType::CodeGenCallApplyTargetRuntimeData>(); }
+#endif
+
         template <typename TStatementMapList>
         static StatementMap * GetNextNonSubexpressionStatementMap(TStatementMapList *statementMapList, int & startingAtIndex);
         static StatementMap * GetPrevNonSubexpressionStatementMap(StatementMapList *statementMapList, int & startingAtIndex);
@@ -2773,6 +2792,9 @@ namespace Js
         bool AllocProfiledCallSiteId(ProfileId* profileId) { if (this->profiledCallSiteCount != Constants::NoProfileId) { *profileId = this->profiledCallSiteCount++; return true; } return false; }
         ProfileId GetProfiledCallSiteCount() const { return this->profiledCallSiteCount; }
         void SetProfiledCallSiteCount(ProfileId callSiteId)  { this->profiledCallSiteCount = callSiteId; }
+
+        ProfileId GetProfiledCallApplyCallSiteCount() const { return (ProfileId)this->GetCountField(CounterFields::ProfiledCallApplyCallSiteCount); }
+        void SetProfiledCallApplyCallSiteCount(ProfileId count) { SetCountField(CounterFields::ProfiledCallApplyCallSiteCount, count); }
 
         bool AllocProfiledArrayCallSiteId(ProfileId* profileId) { if (this->profiledArrayCallSiteCount != Constants::NoProfileId) { *profileId = this->profiledArrayCallSiteCount++; return true; } return false; }
         ProfileId GetProfiledArrayCallSiteCount() const { return this->profiledArrayCallSiteCount; }
@@ -3127,12 +3149,21 @@ namespace Js
         Js::AuxArray<uint32> * GetSlotIdInCachedScopeToNestedIndexArrayWithLock() const { return this->GetAuxPtrWithLock<AuxPointerType::SlotIdInCachedScopeToNestedIndexArray>(); }
         Js::AuxArray<uint32> * AllocateSlotIdInCachedScopeToNestedIndexArray(uint32 slotCount);
 
+#if ENABLE_NATIVE_CODEGEN
+        ProfileId* GetCallSiteToCallApplyCallSiteArray() const { return this->GetAuxPtr<AuxPointerType::CallSiteToCallApplyCallSiteArray>(); }
+        ProfileId* GetCallSiteToCallApplyCallSiteArrayWithLock() const { return this->GetAuxPtrWithLock<AuxPointerType::CallSiteToCallApplyCallSiteArray>(); }
+        ProfileId* CreateCallSiteToCallApplyCallSiteArray();
+#endif
+
     private:
         void ResetLiteralRegexes();
         void ResetObjectLiteralTypes();
         void SetObjectLiteralTypes(DynamicType** objLiteralTypes) { this->SetAuxPtr<AuxPointerType::ObjLiteralTypes>(objLiteralTypes); };
         void SetSlotIdInCachedScopeToNestedIndexArray(Js::AuxArray<uint32> * slotIdInCachedScopeToNestedIndexArray) { this->SetAuxPtr<AuxPointerType::SlotIdInCachedScopeToNestedIndexArray>(slotIdInCachedScopeToNestedIndexArray); }
         void ResetSlotIdInCachedScopeToNestedIndexArray() { SetSlotIdInCachedScopeToNestedIndexArray(nullptr); }
+#if ENABLE_NATIVE_CODEGEN
+        void SetCallSiteToCallApplyCallSiteArray(ProfileId* mapping) { this->SetAuxPtr<AuxPointerType::CallSiteToCallApplyCallSiteArray>(mapping); }
+#endif
     public:
 
         void ResetByteCodeGenState();
@@ -3152,15 +3183,23 @@ namespace Js
             Recycler *const recycler,
             __in_range(0, profiledCallSiteCount - 1) const ProfileId profiledCallSiteId,
             FunctionBody *const inlinee);
+        
         const FunctionCodeGenRuntimeData *GetLdFldInlineeCodeGenRuntimeData(const InlineCacheIndex inlineCacheIndex) const;
         FunctionCodeGenRuntimeData *EnsureLdFldInlineeCodeGenRuntimeData(
             Recycler *const recycler,
             const InlineCacheIndex inlineCacheIndex,
             FunctionBody *const inlinee);
+        
         const FunctionCodeGenRuntimeData * GetCallbackInlineeCodeGenRuntimeData(const ProfileId profiledCallSiteId) const;
         FunctionCodeGenRuntimeData * EnsureCallbackInlineeCodeGenRuntimeData(
             Recycler *const recycler,
             __in_range(0, profiledCallSiteCount - 1) const ProfileId profiledCallSiteId,
+            FunctionBody *const inlinee);
+
+        const FunctionCodeGenRuntimeData * GetCallApplyTargetInlineeCodeGenRuntimeData(const ProfileId callApplyCallSiteId) const;
+        FunctionCodeGenRuntimeData * EnsureCallApplyTargetInlineeCodeGenRuntimeData(
+            Recycler *const recycler,
+            const ProfileId callApplyCallSiteId,
             FunctionBody *const inlinee);
 
         void LoadDynamicProfileInfo();

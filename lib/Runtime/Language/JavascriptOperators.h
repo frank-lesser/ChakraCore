@@ -164,6 +164,9 @@ namespace Js
         static BOOL StrictEqual(Var aLeft, Var aRight,ScriptContext* scriptContext);
         static BOOL StrictEqualString(Var aLeft, JavascriptString* aRight);
         static BOOL StrictEqualEmptyString(Var aLeft);
+#ifdef _CHAKRACOREBUILD
+        static BOOL StrictEqualNumberType(Var aLeft, Var aRight, TypeId leftType, TypeId rightType, ScriptContext *requestContext);
+#endif
         static BOOL NotStrictEqual(Var aLeft, Var aRight,ScriptContext* scriptContext);
 
         static BOOL HasOwnProperty(Var instance, PropertyId propertyId, _In_ ScriptContext * requestContext, _In_opt_ PropertyString * propString);
@@ -330,7 +333,7 @@ namespace Js
         static RecyclableObject* OP_GetPrototype(Var instance, ScriptContext* scriptContext);
 
         static BOOL OP_HasProperty(Var instance, PropertyId propertyId, ScriptContext* scriptContext);
-        static BOOL OP_HasOwnProperty(Var instance, PropertyId propertyId, ScriptContext* scriptContext);
+        static BOOL OP_HasOwnProperty(Var instance, PropertyId propertyId, ScriptContext* scriptContext, _In_opt_ PropertyString * propString = nullptr);
         static BOOL HasOwnPropertyNoHostObject(Var instance, PropertyId propertyId);
         static BOOL HasOwnPropertyNoHostObjectForHeapEnum(Var instance, PropertyId propertyId, ScriptContext* scriptContext, Var& getter, Var& setter);
         static Var GetOwnPropertyNoHostObjectForHeapEnum(Var instance, PropertyId propertyId, ScriptContext* scriptContext, Var& getter, Var &setter);

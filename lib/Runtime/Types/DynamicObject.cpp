@@ -51,6 +51,14 @@ namespace Js
         auxSlots(instance->auxSlots),
         objectArray(instance->objectArray)  // copying the array should copy the array flags and array call site index as well
     {
+        if (deepCopy)
+        {
+            if (!instance->GetDynamicType()->ShareType())
+            {
+                this->type = instance->DuplicateTypeAndTypeHandler();
+            }
+        }
+
         DynamicTypeHandler * typeHandler = this->GetTypeHandler();
 
         // TODO: stack allocate aux Slots
@@ -533,6 +541,13 @@ namespace Js
         return RecyclerNew(GetRecycler(), DynamicType, this->GetDynamicType());
     }
 
+    DynamicType* DynamicObject::DuplicateTypeAndTypeHandler()
+    {
+        DynamicType * newType = DuplicateType();
+        newType->typeHandler = newType->DuplicateTypeHandler();
+        return newType;
+    }
+
     void DynamicObject::PrepareForConversionToNonPathType()
     {
         // Nothing to do in base class
@@ -914,7 +929,7 @@ namespace Js
         }
 #endif
 
-        if (!PHASE_ON1(ObjectCopyPhase))
+        if (PHASE_OFF1(ObjectCopyPhase))
         {
             return false;
         }
@@ -1016,6 +1031,20 @@ namespace Js
     }
 
     DynamicObject *
+    DynamicObject::Copy(bool deepCopy)
+    {
+        size_t inlineSlotsSize = this->GetTypeHandler()->GetInlineSlotsSize();
+        if (inlineSlotsSize)
+        {
+            return RecyclerNewPlusZ(GetRecycler(), inlineSlotsSize, DynamicObject, this, deepCopy);
+        }
+        else
+        {
+            return RecyclerNew(GetRecycler(), DynamicObject, this, deepCopy);
+        }
+    }
+
+    DynamicObject *
     DynamicObject::BoxStackInstance(DynamicObject * instance, bool deepCopy)
     {
         Assert(ThreadContext::IsOnStack(instance));
@@ -1027,15 +1056,7 @@ namespace Js
             return boxedInstance;
         }
 
-        size_t inlineSlotsSize = instance->GetTypeHandler()->GetInlineSlotsSize();
-        if (inlineSlotsSize)
-        {
-            boxedInstance = RecyclerNewPlusZ(instance->GetRecycler(), inlineSlotsSize, DynamicObject, instance, deepCopy);
-        }
-        else
-        {
-            boxedInstance = RecyclerNew(instance->GetRecycler(), DynamicObject, instance, deepCopy);
-        }
+        boxedInstance = instance->Copy(deepCopy);
 
         *boxedInstanceRef = boxedInstance;
         return boxedInstance;

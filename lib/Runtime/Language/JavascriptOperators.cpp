@@ -838,6 +838,144 @@ using namespace Js;
         JIT_HELPER_END(Op_StrictEqualEmptyString);
     }
 
+#ifdef _CHAKRACOREBUILD
+    BOOL JavascriptOperators::StrictEqualNumberType(Var aLeft, Var aRight, TypeId leftType, TypeId rightType, ScriptContext *requestContext)
+    {
+        double dblLeft, dblRight;
+
+        switch (leftType)
+        {
+        case TypeIds_Integer:
+            switch (rightType)
+            {
+            case TypeIds_Integer:
+                return aLeft == aRight;
+                // we don't need to worry about int64: it cannot equal as we create
+                // JavascriptInt64Number only in overflow scenarios.
+            case TypeIds_Number:
+                dblLeft = TaggedInt::ToDouble(aLeft);
+                dblRight = JavascriptNumber::GetValue(aRight);
+                goto CommonNumber;
+            }
+            return FALSE;
+
+        case TypeIds_Int64Number:
+            switch (rightType)
+            {
+            case TypeIds_Int64Number:
+            {
+                __int64 leftValue = UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                __int64 rightValue = UnsafeVarTo<JavascriptInt64Number>(aRight)->GetValue();
+                return leftValue == rightValue;
+            }
+            case TypeIds_UInt64Number:
+            {
+                __int64 leftValue = UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                unsigned __int64 rightValue = VarTo<JavascriptUInt64Number>(aRight)->GetValue();
+                return ((unsigned __int64)leftValue == rightValue);
+            }
+            case TypeIds_Number:
+                dblLeft = (double)UnsafeVarTo<JavascriptInt64Number>(aLeft)->GetValue();
+                dblRight = JavascriptNumber::GetValue(aRight);
+                goto CommonNumber;
+            }
+            return FALSE;
+
+        case TypeIds_UInt64Number:
+            switch (rightType)
+            {
+            case TypeIds_Int64Number:
+            {
+                unsigned __int64 leftValue = UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                __int64 rightValue = UnsafeVarTo<JavascriptInt64Number>(aRight)->GetValue();
+                return (leftValue == (unsigned __int64)rightValue);
+            }
+            case TypeIds_UInt64Number:
+            {
+                unsigned __int64 leftValue = UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                unsigned __int64 rightValue = VarTo<JavascriptUInt64Number>(aRight)->GetValue();
+                return leftValue == rightValue;
+            }
+            case TypeIds_Number:
+                dblLeft = (double)UnsafeVarTo<JavascriptUInt64Number>(aLeft)->GetValue();
+                dblRight = JavascriptNumber::GetValue(aRight);
+                goto CommonNumber;
+            }
+            return FALSE;
+
+        case TypeIds_Number:
+            switch (rightType)
+            {
+            case TypeIds_Integer:
+                dblLeft = JavascriptNumber::GetValue(aLeft);
+                dblRight = TaggedInt::ToDouble(aRight);
+                goto CommonNumber;
+            case TypeIds_Int64Number:
+                dblLeft = JavascriptNumber::GetValue(aLeft);
+                dblRight = (double)VarTo<JavascriptInt64Number>(aRight)->GetValue();
+                goto CommonNumber;
+            case TypeIds_UInt64Number:
+                dblLeft = JavascriptNumber::GetValue(aLeft);
+                dblRight = (double)UnsafeVarTo<JavascriptUInt64Number>(aRight)->GetValue();
+                goto CommonNumber;
+            case TypeIds_Number:
+                dblLeft = JavascriptNumber::GetValue(aLeft);
+                dblRight = JavascriptNumber::GetValue(aRight);
+            CommonNumber:
+                return FEqualDbl(dblLeft, dblRight);
+            }
+            return FALSE;
+        }
+
+        Assert(0 && "Unreachable Code");
+        return FALSE;
+    }
+
+    BOOL JavascriptOperators::StrictEqual(Var aLeft, Var aRight, ScriptContext* requestContext)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_StrictEqual);
+        TypeId rightType, leftType;
+        leftType = JavascriptOperators::GetTypeId(aLeft);
+
+        // Because NaN !== NaN, we may not return TRUE when typeId is Number
+        if (aLeft == aRight && leftType != TypeIds_Number) return TRUE;
+
+        rightType = JavascriptOperators::GetTypeId(aRight);
+
+        if (leftType == TypeIds_String)
+        {
+            if (rightType == TypeIds_String)
+            {
+                return JavascriptString::Equals(UnsafeVarTo<JavascriptString>(aLeft), UnsafeVarTo<JavascriptString>(aRight));
+            }
+            return FALSE;
+        }
+        else if (leftType >= TypeIds_Integer && leftType <= TypeIds_UInt64Number)
+        {
+            return JavascriptOperators::StrictEqualNumberType(aLeft, aRight, leftType, rightType, requestContext);
+        }
+        else if (leftType == TypeIds_GlobalObject)
+        {
+            BOOL result;
+            if (UnsafeVarTo<RecyclableObject>(aLeft)->StrictEquals(aRight, &result, requestContext))
+            {
+                return result;
+            }
+            return false;
+        }
+        else if (leftType == TypeIds_BigInt)
+        {
+            if (rightType == TypeIds_BigInt)
+            {
+                return JavascriptBigInt::Equals(aLeft, aRight);
+            }
+            return FALSE;
+        }
+
+        return aLeft == aRight;
+        JIT_HELPER_END(Op_StrictEqual);
+    }
+ #else
     BOOL JavascriptOperators::StrictEqual(Var aLeft, Var aRight, ScriptContext* requestContext)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_StrictEqual);
@@ -1016,6 +1154,7 @@ CommonNumber:
         return aLeft == aRight;
         JIT_HELPER_END(Op_StrictEqual);
     }
+#endif
 
     BOOL JavascriptOperators::HasOwnProperty(
         Var instance,
@@ -1162,6 +1301,7 @@ CommonNumber:
             }
             return proxyResultToReturn;
         }
+
         return JavascriptObject::CreateOwnEnumerableStringPropertiesHelper(object, scriptContext);
     }
 
@@ -1172,6 +1312,7 @@ CommonNumber:
         {
             return proxy->PropertyKeysTrap(JavascriptProxy::KeysTrapKind::KeysKind, scriptContext);
         }
+
         return JavascriptObject::CreateOwnEnumerableStringSymbolPropertiesHelper(object, scriptContext);
     }
 
@@ -1571,12 +1712,12 @@ CommonNumber:
         JIT_HELPER_END(Op_HasProperty);
     }
 
-    BOOL JavascriptOperators::OP_HasOwnProperty(Var instance, PropertyId propertyId, ScriptContext* scriptContext)
+    BOOL JavascriptOperators::OP_HasOwnProperty(Var instance, PropertyId propertyId, ScriptContext* scriptContext, _In_opt_ PropertyString * propString)
     {
         RecyclableObject* object = TaggedNumber::Is(instance) ?
             scriptContext->GetLibrary()->GetNumberPrototype() :
             VarTo<RecyclableObject>(instance);
-        BOOL result = HasOwnProperty(object, propertyId, scriptContext, nullptr);
+        BOOL result = HasOwnProperty(object, propertyId, scriptContext, propString);
         return result;
     }
 
@@ -1842,9 +1983,15 @@ CommonNumber:
     void JavascriptOperators::TryCacheMissingProperty(Var instance, Var cacheInstance, bool isRoot, PropertyId propertyId, ScriptContext* requestContext, _Inout_ PropertyValueInfo * info)
     {
         // Here, any well-behaved subclasses of DynamicObject can opt in to getting included in the missing property cache.
-        // For now, we only include basic objects and arrays. CustomExternalObject in particular is problematic because in
-        // some cases it can add new properties without transitioning its type handler.
+        // For now, we only include basic objects and arrays. 
         if (PHASE_OFF1(MissingPropertyCachePhase) || isRoot || !(DynamicObject::IsBaseDynamicObject(instance) || DynamicObject::IsAnyArray(instance)))
+        {
+            return;
+        }
+
+        // CustomExternalObject in particular is problematic because in some cases it can report missing when implicit callsare disabled.
+        // See CustomExternalObject::GetPropertyQuery for an example.
+        if (UnsafeVarTo<DynamicObject>(instance)->GetType()->IsJsrtExternal() && requestContext->GetThreadContext()->IsDisableImplicitCall())
         {
             return;
         }
@@ -3840,7 +3987,9 @@ CommonNumber:
 
     Var JavascriptOperators::OP_GetElementI(Var instance, Var index, ScriptContext* scriptContext)
     {
+#ifdef ENABLE_SPECTRE_RUNTIME_MITIGATIONS
         instance = BreakSpeculation(instance);
+#endif
         if (TaggedInt::Is(index))
         {
             return GetElementIIntIndex(instance, index, scriptContext);
@@ -8731,6 +8880,17 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         {
             return JavascriptProxy::DefineOwnPropertyDescriptor(obj, propId, descriptor, throwOnError, scriptContext);
         }
+#ifdef _CHAKRACOREBUILD
+        else if (VarIs<CustomExternalWrapperObject>(obj))
+        {
+            // See if there is a trap for defineProperty.
+            BOOL wrapperResult = CustomExternalWrapperObject::DefineOwnPropertyDescriptor(obj, propId, descriptor, throwOnError, scriptContext);
+            if (wrapperResult)
+            {
+                return TRUE;
+            }
+        }
+#endif
 
         PropertyDescriptor currentDescriptor;
         BOOL isCurrentDescriptorDefined = JavascriptOperators::GetOwnPropertyDescriptor(obj, propId, scriptContext, &currentDescriptor);

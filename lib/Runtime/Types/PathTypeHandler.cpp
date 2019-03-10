@@ -1861,6 +1861,11 @@ namespace Js
 
     BOOL PathTypeHandlerBase::SetAttributesAtIndex(DynamicObject* instance, PropertyId propertyId, PropertyIndex index, PropertyAttributes attributes)
     {
+        if (attributes & PropertyDeleted)
+        {
+            DeleteProperty(instance, propertyId, PropertyOperation_None);
+            return true;
+        }
         return SetAttributesHelper(instance, propertyId, index, GetAttributeArray(), PropertyAttributesToObjectSlotAttributes(attributes));
     }
 
@@ -2695,7 +2700,12 @@ namespace Js
             newTypeHandler = PathTypeHandlerBase::FromTypeHandler(type->GetTypeHandler());
             if (attr == ObjectSlotAttr_Setter)
             {
-                newTypeHandler->SetSetterSlot(newTypeHandler->GetTypePath()->LookupInline(propertyId, newTypeHandler->GetPathLength()), (PathTypeSetterSlotIndex)(newTypeHandler->GetPathLength() - 1));
+                PropertyIndex getterIndex = newTypeHandler->GetTypePath()->LookupInline(propertyId, newTypeHandler->GetPathLength());
+                Assert(getterIndex != Constants::NoSlot);
+                if (attributes[getterIndex] & ObjectSlotAttr_Accessor)
+                {
+                    newTypeHandler->SetSetterSlot(getterIndex, (PathTypeSetterSlotIndex)(newTypeHandler->GetPathLength() - 1));
+                }
             }
         }
         Assert(newTypeHandler->GetPathLength() == GetPathLength());

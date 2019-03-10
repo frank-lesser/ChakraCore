@@ -68,6 +68,9 @@ public:
     intptr_t GetX86AllNegOnesF4Addr() const;
     intptr_t GetX86AllZerosAddr() const;
     intptr_t GetX86AllOnesF4Addr() const;
+    intptr_t GetX86AllOnesI4Addr() const;
+    intptr_t GetX86AllOnesI8Addr() const;
+    intptr_t GetX86AllOnesI16Addr() const;
     intptr_t GetX86LowBytesMaskAddr() const;
     intptr_t GetX86HighBytesMaskAddr() const;
     intptr_t GetX86DoubleWordSignBitsAddr() const;
@@ -114,14 +117,10 @@ public:
 
     bool CanBeFalsy(Js::TypeId typeId) { return typeId == this->wellKnownHostTypeIds[WellKnownHostType_HTMLAllCollection]; }
 
-    bool IsCFGEnabled();
     bool IsClosed();
 
 #if defined(ENABLE_GLOBALIZATION) && defined(_CONTROL_FLOW_GUARD)
-    Js::DelayLoadWinCoreMemory * GetWinCoreMemoryLibrary();
     Js::DelayLoadWinCoreProcessThreads * GetWinCoreProcessThreads();
-
-    Js::DelayLoadWinCoreMemory m_delayLoadWinCoreMemoryLibrary;
     Js::DelayLoadWinCoreProcessThreads m_delayLoadWinCoreProcessThreads;
 #endif
 

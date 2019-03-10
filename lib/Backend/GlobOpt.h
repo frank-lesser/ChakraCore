@@ -559,7 +559,7 @@ private:
     bool                    AreFromSameBytecodeFunc(IR::RegOpnd const* src1, IR::RegOpnd const* dst) const;
     Value *                 ValueNumberDst(IR::Instr **pInstr, Value *src1Val, Value *src2Val);
     Value *                 ValueNumberLdElemDst(IR::Instr **pInstr, Value *srcVal);
-    ValueType               GetPrepassValueTypeForDst(const ValueType desiredValueType, IR::Instr *const instr, Value *const src1Value, Value *const src2Value, bool const isValueInfoPreciseRef = false) const;
+    ValueType               GetPrepassValueTypeForDst(const ValueType desiredValueType, IR::Instr *const instr, Value *const src1Value, Value *const src2Value, bool const isValueInfoPreciseRef = false, bool const isSafeToTransferInPrepass = false) const;
     bool                    IsPrepassSrcValueInfoPrecise(IR::Opnd *const src, Value *const srcValue, bool * canTransferValueNumberToDst = nullptr) const;
     bool                    IsPrepassSrcValueInfoPrecise(IR::Instr *const instr, Value *const src1Value, Value *const src2Value, bool * canTransferValueNumberToDst = nullptr) const;
     bool                    IsSafeToTransferInPrepass(StackSym * const sym, ValueInfo *const srcValueInfo) const;
@@ -736,7 +736,7 @@ private:
     void                    PreLowerCanonicalize(IR::Instr *instr, Value **pSrc1Val, Value **pSrc2Val);
     void                    ProcessKills(IR::Instr *instr);
     void                    InsertCloneStrs(BasicBlock *toBlock, GlobOptBlockData *toData, GlobOptBlockData *fromData);
-    void                    InsertValueCompensation(BasicBlock *const predecessor, const SymToValueInfoMap &symsRequiringCompensationToMergedValueInfoMap);
+    void                    InsertValueCompensation(BasicBlock *const predecessor, const SymToValueInfoMap *symsRequiringCompensationToMergedValueInfoMap);
     IR::Instr *             ToVarUses(IR::Instr *instr, IR::Opnd *opnd, bool isDst, Value *val);
     void                    ToVar(BVSparse<JitArenaAllocator> *bv, BasicBlock *block);
     IR::Instr *             ToVar(IR::Instr *instr, IR::RegOpnd *regOpnd, BasicBlock *block, Value *val, bool needsUpdate);
@@ -768,6 +768,7 @@ private:
                                                 const bool lossy = false, const bool forceInvariantHoisting = false, IR::BailOutKind bailoutKind = IR::BailOutInvalid);
     void                    HoistInvariantValueInfo(ValueInfo *const invariantValueInfoToHoist, Value *const valueToUpdate, BasicBlock *const targetBlock);
     void                    OptHoistUpdateValueType(Loop* loop, IR::Instr* instr, IR::Opnd** srcOpndPtr, Value *const srcVal);
+    bool                    IsNonNumericRegOpnd(IR::RegOpnd *opnd, bool inGlobOpt) const;
 public:
     static bool             IsTypeSpecPhaseOff(Func const * func);
     static bool             DoAggressiveIntTypeSpec(Func const * func);
@@ -872,8 +873,14 @@ private:
     static void             MarkNonByteCodeUsed(IR::Instr * instr);
     static void             MarkNonByteCodeUsed(IR::Opnd * opnd);
 
+    void                    GenerateLazyBailOut(IR::Instr *& instr);
+    bool                    IsLazyBailOutCurrentlyNeeded(IR::Instr * instr, Value const * src1Val, Value const * src2Val, bool isHoisted) const;
+
     bool                    IsImplicitCallBailOutCurrentlyNeeded(IR::Instr * instr, Value const * src1Val, Value const * src2Val) const;
-    bool                    IsImplicitCallBailOutCurrentlyNeeded(IR::Instr * instr, Value const * src1Val, Value const * src2Val, BasicBlock const * block, bool hasLiveFields, bool mayNeedImplicitCallBailOut, bool isForwardPass) const;
+    bool                    IsImplicitCallBailOutCurrentlyNeeded(IR::Instr * instr, Value const * src1Val, Value const * src2Val,
+                                                                 BasicBlock const * block, bool hasLiveFields,
+                                                                 bool mayNeedImplicitCallBailOut, bool isForwardPass, bool mayNeedLazyBailOut = false) const;
+
     static bool             IsTypeCheckProtected(const IR::Instr * instr);
     static bool             MayNeedBailOnImplicitCall(IR::Instr const * instr, Value const * src1Val, Value const * src2Val);
     static bool             MaySrcNeedBailOnImplicitCall(IR::Opnd const * opnd, Value const * val);

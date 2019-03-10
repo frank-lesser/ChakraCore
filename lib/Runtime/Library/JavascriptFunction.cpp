@@ -866,7 +866,11 @@ using namespace Js;
         }
         else
         {
-            resultObject = JavascriptOperators::NewScObjectNoCtor(v, scriptContext);
+            BEGIN_SAFE_REENTRANT_CALL(scriptContext->GetThreadContext())
+            {
+                resultObject = JavascriptOperators::NewScObjectNoCtor(v, scriptContext);
+            }
+            END_SAFE_REENTRANT_CALL
         }
 
         // JavascriptOperators::NewScObjectNoCtor should have thrown if 'v' is not a constructor
@@ -2905,7 +2909,7 @@ LABEL1:
     PropertyQueryFlags JavascriptFunction::GetPropertyQuery(Var originalInstance, JavascriptString* propertyNameString, Var* value, PropertyValueInfo* info, ScriptContext* requestContext)
     {
         BOOL result;
-        PropertyRecord const* propertyRecord;
+        PropertyRecord const* propertyRecord = nullptr;
         this->GetScriptContext()->FindPropertyRecord(propertyNameString, &propertyRecord);
 
         result = JavascriptConversion::PropertyQueryFlagsToBoolean(DynamicObject::GetPropertyQuery(originalInstance, propertyNameString, value, info, requestContext)) ? TRUE : FALSE;
@@ -2941,6 +2945,7 @@ LABEL1:
             return true;
         }
 
+        *result = false;
         return false;
     }
 
