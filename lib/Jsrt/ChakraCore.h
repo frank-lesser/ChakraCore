@@ -1203,6 +1203,22 @@ CHAKRA_API
 JsGetIteratorPrototype(_Out_ JsValueRef * result);
 
 /// <summary>
+///      Returns a value that indicates whether an object is callable.
+/// </summary>
+/// <remarks>
+///     Requires an active script context.
+/// </remarks>
+/// <param name="object">The object to test.</param>
+/// <param name="isConstructor">If the object is callable, <c>true</c>, <c>false</c> otherwise.</param>
+/// <returns>
+///     The code <c>JsNoError</c> if the operation succeeded, a failure code otherwise.
+/// </returns>
+CHAKRA_API
+JsIsCallable(
+    _In_ JsValueRef object,
+    _Out_ bool *isCallable);
+
+/// <summary>
 ///      Returns a value that indicates whether an object is a constructor.
 /// </summary>
 /// <remarks>
@@ -1932,6 +1948,30 @@ JsGetArrayBufferFreeFunction(
 CHAKRA_API
 JsExternalizeArrayBuffer(
     _In_ JsValueRef arrayBuffer);
+
+/// <summary>
+///     Get host embedded data from the current object
+/// </summary>
+/// <param name="instance">Js object from which an embedder data to be fetched</param>
+/// <param name="embedderData">An embedder data to be returned, it will be nullptr if not found</param>
+/// <returns>
+///     The code <c>JsNoError</c> if the operation succeeded, a failure code
+///     otherwise.
+/// </returns>
+CHAKRA_API
+JsGetEmbedderData(_In_ JsValueRef instance, _Out_ JsValueRef* embedderData);
+
+/// <summary>
+///     Set host embedded data on the current object
+/// </summary>
+/// <param name="instance">Js object from which an embedder data to be fetched</param>
+/// <param name="embedderData">An embedder data to be set on the passed object</param>
+/// <returns>
+///     The code <c>JsNoError</c> if the operation succeeded, a failure code
+///     otherwise.
+/// </returns>
+CHAKRA_API
+JsSetEmbedderData(_In_ JsValueRef instance, _In_ JsValueRef embedderData);
 
 #ifdef _WIN32
 #include "ChakraCoreWindows.h"

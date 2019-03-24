@@ -1105,6 +1105,8 @@ private:
         ScriptConfiguration const * GetConfig(void) const { return &config; }
         CharClassifier const * GetCharClassifier(void) const;
 
+        static bool ExceedsStackNestedFuncCount(uint count);
+
         ThreadContext * GetThreadContext() const { return threadContext; }
 
         static const int MaxEvalSourceSize = 400;
@@ -1464,6 +1466,7 @@ private:
         uint SaveSourceNoCopy(Utf8SourceInfo* sourceInfo, int cchLength, bool isCesu8);
 
         Utf8SourceInfo* GetSource(uint sourceIndex);
+        void RemoveSource(uint sourceIndex);
 
         uint SourceCount() const { return (uint)sourceList->Count(); }
         void CleanSourceList() { CleanSourceListInternal(false); }

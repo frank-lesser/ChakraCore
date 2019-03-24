@@ -156,6 +156,16 @@ var tests = [
     }
   },
   {
+    name: "Cross-site activation object",
+    body: function () {
+        var tests = [0, 0];  
+        tests.forEach(function() {
+            var eval = WScript.LoadScript(0, "samethread").eval;
+            eval(0);
+        });
+    }
+  },
+  {
     name: "Destructuring declaration should return undefined",
     body: function () {
         assert.areEqual(undefined, eval("var {x} = {};"));
@@ -209,6 +219,19 @@ var tests = [
         }
         catch (e) {
         }
+      }
+  },
+  {
+    name: "calling promise's function as constructor should not be allowed",
+    body: function () {
+        var var_0 = new Promise(function () {});                                           
+        var var_1 = function () {};                                                        
+                                                                                          
+        var_0.then = function (a, b) {                                                     
+          var_2 = b;                                                                       
+        };                                                                                 
+        var_3 = Promise.prototype.finally.call(var_0, var_1);                              
+        assert.throws(() => { new var_2([]).var_3(); },TypeError);
       }
   }
 

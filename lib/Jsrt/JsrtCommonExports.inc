@@ -134,8 +134,11 @@
     JsGetIteratorPrototype
     JsGetPropertyIdSymbolIterator
     JsGetWeakReferenceValue
+    JsGetEmbedderData
+    JsSetEmbedderData
     JsHasOwnProperty
     JsHasOwnItem
+    JsIsCallable
     JsIsConstructor
     JsObjectDefineProperty
     JsObjectDefinePropertyFull
