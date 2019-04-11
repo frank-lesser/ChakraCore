@@ -6624,7 +6624,25 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
             if (constructorBody->GetHasOnlyThisStmts())
             {
-                if (typeHandler->IsSharable())
+                if (!typeHandler->IsSharable())
+                {
+                    // Dynamic type created is not sharable.
+                    // So in future don't try to check for "this assignment optimization".
+                    constructorBody->SetHasOnlyThisStmts(false);
+#if DBG_DUMP
+                    TraceUpdateConstructorCache(constructorCache, constructorBody, false, _u("because final type is not shareable"));
+#endif
+                }
+                else if (typeHandler->GetPropertyCount() >= Js::PropertyIndexRanges<PropertyIndex>::MaxValue)
+                {
+                    // Dynamic type created has too many properties.
+                    // So in future don't try to check for "this assignment optimization".
+                    constructorBody->SetHasOnlyThisStmts(false);
+#if DBG_DUMP
+                    TraceUpdateConstructorCache(constructorCache, constructorBody, false, _u("because final type has too many properties"));
+#endif
+                }
+                else
                 {
 #if DBG
                     bool cachedProtoCanBeCached = false;
@@ -6643,7 +6661,6 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                     if ((profileInfo != nullptr && profileInfo->GetImplicitCallFlags() <= ImplicitCall_None) ||
                         CheckIfPrototypeChainHasOnlyWritableDataProperties(type->GetPrototype()))
                     {
-                        Assert(typeHandler->GetPropertyCount() < Js::PropertyIndexRanges<PropertyIndex>::MaxValue);
 
                         for (PropertyIndex pi = 0; pi < typeHandler->GetPropertyCount(); pi++)
                         {
@@ -6682,15 +6699,6 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                         }
                     }
 #endif
-#endif
-                }
-                else
-                {
-                    // Dynamic type created is not sharable.
-                    // So in future don't try to check for "this assignment optimization".
-                    constructorBody->SetHasOnlyThisStmts(false);
-#if DBG_DUMP
-                    TraceUpdateConstructorCache(constructorCache, constructorBody, false, _u("because final type is not shareable"));
 #endif
                 }
             }
@@ -9841,6 +9849,11 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
 
             Var result = CALL_ENTRYPOINT(threadContext, marshalledFunction->GetEntryPoint(), function, CallInfo(flags, 2), thisVar, putValue);
             Assert(result);
+
+            // Set implicit call flags so we bail out if we're trying to propagate the stored value forward. We can't count on the getter/setter
+            // to produce the stored value on a LdFld.
+            threadContext->AddImplicitCallFlags(ImplicitCall_Accessor);
+
             return nullptr;
         });
     }

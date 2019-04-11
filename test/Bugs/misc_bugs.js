@@ -222,6 +222,31 @@ var tests = [
       }
   },
   {
+    name: "CrossSite issue while array concat OS: 18874745",
+    body: function () {
+          function test0() {
+            var IntArr0 = Array();
+            var sc0Code = `
+              Object.defineProperty(Array, Symbol.species, { value : function() {
+                      return IntArr0;
+                      }
+                  }
+              );
+            test = function(a, list) {
+                return [a].concat(list);
+            }
+            function out() {
+              test({}, [1]);
+            }
+            `;
+            var sc0 = WScript.LoadScript(sc0Code, 'samethread');
+            sc0.IntArr0 = IntArr0;
+            sc0.out();
+          }
+         test0();
+      }
+  },
+  {
     name: "calling promise's function as constructor should not be allowed",
     body: function () {
         var var_0 = new Promise(function () {});                                           
@@ -232,6 +257,25 @@ var tests = [
         };                                                                                 
         var_3 = Promise.prototype.finally.call(var_0, var_1);                              
         assert.throws(() => { new var_2([]).var_3(); },TypeError);
+      }
+  },
+  {
+    name: "class name should not change if calling multiple times",
+    body: function () {
+        function getClass() {
+          class A {
+            constructor() {
+
+            }
+          };
+          return A;
+        }
+        let f1 = getClass();
+        let f2 = getClass();
+        let f3 = getClass();
+        assert.areEqual("A", f1.name);
+        assert.areEqual("A", f2.name);
+        assert.areEqual("A", f3.name);
       }
   }
 
