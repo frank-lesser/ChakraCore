@@ -2659,11 +2659,17 @@ BackwardPass::ProcessBailOutInfo(IR::Instr * instr, BailOutInfo * bailOutInfo)
             BVSparse<JitArenaAllocator>* tmpBv = nullptr;
             if (instr->IsBranchInstr())
             {
-                IR::LabelInstr* target = instr->AsBranchInstr()->GetTarget();
+                IR::BranchInstr* branchInstr = instr->AsBranchInstr();
+                IR::LabelInstr* target = branchInstr->GetTarget();
                 uint32 targetOffset = target->GetByteCodeOffset();
-                if (targetOffset == instr->GetByteCodeOffset())
+
+                // If the instr's label has the same bytecode offset as the instr then move the targetOffset
+                // to the next bytecode instr. This condition can be true on conditional branches, ex: a
+                // while loop with no body (passing the loop's condition would branch the IP back to executing
+                // the loop's condition), in these cases do not move the targetOffset.
+                if (targetOffset == instr->GetByteCodeOffset() && branchInstr->IsUnconditional())
                 {
-                    // This can happen if the target is an break or airlock block
+                    // This can happen if the target is a break or airlock block.
                     Assert(
                         target->GetBasicBlock()->isAirLockBlock ||
                         target->GetBasicBlock()->isAirLockCompensationBlock ||
@@ -2673,11 +2679,12 @@ BackwardPass::ProcessBailOutInfo(IR::Instr * instr, BailOutInfo * bailOutInfo)
                     );
                     targetOffset = target->GetNextByteCodeInstr()->GetByteCodeOffset();
                 }
-                BVSparse<JitArenaAllocator>* branchTargetUpdwardExposed = target->m_func->GetByteCodeOffsetUses(targetOffset);
-                if (branchTargetUpdwardExposed)
+                BVSparse<JitArenaAllocator>* branchTargetUpwardExposed = target->m_func->GetByteCodeOffsetUses(targetOffset);
+                if (branchTargetUpwardExposed)
                 {
-                    // The bailout should restore both the bailout destination and the branch target since we don't know where we'll end up
-                    trackingByteCodeUpwardExposedUsed = tmpBv = trackingByteCodeUpwardExposedUsed->OrNew(branchTargetUpdwardExposed);
+                    // The bailout should restore both the bailout destination and
+                    // the branch target since we don't know where we'll end up.
+                    trackingByteCodeUpwardExposedUsed = tmpBv = trackingByteCodeUpwardExposedUsed->OrNew(branchTargetUpwardExposed);
                 }
             }
             Assert(trackingByteCodeUpwardExposedUsed);
@@ -3857,7 +3864,7 @@ BackwardPass::ProcessBlock(BasicBlock * block)
            this->tag == Js::DeadStorePhase
         // We don't do the masking in simplejit due to reduced perf concerns and the issues
         // with handling try/catch structures with late-added blocks
-        && !this->func->IsSimpleJit()
+        && this->func->DoGlobOpt()
         // We don't need the masking blocks in asmjs/wasm mode
         && !block->GetFirstInstr()->m_func->GetJITFunctionBody()->IsAsmJsMode()
         && !block->GetFirstInstr()->m_func->GetJITFunctionBody()->IsWasmFunction()
@@ -7865,7 +7872,8 @@ BackwardPass::DeadStoreInstr(IR::Instr *instr)
 
     if (instr->m_opcode == Js::OpCode::ArgIn_A)
     {
-        //Ignore tracking ArgIn for "this", as argInsCount only tracks other params - unless it is a asmjs function(which doesn't have a "this").
+        // Ignore tracking ArgIn for "this" as argInsCount only tracks other
+        // params, unless it is a AsmJS function (which doesn't have a "this").
         if (instr->GetSrc1()->AsSymOpnd()->m_sym->AsStackSym()->GetParamSlotNum() != 1 || func->GetJITFunctionBody()->IsAsmJsMode())
         {
             Assert(this->func->argInsCount > 0);
@@ -8845,7 +8853,11 @@ BackwardPass::RestoreInductionVariableValuesAfterMemOp(Loop *loop)
             opCode = Js::OpCode::Sub_I4;
         }
         Func *localFunc = loop->GetFunc();
-        StackSym *sym = localFunc->m_symTable->FindStackSym(symId)->GetInt32EquivSym(localFunc);
+        StackSym *sym = localFunc->m_symTable->FindStackSym(symId);
+        if (!sym->IsInt32())
+        {
+            sym = sym->GetInt32EquivSym(localFunc);
+        }
         
         IR::Opnd *inductionVariableOpnd = IR::RegOpnd::New(sym, IRType::TyInt32, localFunc);
         IR::Opnd *tempInductionVariableOpnd = IR::RegOpnd::New(IRType::TyInt32, localFunc);
@@ -8929,7 +8941,7 @@ BackwardPass::IsEmptyLoopAfterMemOp(Loop *loop)
                         {
                             Assert(instr->GetDst());
                             if (instr->GetDst()->GetStackSym()
-                                && loop->memOpInfo->inductionVariablesUsedAfterLoop->Test(globOpt->GetVarSymID(instr->GetDst()->GetStackSym())))
+                                && loop->memOpInfo->inductionVariablesUsedAfterLoop->Test(instr->GetDst()->GetStackSym()->m_id))
                             {
                                 // We have use after the loop for a variable defined inside the loop. So the loop can't be removed.
                                 return false;

@@ -165,7 +165,13 @@ void
 GlobOpt::Optimize()
 {
     this->objectTypeSyms = nullptr;
-    this->func->argInsCount = this->func->GetInParamsCount() - 1;   //Don't include "this" pointer in the count.
+
+    this->func->argInsCount = this->func->GetInParamsCount();
+    if (!func->GetJITFunctionBody()->IsAsmJsMode())
+    {
+        // Don't include "this" pointer in the count when not in AsmJs mode (AsmJS does not have "this").
+        this->func->argInsCount--;
+    }
 
     if (!func->DoGlobOpt())
     {
@@ -2216,10 +2222,20 @@ MemOpCheckInductionVariable:
                 if (!loop->memOpInfo->inductionVariableChangeInfoMap->ContainsKey(inductionSymID))
                 {
                     loop->memOpInfo->inductionVariableChangeInfoMap->Add(inductionSymID, inductionVariableChangeInfo);
+                    if (sym->m_id != inductionSymID)
+                    {
+                        // Backwards pass uses this bit-vector to lookup upwardExposedUsed/bytecodeUpwardExposedUsed symbols, which are not necessarily vars.  Just add both.
+                        loop->memOpInfo->inductionVariableChangeInfoMap->Add(sym->m_id, inductionVariableChangeInfo);
+                    }
                 }
                 else
                 {
                     loop->memOpInfo->inductionVariableChangeInfoMap->Item(inductionSymID, inductionVariableChangeInfo);
+                    if (sym->m_id != inductionSymID)
+                    {
+                        // Backwards pass uses this bit-vector to lookup upwardExposedUsed/bytecodeUpwardExposedUsed symbols, which are not necessarily vars.  Just add both.
+                        loop->memOpInfo->inductionVariableChangeInfoMap->Item(sym->m_id, inductionVariableChangeInfo);
+                    }
                 }
             }
             else
@@ -2228,6 +2244,11 @@ MemOpCheckInductionVariable:
                 {
                     Loop::InductionVariableChangeInfo inductionVariableChangeInfo = { 1, isIncr };
                     loop->memOpInfo->inductionVariableChangeInfoMap->Add(inductionSymID, inductionVariableChangeInfo);
+                    if (sym->m_id != inductionSymID)
+                    {
+                        // Backwards pass uses this bit-vector to lookup upwardExposedUsed/bytecodeUpwardExposedUsed symbols, which are not necessarily vars.  Just add both.
+                        loop->memOpInfo->inductionVariableChangeInfoMap->Add(sym->m_id, inductionVariableChangeInfo);
+                    }
                 }
                 else
                 {
@@ -2242,6 +2263,11 @@ MemOpCheckInductionVariable:
                     }
                     inductionVariableChangeInfo.isIncremental = isIncr;
                     loop->memOpInfo->inductionVariableChangeInfoMap->Item(inductionSymID, inductionVariableChangeInfo);
+                    if (sym->m_id != inductionSymID)
+                    {
+                        // Backwards pass uses this bit-vector to lookup upwardExposedUsed/bytecodeUpwardExposedUsed symbols, which are not necessarily vars.  Just add both.
+                        loop->memOpInfo->inductionVariableChangeInfoMap->Item(sym->m_id, inductionVariableChangeInfo);
+                    }
                 }
             }
             break;
@@ -6660,7 +6686,8 @@ GlobOpt::CanProveConditionalBranch(IR::Instr *instr, Value *src1Val, Value *src2
             {
                 return undefinedCmp;
             }
-            return val1->GetValueInfo()->IsPrimitive() && val1->GetValueInfo()->IsNotFloat();
+            ValueInfo * valInfo = val1->GetValueInfo();
+            return !valInfo->HasBeenUndefined() && valInfo->IsPrimitive() && valInfo->IsNotFloat();
         }
         return false;
     };
@@ -6960,7 +6987,20 @@ GlobOpt::CanProveConditionalBranch(IR::Instr *instr, Value *src1Val, Value *src2
         {
             return false;
         }
-        *result = !src1ValueInfo->IsPrimitive();
+
+        if (src1ValueInfo->IsPrimitive())
+        {
+            *result = false;
+        }
+        else
+        {
+            if (src1ValueInfo->HasBeenPrimitive())
+            {
+                return false;
+            }
+            *result = true;
+        }
+
         break;
     }
     default:
