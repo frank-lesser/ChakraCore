@@ -635,20 +635,20 @@ typename Scanner<EncodingPolicy>::EncodedCharPtr Scanner<EncodingPolicy>::FScanN
         case 'x':
         case 'X':
             // Hex
-            *pdbl = Js::NumberUtilities::DblFromHex(p + 2, &pchT);
+            *pdbl = Js::NumberUtilities::DblFromHex(p + 2, &pchT, m_scriptContext->GetConfig()->IsESNumericSeparatorEnabled());
             baseSpecifierCheck();
             goto LIdCheck;
         case 'o':
         case 'O':
             // Octal
-            *pdbl = Js::NumberUtilities::DblFromOctal(p + 2, &pchT);
+            *pdbl = Js::NumberUtilities::DblFromOctal(p + 2, &pchT, m_scriptContext->GetConfig()->IsESNumericSeparatorEnabled());
             baseSpecifierCheck();
             goto LIdCheck;
 
         case 'b':
         case 'B':
             // Binary
-            *pdbl = Js::NumberUtilities::DblFromBinary(p + 2, &pchT);
+            *pdbl = Js::NumberUtilities::DblFromBinary(p + 2, &pchT, m_scriptContext->GetConfig()->IsESNumericSeparatorEnabled());
             baseSpecifierCheck();
             goto LIdCheck;
 
@@ -679,7 +679,7 @@ typename Scanner<EncodingPolicy>::EncodedCharPtr Scanner<EncodingPolicy>::FScanN
     else
     {
 LFloat:
-        *pdbl = Js::NumberUtilities::StrToDbl(p, &pchT, likelyType, m_scriptContext->GetConfig()->IsESBigIntEnabled());
+        *pdbl = Js::NumberUtilities::StrToDbl(p, &pchT, likelyType, m_scriptContext->GetConfig()->IsESBigIntEnabled(), m_scriptContext->GetConfig()->IsESNumericSeparatorEnabled());
         Assert(pchT == p || !Js::NumberUtilities::IsNan(*pdbl));
         if (likelyType == LikelyNumberType::BigInt)
         {
@@ -1646,6 +1646,7 @@ LLoop:
 #endif
         switch (ch)
         {
+LDefault:
         default:
             if (ch == kchLS ||
                 ch == kchPS )
@@ -1961,6 +1962,16 @@ LIdentifier:
                 }
             }
             break;
+
+        case '#':
+            // Hashbang syntax is a single line comment only if it is the first token in the source
+            if (m_scriptContext->GetConfig()->IsESHashbangEnabled() && this->PeekFirst(p, last) == '!' && m_pchBase == m_pchMinTok)
+            {
+                p++;
+                goto LSkipLineComment;
+            }
+            goto LDefault;
+
         case '/':
             token = tkDiv;
             switch(this->PeekFirst(p, last))

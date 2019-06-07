@@ -451,7 +451,7 @@ PHASE(All)
 #define DEFAULT_CONFIG_HybridFgJit          (false)
 #define DEFAULT_CONFIG_HybridFgJitBgQueueLengthThreshold (32)
 #define DEFAULT_CONFIG_Prejit               (false)
-#define DEFAULT_CONFIG_ParserStateCache     (false)
+#define DEFAULT_CONFIG_ParserStateCache     (true)
 #define DEFAULT_CONFIG_CompressParserStateCache (false)
 #define DEFAULT_CONFIG_DeferTopLevelTillFirstCall (true)
 #define DEFAULT_CONFIG_DirectCallTelemetryStats (false)
@@ -659,7 +659,7 @@ PHASE(All)
 #define DEFAULT_CONFIG_ES6Spread               (true)
 #define DEFAULT_CONFIG_ES6String               (true)
 #define DEFAULT_CONFIG_ES6StringPrototypeFixes (true)
-#define DEFAULT_CONFIG_ES2018ObjectRestSpread  (false)
+#define DEFAULT_CONFIG_ES2018ObjectRestSpread  (true)
 
 #ifndef DEFAULT_CONFIG_ES6PrototypeChain
 #ifdef COMPILE_DISABLE_ES6PrototypeChain
@@ -679,6 +679,8 @@ PHASE(All)
 #define DEFAULT_CONFIG_ES6RegExSticky          (true)
 #define DEFAULT_CONFIG_ES2018RegExDotAll       (true)
 #define DEFAULT_CONFIG_ESBigInt                (false)
+#define DEFAULT_CONFIG_ESNumericSeparator      (true)
+#define DEFAULT_CONFIG_ESHashbang              (true)
 #define DEFAULT_CONFIG_ESSymbolDescription     (true)
 #define DEFAULT_CONFIG_ESGlobalThis            (true)
 #ifdef COMPILE_DISABLE_ES6RegExPrototypeProperties
@@ -1214,6 +1216,12 @@ FLAGR(Boolean, WinRTAdaptiveApps        , "Enable the adaptive apps feature, all
 
 // ES BigInt flag
 FLAGR(Boolean, ESBigInt, "Enable ESBigInt flag", DEFAULT_CONFIG_ESBigInt)
+
+// ES Numeric Separator support for numeric constants
+FLAGR(Boolean, ESNumericSeparator, "Enable Numeric Separator flag", DEFAULT_CONFIG_ESNumericSeparator)
+
+// ES Hashbang support for interpreter directive syntax
+FLAGR(Boolean, ESHashbang, "Enable Hashbang syntax", DEFAULT_CONFIG_ESHashbang)
 
 // ES Symbol.prototype.description flag
 FLAGR(Boolean, ESSymbolDescription, "Enable Symbol.prototype.description", DEFAULT_CONFIG_ESSymbolDescription)
