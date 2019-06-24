@@ -594,7 +594,7 @@ Lowerer::LowerRange(IR::Instr *instrStart, IR::Instr *instrEnd, bool defaultDoFa
 
         case Js::OpCode::CloneStr:
         {
-            GenerateGetImmutableOrScriptUnreferencedString(instr->GetSrc1()->AsRegOpnd(), instr, IR::HelperOp_CompoundStringCloneForAppending, false);
+            GenerateGetImmutableOrScriptUnreferencedString(instr->GetSrc1()->AsRegOpnd(), instr, IR::HelperOp_CompoundStringCloneForAppending, true /*loweringCloneStr*/, false /*reloadDst*/);
             instr->Remove();
             break;
         }
@@ -2935,6 +2935,58 @@ Lowerer::LowerRange(IR::Instr *instrStart, IR::Instr *instrEnd, bool defaultDoFa
         case Js::OpCode::InlineeMetaArg:
         {
             m_lowererMD.ChangeToAssign(instr);
+            break;
+        }
+
+        case Js::OpCode::NewAsyncFromSyncIterator:
+        {
+            IR::Opnd *src1Opnd = instr->UnlinkSrc1();
+
+            LoadScriptContext(instr);
+            m_lowererMD.LoadHelperArgument(instr, src1Opnd);
+            m_lowererMD.ChangeToHelperCall(instr, IR::HelperNewAsyncFromSyncIterator);
+
+            break;
+        }
+
+        case Js::OpCode::Await:
+        {
+            IR::Opnd *srcOpnd1 = instr->UnlinkSrc1();
+            IR::Opnd *srcOpnd2 = instr->UnlinkSrc2();
+            LoadScriptContext(instr);
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd2);
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd1);
+            m_lowererMD.ChangeToHelperCall(instr, IR::HelperAwait);
+            break;
+        }
+
+        case Js::OpCode::AsyncYield:
+        {
+            IR::Opnd *srcOpnd1 = instr->UnlinkSrc1();
+            IR::Opnd *srcOpnd2 = instr->UnlinkSrc2();
+            LoadScriptContext(instr);
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd2);
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd1);
+            m_lowererMD.ChangeToHelperCall(instr, IR::HelperAsyncYield);
+            break;
+        }
+
+        case Js::OpCode::AsyncYieldIsReturn:
+        {
+            IR::Opnd *srcOpnd1 = instr->UnlinkSrc1();
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd1);
+            m_lowererMD.ChangeToHelperCall(instr, IR::HelperAsyncYieldIsReturn);
+            break;
+        }
+
+        case Js::OpCode::AsyncYieldStar:
+        {
+            IR::Opnd *srcOpnd1 = instr->UnlinkSrc1();
+            IR::Opnd *srcOpnd2 = instr->UnlinkSrc2();
+            LoadScriptContext(instr);
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd2);
+            m_lowererMD.LoadHelperArgument(instr, srcOpnd1);
+            m_lowererMD.ChangeToHelperCall(instr, IR::HelperAsyncYieldStar);
             break;
         }
 
@@ -9042,6 +9094,8 @@ Lowerer::LowerStElemI(IR::Instr * instr, Js::PropertyOperationFlags flags, bool 
 
     AssertMsg(dst->IsIndirOpnd(), "Expected indirOpnd on StElementI");
 
+    bool allowConvert = dst->AsIndirOpnd()->ConversionAllowed();
+
 #if !FLOATVAR
     if (dst->AsIndirOpnd()->GetBaseOpnd()->GetValueType().IsLikelyOptimizedTypedArray() && src1->IsRegOpnd())
     {
@@ -9126,15 +9180,17 @@ Lowerer::LowerStElemI(IR::Instr * instr, Js::PropertyOperationFlags flags, bool 
         {
             helperMethod =
                 srcType == TyVar ? IR::HelperOp_SetElementI_Int32 :
-                srcType == TyInt32 ? IR::HelperOp_SetNativeIntElementI_Int32 :
-                IR::HelperOp_SetNativeFloatElementI_Int32;
+                srcType == TyInt32 ? 
+                    (allowConvert ? IR::HelperOp_SetNativeIntElementI_Int32 : IR::HelperOp_SetNativeIntElementI_Int32_NoConvert) :
+                    (allowConvert ? IR::HelperOp_SetNativeFloatElementI_Int32 : IR::HelperOp_SetNativeFloatElementI_Int32_NoConvert) ;
         }
         else if (indexOpnd->GetType() == TyUint32)
         {
             helperMethod =
                 srcType == TyVar ? IR::HelperOp_SetElementI_UInt32 :
-                srcType == TyInt32 ? IR::HelperOp_SetNativeIntElementI_UInt32 :
-                IR::HelperOp_SetNativeFloatElementI_UInt32;
+                srcType == TyInt32 ? 
+                    (allowConvert ? IR::HelperOp_SetNativeIntElementI_UInt32 : IR::HelperOp_SetNativeIntElementI_UInt32_NoConvert) :
+                    (allowConvert ? IR::HelperOp_SetNativeFloatElementI_UInt32 : IR::HelperOp_SetNativeFloatElementI_UInt32_NoConvert) ;
         }
         else
         {
@@ -9152,8 +9208,9 @@ Lowerer::LowerStElemI(IR::Instr * instr, Js::PropertyOperationFlags flags, bool 
 
         if (srcType != TyVar)
         {
-            helperMethod =
-                srcType == TyInt32 ? IR::HelperOp_SetNativeIntElementI : IR::HelperOp_SetNativeFloatElementI;
+            helperMethod = srcType == TyInt32 ? 
+                (allowConvert ? IR::HelperOp_SetNativeIntElementI : IR::HelperOp_SetNativeIntElementI_NoConvert) : 
+                (allowConvert ? IR::HelperOp_SetNativeFloatElementI : IR::HelperOp_SetNativeFloatElementI_NoConvert);
         }
     }
 
@@ -26078,7 +26135,7 @@ Lowerer::LowerSetConcatStrMultiItem(IR::Instr * instr)
 }
 
 IR::RegOpnd *
-Lowerer::GenerateGetImmutableOrScriptUnreferencedString(IR::RegOpnd * strOpnd, IR::Instr * insertBeforeInstr, IR::JnHelperMethod helperMethod, bool reloadDst)
+Lowerer::GenerateGetImmutableOrScriptUnreferencedString(IR::RegOpnd * strOpnd, IR::Instr * insertBeforeInstr, IR::JnHelperMethod helperMethod, bool loweringCloneStr, bool reloadDst)
 {
     if (strOpnd->m_sym->m_isStrConst)
     {
@@ -26094,6 +26151,16 @@ Lowerer::GenerateGetImmutableOrScriptUnreferencedString(IR::RegOpnd * strOpnd, I
     {
         this->m_lowererMD.GenerateObjectTest(strOpnd, insertBeforeInstr, doneLabel);
     }
+
+    if (loweringCloneStr && func->IsLoopBody())
+    {
+        // Check if strOpnd is NULL before the CloneStr. There could be cases where SimpleJit might have dead stored instructions corresponding to the definition/use of strOpnd.
+        // As a result during a bailout when we restore values from interpreter stack frame we may end up having strOpnd as nullptr. During FullJit we may not dead store the
+        // instructions defining/using strOpnd due to StSlot instructions added at the end of jitted loop body. As a result, when we bailout (BailOnSimpleJitToFullJitLoopBody)
+        // strOpnd could have a NULL value causing CloneStr to dereference a nullptr.
+        this->InsertCompareBranch(strOpnd, IR::AddrOpnd::New(nullptr, IR::AddrOpndKindDynamicMisc, this->m_func), Js::OpCode::BrEq_A, false /*isUnsigned*/, doneLabel, insertBeforeInstr);
+    }
+
     // CMP [strOpnd], Js::CompoundString::`vtable'
     // JEQ $helper
     InsertCompareBranch(

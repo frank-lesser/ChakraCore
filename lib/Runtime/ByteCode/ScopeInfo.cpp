@@ -162,6 +162,24 @@ namespace Js
         Scope* currentScope = byteCodeGenerator->GetCurrentScope();
         Assert(currentScope->GetFunc() == funcInfo);
 
+// Disable the below temporarily because of bad interaction with named function expressions
+#if 0
+        if (funcInfo->root->IsDeclaredInParamScope()) {
+            Assert(currentScope->GetScopeType() == ScopeType_FunctionBody);
+            Assert(currentScope->GetEnclosingScope());
+
+            FuncInfo* func = currentScope->GetEnclosingScope()->GetFunc();
+            Assert(func);
+
+            if (func->IsBodyAndParamScopeMerged())
+            {
+                currentScope = func->GetParamScope();
+                Assert(currentScope->GetScopeType() == ScopeType_Parameter);
+                Assert(!currentScope->GetMustInstantiate());
+            }
+        }
+#endif
+
         while (currentScope->GetFunc() == funcInfo)
         {
             currentScope = currentScope->GetEnclosingScope();

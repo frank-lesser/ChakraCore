@@ -229,9 +229,13 @@ MACRO_BACKEND_ONLY(     InlineThrow,        Reg1,           OpSideEffect|OpPostO
 MACRO_BACKEND_ONLY(     EHThrow,            Reg1,           OpSideEffect|OpPostOpDbgBailOut|OpDeadFallThrough)  // Throw exception
 MACRO_WMS(              Throw,              Reg1,           OpSideEffect|OpNoFallThrough|OpPostOpDbgBailOut)    // Throw exception
 MACRO(                  Ret,                Empty,          OpSideEffect|OpUseAllFields|OpNoFallThrough)        // Return from function
+MACRO_EXTEND_WMS(       Await,              Reg2,           OpSideEffect)                                       // Await from async function
+MACRO_EXTEND_WMS(       AsyncYield,         Reg2,           OpSideEffect)                                       // Yield from async generator function
+MACRO_EXTEND_WMS(       AsyncYieldStar,     Reg2,           OpSideEffect)                                       // Yield* from async generator function
 MACRO_WMS(              Yield,              Reg2,           OpSideEffect|OpUseAllFields)                        // Yield from generator function
 MACRO_WMS(              ResumeYield,        Reg2,           OpSideEffect)
 MACRO_WMS(              ResumeYieldStar,    Reg3,           OpSideEffect)
+MACRO_EXTEND_WMS(       AsyncYieldIsReturn, Reg2,           OpSideEffect)                                       // Check for .return() during async yield*
 
 // Unary operations
 MACRO_WMS(              Incr_A,             Reg2,           OpTempNumberProducing|OpOpndHasImplicitCall|OpDoNotTransfer|OpTempNumberSources|OpTempObjectSources|OpCanCSE|OpPostOpDbgBailOut|OpProducesNumber)     // Increment
@@ -465,21 +469,21 @@ MACRO_WMS(              StEnvSlot,                  ElementSlotI2,  None)
 MACRO_WMS(              StInnerSlot,                ElementSlotI2,  None)
 MACRO_WMS(              StLocalSlot,                ElementSlotI1,  None)
 MACRO_EXTEND_WMS(       StParamSlot,                ElementSlotI1,  None)
-MACRO_BACKEND_ONLY(     StSlotChkUndecl,            ElementSlot,    OpSideEffect)
-MACRO_EXTEND_WMS(       StEnvSlotChkUndecl,         ElementSlotI2,  OpSideEffect)
-MACRO_EXTEND_WMS(       StInnerSlotChkUndecl,       ElementSlotI2,  OpSideEffect)
-MACRO_EXTEND_WMS(       StLocalSlotChkUndecl,       ElementSlotI1,  OpSideEffect)
-MACRO_EXTEND_WMS(       StParamSlotChkUndecl,       ElementSlotI1,  OpSideEffect)
+MACRO_BACKEND_ONLY(     StSlotChkUndecl,            ElementSlot,    OpSideEffect|OpNonIntTransfer) // Src1 is transferred to Dst, Src2 holds the same value as Dst to communicate Dst's liveness.
+MACRO_EXTEND_WMS(       StEnvSlotChkUndecl,         ElementSlotI2,  OpSideEffect|OpNonIntTransfer)
+MACRO_EXTEND_WMS(       StInnerSlotChkUndecl,       ElementSlotI2,  OpSideEffect|OpNonIntTransfer)
+MACRO_EXTEND_WMS(       StLocalSlotChkUndecl,       ElementSlotI1,  OpSideEffect|OpNonIntTransfer)
+MACRO_EXTEND_WMS(       StParamSlotChkUndecl,       ElementSlotI1,  OpSideEffect|OpNonIntTransfer)
 MACRO_EXTEND_WMS(       StObjSlot,                  ElementSlot,    OpSideEffect)
 MACRO_EXTEND_WMS(       StInnerObjSlot,             ElementSlotI2,  OpSideEffect)
 MACRO_EXTEND_WMS(       StLocalObjSlot,             ElementSlotI1,  OpSideEffect)
 MACRO_EXTEND_WMS(       StParamObjSlot,             ElementSlotI1,  OpSideEffect)
-MACRO_EXTEND_WMS(       StLocalObjSlotChkUndecl,    ElementSlotI1,  OpSideEffect)
-MACRO_EXTEND_WMS(       StParamObjSlotChkUndecl,    ElementSlotI1,  OpSideEffect)
+MACRO_EXTEND_WMS(       StLocalObjSlotChkUndecl,    ElementSlotI1,  OpSideEffect|OpNonIntTransfer)
+MACRO_EXTEND_WMS(       StParamObjSlotChkUndecl,    ElementSlotI1,  OpSideEffect|OpNonIntTransfer)
 MACRO_EXTEND_WMS(       StEnvObjSlot,               ElementSlotI2,  OpSideEffect)
-MACRO_EXTEND_WMS(       StObjSlotChkUndecl,         ElementSlot,    OpSideEffect)
-MACRO_EXTEND_WMS(       StInnerObjSlotChkUndecl,    ElementSlotI2,  OpSideEffect)
-MACRO_EXTEND_WMS(       StEnvObjSlotChkUndecl,      ElementSlotI2,  OpSideEffect)
+MACRO_EXTEND_WMS(       StObjSlotChkUndecl,         ElementSlot,    OpSideEffect|OpNonIntTransfer)
+MACRO_EXTEND_WMS(       StInnerObjSlotChkUndecl,    ElementSlotI2,  OpSideEffect|OpNonIntTransfer)
+MACRO_EXTEND_WMS(       StEnvObjSlotChkUndecl,      ElementSlotI2,  OpSideEffect|OpNonIntTransfer)
 MACRO_EXTEND_WMS(       StModuleSlot,               ElementSlotI2,  OpSideEffect)
 MACRO_BACKEND_ONLY(     LdAsmJsFunc,                ElementSlot,    OpTempNumberSources|OpCanCSE)
 MACRO_BACKEND_ONLY(     LdWasmFunc,                 ElementSlot,    OpSideEffect)
@@ -601,6 +605,7 @@ MACRO_EXTEND_WMS(       NewScFuncHomeObj,   ElementSlot,    OpSideEffect)   // C
 MACRO_EXTEND_WMS(       NewScGenFuncHomeObj,       ElementSlot,      OpSideEffect)   // Create new JavascriptGeneratorFunction instance that has home object
 MACRO_EXTEND_WMS(       NewInnerScFuncHomeObj,     ElementSlotI3,    OpSideEffect)   // Create new ScriptFunction instance that has home object
 MACRO_EXTEND_WMS(       NewInnerScGenFuncHomeObj,  ElementSlotI3,    OpSideEffect)   // Create new JavascriptGeneratorFunction instance that has home object
+MACRO_EXTEND_WMS(       NewAsyncFromSyncIterator,  Reg2,    OpSideEffect)   // Create new JavascriptAsyncFromSyncOperator instance
 MACRO_BACKEND_ONLY(     NewScopeObject,     Reg1,           None)                       // Create new NewScopeObject
 MACRO_BACKEND_ONLY(     InitCachedScope,    Reg2Aux,        None)                   // Retrieve cached scope; create if not cached
 MACRO_BACKEND_ONLY(     InitLetCachedScope, Reg2Aux,        OpSideEffect)                   // Retrieve cached scope; create if not cached (formals are let-like instead of var-like)

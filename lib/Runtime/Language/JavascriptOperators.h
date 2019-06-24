@@ -398,6 +398,12 @@ namespace Js
         static BOOL OP_SetElementI_UInt32(Var instance, uint32 aElementIndex, Var aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
         static BOOL OP_SetElementI_Int32(Var instance, int32 aElementIndex, Var aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
         static BOOL SetElementIHelper(Var receiver, RecyclableObject* object, Var index, Var value, ScriptContext* scriptContext, PropertyOperationFlags flags);
+        static BOOL OP_SetNativeIntElementI_NoConvert(Var instance, Var aElementIndex, int32 aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
+        static BOOL OP_SetNativeIntElementI_UInt32_NoConvert(Var instance, uint32 aElementIndex, int32 aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
+        static BOOL OP_SetNativeIntElementI_Int32_NoConvert(Var instance, int aElementIndex, int32 aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
+        static BOOL OP_SetNativeFloatElementI_NoConvert(Var instance, Var aElementIndex, ScriptContext* scriptContext, PropertyOperationFlags flags, double value);
+        static BOOL OP_SetNativeFloatElementI_UInt32_NoConvert(Var instance, uint32 aElementIndex, ScriptContext* scriptContext, PropertyOperationFlags flags, double value);
+        static BOOL OP_SetNativeFloatElementI_Int32_NoConvert(Var instance, int aElementIndex, ScriptContext* scriptContext, PropertyOperationFlags flags, double value);
         static BOOL OP_SetNativeIntElementI(Var instance, Var aElementIndex, int32 aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
         static BOOL OP_SetNativeIntElementI_UInt32(Var instance, uint32 aElementIndex, int32 aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
         static BOOL OP_SetNativeIntElementI_Int32(Var instance, int aElementIndex, int32 aValue, ScriptContext* scriptContext, PropertyOperationFlags flags = PropertyOperation_None);
@@ -631,7 +637,12 @@ namespace Js
         static Var OP_LdFuncObjProto(Var aRight, ScriptContext* scriptContext);
         static Var OP_ImportCall(__in JavascriptFunction *function, __in Var specifier, __in ScriptContext* scriptContext);
 
+        static void OP_Await(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext);
+        static void OP_AsyncYieldStar(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext);
+        static void OP_AsyncYield(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext);
+        static Var OP_AsyncYieldIsReturn(ResumeYieldData* yieldData);
         static Var OP_ResumeYield(ResumeYieldData* yieldData, RecyclableObject* iterator);
+        static Var OP_NewAsyncFromSyncIterator(Var syncIterator, ScriptContext* scriptContext);
 
         template <typename T>
         static void * JitRecyclerAlloc(DECLSPEC_GUARD_OVERFLOW size_t size, Recycler* recycler)

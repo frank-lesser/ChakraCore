@@ -377,6 +377,7 @@ void Visit(ParseNode *pnode, ByteCodeGenerator* byteCodeGenerator, PrefixFn pref
     // PTNODE(knopForIn      , "for in"    ,None    ,ForIn,fnopBreak|fnopContinue|fnopCleanup)
     case knopForIn:
     case knopForOf:
+    case knopForAwaitOf:
         BeginVisitBlock(pnode->AsParseNodeForInOrForOf()->pnodeBlock, byteCodeGenerator);
         Visit(pnode->AsParseNodeForInOrForOf()->pnodeLval, byteCodeGenerator, prefix, postfix);
         Visit(pnode->AsParseNodeForInOrForOf()->pnodeObj, byteCodeGenerator, prefix, postfix);
@@ -528,6 +529,7 @@ bool IsJump(ParseNode *pnode)
     case knopIf:
     case knopForIn:
     case knopForOf:
+    case knopForAwaitOf:
     case knopFor:
     case knopSwitch:
     case knopCase:
@@ -3114,6 +3116,17 @@ void ByteCodeGenerator::ProcessCapturedSym(Symbol *sym)
 
     Assert(sym->NeedsSlotAlloc(this, funcHome) || sym->GetIsGlobal() || sym->GetIsModuleImport() || sym->GetIsModuleExportStorage());
 
+    if (sym->GetScope()->GetScopeType() == ScopeType_FuncExpr)
+    {
+        if ((funcHome->GetParamScope() && Scope::HasSymbolName(funcHome->GetParamScope(), sym->GetName())) ||
+            (funcHome->IsBodyAndParamScopeMerged() && funcHome->GetBodyScope() && Scope::HasSymbolName(funcHome->GetBodyScope(), sym->GetName())))
+        {
+            // Make sure the function expression scope gets instantiated, since we can't merge the name symbol into another scope.
+            // Make it an object, since that's the only case the code gen can currently handle.
+            sym->GetScope()->SetIsObject();
+        }
+    }
+
     // If this is not a local property, or not all its references can be tracked, or
     // it's not scoped to the function, or we're in debug mode, disable the delayed capture optimization.
     if (funcHome->IsGlobalFunction() ||
@@ -4874,6 +4887,7 @@ void AssignRegisters(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator)
         break;
 
     case knopForOf:
+    case knopForAwaitOf:
         byteCodeGenerator->AssignNullConstRegister();
         byteCodeGenerator->AssignUndefinedConstRegister();
         CheckMaybeEscapedUse(pnode->AsParseNodeForInOrForOf()->pnodeObj, byteCodeGenerator);

@@ -4821,6 +4821,120 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         return JavascriptOperators::SetProperty(receiver, object, propertyRecord->GetPropertyId(), value, scriptContext, flags);
     }
 
+    BOOL JavascriptOperators::OP_SetNativeIntElementI_NoConvert(
+        Var instance,
+        Var aElementIndex,
+        int32 iValue,
+        ScriptContext* scriptContext,
+        PropertyOperationFlags flags)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_SetNativeIntElementI_NoConvert);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_SetNativeIntElementI_NoConvert, Op_SetNativeIntElementI);
+        BOOL converted = OP_SetNativeIntElementI(instance, aElementIndex, iValue, scriptContext, flags);
+        if (converted)
+        {
+            AssertMsg(false, "Unexpected native array conversion");
+            Js::Throw::FatalInternalError();
+        }
+        return FALSE;
+        JIT_HELPER_END(Op_SetNativeIntElementI_NoConvert);
+    }
+
+    BOOL JavascriptOperators::OP_SetNativeIntElementI_UInt32_NoConvert(
+        Var instance,
+        uint32 aElementIndex,
+        int32 iValue,
+        ScriptContext* scriptContext,
+        PropertyOperationFlags flags)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_SetNativeIntElementI_UInt32_NoConvert);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_SetNativeIntElementI_UInt32_NoConvert, Op_SetNativeIntElementI_UInt32);
+        BOOL converted = OP_SetNativeIntElementI_UInt32(instance, aElementIndex, iValue, scriptContext, flags);
+        if (converted)
+        {
+            AssertMsg(false, "Unexpected native array conversion");
+            Js::Throw::FatalInternalError();
+        }
+        return FALSE;
+        JIT_HELPER_END(Op_SetNativeIntElementI_UInt32_NoConvert);
+    }
+
+    BOOL JavascriptOperators::OP_SetNativeIntElementI_Int32_NoConvert(
+        Var instance,
+        int32 aElementIndex,
+        int32 iValue,
+        ScriptContext* scriptContext,
+        PropertyOperationFlags flags)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_SetNativeIntElementI_Int32_NoConvert);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_SetNativeIntElementI_Int32_NoConvert, Op_SetNativeIntElementI_Int32);
+        BOOL converted = OP_SetNativeIntElementI_Int32(instance, aElementIndex, iValue, scriptContext, flags);
+        if (converted)
+        {
+            AssertMsg(false, "Unexpected native array conversion");
+            Js::Throw::FatalInternalError();
+        }
+        return FALSE;
+        JIT_HELPER_END(Op_SetNativeIntElementI_Int32_NoConvert);
+    }
+
+    BOOL JavascriptOperators::OP_SetNativeFloatElementI_NoConvert(
+        Var instance,
+        Var aElementIndex,
+        ScriptContext* scriptContext,
+        PropertyOperationFlags flags,
+        double dValue)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_SetNativeFloatElementI_NoConvert);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_SetNativeFloatElementI_NoConvert, Op_SetNativeFloatElementI);
+        BOOL converted = OP_SetNativeFloatElementI(instance, aElementIndex, scriptContext, flags, dValue);
+        if (converted)
+        {
+            AssertMsg(false, "Unexpected native array conversion");
+            Js::Throw::FatalInternalError();
+        }
+        return FALSE;
+        JIT_HELPER_END(Op_SetNativeFloatElementI_NoConvert);
+    }
+
+    BOOL JavascriptOperators::OP_SetNativeFloatElementI_UInt32_NoConvert(
+        Var instance,
+        uint32 aElementIndex,
+        ScriptContext* scriptContext,
+        PropertyOperationFlags flags,
+        double dValue)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_SetNativeFloatElementI_UInt32_NoConvert);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_SetNativeFloatElementI_NoConvert, Op_SetNativeFloatElementI_UInt32);
+        BOOL converted = OP_SetNativeFloatElementI_UInt32(instance, aElementIndex, scriptContext, flags, dValue);
+        if (converted)
+        {
+            AssertMsg(false, "Unexpected native array conversion");
+            Js::Throw::FatalInternalError();
+        }
+        return FALSE;
+        JIT_HELPER_END(Op_SetNativeFloatElementI_UInt32_NoConvert);
+    }
+
+    BOOL JavascriptOperators::OP_SetNativeFloatElementI_Int32_NoConvert(
+        Var instance,
+        int32 aElementIndex,
+        ScriptContext* scriptContext,
+        PropertyOperationFlags flags,
+        double dValue)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_SetNativeFloatElementI_Int32_NoConvert);
+        JIT_HELPER_SAME_ATTRIBUTES(Op_SetNativeFloatElementI_NoConvert, Op_SetNativeFloatElementI_Int32);
+        BOOL converted = OP_SetNativeFloatElementI_Int32(instance, aElementIndex, scriptContext, flags, dValue);
+        if (converted)
+        {
+            AssertMsg(false, "Unexpected native array conversion");
+            Js::Throw::FatalInternalError();
+        }
+        return FALSE;
+        JIT_HELPER_END(Op_SetNativeFloatElementI_Int32_NoConvert);
+    }
+
     BOOL JavascriptOperators::OP_SetNativeIntElementI(
         Var instance,
         Var aElementIndex,
@@ -5456,6 +5570,7 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             case TypeIds_SetIterator:
             case TypeIds_StringIterator:
             case TypeIds_Generator:
+            case TypeIds_AsyncFromSyncIterator:
             case TypeIds_Promise:
             case TypeIds_Proxy:
                 return true;
@@ -9818,6 +9933,10 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             Var result = CALL_ENTRYPOINT(threadContext, marshalledFunction->GetEntryPoint(), function, CallInfo(flags, 1), thisVar);
             result = CrossSite::MarshalVar(requestContext, result);
 
+            // Set implicit call flags so we bail out if we're trying to propagate the value forward, e.g., from a compare. Subsequent calls
+            // to the getter may produce different results.
+            threadContext->AddImplicitCallFlags(ImplicitCall_Accessor);
+
             return result;
         });
     }
@@ -10128,6 +10247,49 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_END(ImportCall);
     }
 
+    void JavascriptOperators::OP_Await(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext)
+    {
+        //#await
+        // 1. Let asyncContext be the running execution context.
+        // 2. Let promise be be ? PromiseResolve(%Promise%, << completion.[[Value]] >>).
+        JavascriptPromise* promise = JavascriptPromise::InternalPromiseResolve(value, scriptContext);
+        // 3. Let stepsFulfilled be the algorithm steps defined in Await Fulfilled Functions.
+        // 4. Let onFulfilled be CreateBuiltinFunction(stepsFulfilled, << [[AsyncContext]] >>).
+        // 5. Set onFulfilled.[[AsyncContext]] to asyncContext.
+        // 6. Let stepsRejected be the algorithm steps defined in Await Rejected Functions.
+        // 7. Let onRejected be CreateBuiltinFunction(stepsRejected, << [[AsyncContext]] >>).
+        // 8. Set onRejected.[[AsyncContext]] to asyncContext.
+        // 9. Perform ! PerformPromiseThen(promise, onFulfilled, onRejected).
+        JavascriptPromise::CreateThenPromise(promise, generator->GetAwaitNextFunction(), generator->GetAwaitThrowFunction(), scriptContext);
+        // 10. Remove asyncContext from the execution context stack and restore the execution context that is at the top of the execution context stack as the running execution context.
+        // 11. Set the code evaluation state of asyncContext such that when evaluation is resumed with a Completion completion, the following steps of the algorithm that invoked Await will be performed, with completion available.   
+    }
+
+
+    void JavascriptOperators::OP_AsyncYieldStar(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext)
+    {
+        JavascriptPromise* promise = JavascriptPromise::InternalPromiseResolve(value, scriptContext);
+
+        JavascriptPromise::CreateThenPromise(promise, generator->EnsureAwaitYieldStarFunction(), generator->GetAwaitThrowFunction(), scriptContext);   
+    }
+
+    void JavascriptOperators::OP_AsyncYield(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext)
+    {
+        JavascriptPromise* promise = JavascriptPromise::InternalPromiseResolve(value, scriptContext);
+
+        JavascriptPromise::CreateThenPromise(promise, generator->GetAwaitYieldFunction(), generator->GetAwaitThrowFunction(), scriptContext);   
+    }
+
+    Var JavascriptOperators::OP_AsyncYieldIsReturn(ResumeYieldData* yieldData)
+    {
+        JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(AsyncYieldIsReturn);
+        JavascriptLibrary* library = yieldData->generator->GetScriptContext()->GetLibrary();
+
+        return (yieldData->exceptionObj != nullptr && yieldData->exceptionObj->IsGeneratorReturnException()) ?
+            library->GetTrue() : library->GetFalse();
+        JIT_HELPER_END(AsyncYieldIsReturn);
+    }
+
     Var JavascriptOperators::OP_ResumeYield(ResumeYieldData* yieldData, RecyclableObject* iterator)
     {
         JIT_HELPER_REENTRANT_HEADER(ResumeYield);
@@ -10195,12 +10357,12 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                 return JavascriptFunction::CallFunction<true>(method, method->GetEntryPoint(), Arguments(callInfo, args));
             });
 
-            if (!JavascriptOperators::IsObject(result))
+            if (yieldData->generator == nullptr && !JavascriptOperators::IsObject(result))
             {
                 JavascriptError::ThrowTypeError(scriptContext, JSERR_NeedObject);
             }
 
-            if (isThrow || isNext)
+            if (isThrow || isNext || yieldData->generator != nullptr)
             {
                 // 5.b.ii.2
                 // NOTE: Exceptions from the inner iterator throw method are propagated.
@@ -10253,6 +10415,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         // Do not use ThrowExceptionObject for return() API exceptions since these exceptions are not real exceptions
         JavascriptExceptionOperators::DoThrow(yieldData->exceptionObj, yieldData->exceptionObj->GetScriptContext());
         JIT_HELPER_END(ResumeYield);
+    }
+
+    Var JavascriptOperators::OP_NewAsyncFromSyncIterator(Var syncIterator, ScriptContext* scriptContext)
+    {
+        JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(NewAsyncFromSyncIterator);
+        return scriptContext->GetLibrary()->CreateAsyncFromSyncIterator(VarTo<RecyclableObject>(syncIterator));
+        JIT_HELPER_END(NewAsyncFromSyncIterator);
     }
 
     Js::Var
