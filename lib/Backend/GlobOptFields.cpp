@@ -409,6 +409,14 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
         if (inGlobOpt)
         {
             KillObjectHeaderInlinedTypeSyms(this->currentBlock, false);
+            if (this->objectTypeSyms)
+            {
+                if (this->currentBlock->globOptData.maybeWrittenTypeSyms == nullptr)
+                {
+                    this->currentBlock->globOptData.maybeWrittenTypeSyms = JitAnew(this->alloc, BVSparse<JitArenaAllocator>, this->alloc);
+                }
+                this->currentBlock->globOptData.maybeWrittenTypeSyms->Or(this->objectTypeSyms);
+            }
         }
 
         // fall through
@@ -429,6 +437,7 @@ GlobOpt::ProcessFieldKills(IR::Instr *instr, BVSparse<JitArenaAllocator> *bv, bo
     case Js::OpCode::StSlot:
     case Js::OpCode::StSlotChkUndecl:
     case Js::OpCode::StSuperFld:
+    case Js::OpCode::StSuperFldStrict:
         Assert(dstOpnd != nullptr);
         sym = dstOpnd->AsSymOpnd()->m_sym;
         if (inGlobOpt)

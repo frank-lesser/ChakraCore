@@ -413,6 +413,7 @@ HELPERCALLCHK(ProfiledLdRootFld, Js::ProfilingHelpers::ProfiledLdRootFld_Jit, 0)
 HELPERCALLCHK(ProfiledLdRootMethodFld, Js::ProfilingHelpers::ProfiledLdRootMethodFld_Jit, 0)
 HELPERCALLCHK(ProfiledStFld, Js::ProfilingHelpers::ProfiledStFld_Jit, 0)
 HELPERCALLCHK(ProfiledStSuperFld, Js::ProfilingHelpers::ProfiledStSuperFld_Jit, 0)
+HELPERCALLCHK(ProfiledStSuperFld_Strict, Js::ProfilingHelpers::ProfiledStSuperFld_Strict_Jit, 0)
 HELPERCALLCHK(ProfiledStFld_Strict, Js::ProfilingHelpers::ProfiledStFld_Strict_Jit, 0)
 HELPERCALLCHK(ProfiledStRootFld, Js::ProfilingHelpers::ProfiledStRootFld_Jit, 0)
 HELPERCALLCHK(ProfiledStRootFld_Strict, Js::ProfilingHelpers::ProfiledStRootFld_Strict_Jit, 0)
@@ -438,7 +439,7 @@ HELPERCALLCHK(SimpleRecordLoopImplicitCallFlags, Js::SimpleJitHelpers::RecordLoo
 
 HELPERCALLCHK(ScriptAbort, Js::JavascriptOperators::ScriptAbort, AttrCanThrow | AttrCanNotBeReentrant)
 
-HELPERCALLCHK(NoSaveRegistersBailOutForElidedYield, BailOutRecord::BailOutForElidedYield, 0)
+HELPERCALLCHK(NoSaveRegistersBailOutForElidedYield, BailOutRecord::BailOutForElidedYield, AttrCanNotBeReentrant)
 
 // We don't want these functions to be valid iCall targets because they can be used to disclose stack addresses
 //   which CFG cannot defend against. Instead, return these addresses in GetNonTableMethodAddress
@@ -531,6 +532,7 @@ HELPERCALLCHK(LdHomeObjProto,           Js::JavascriptOperators::OP_LdHomeObjPro
 HELPERCALLCHK(LdFuncObjProto,           Js::JavascriptOperators::OP_LdFuncObjProto, AttrCanNotBeReentrant)
 
 HELPERCALLCHK(ImportCall,               Js::JavascriptOperators::OP_ImportCall, 0)
+HELPERCALLCHK(LdImportMeta,             Js::JavascriptOperators::OP_LdImportMeta, 0)
 HELPERCALLCHK(NewAsyncFromSyncIterator, Js::JavascriptOperators::OP_NewAsyncFromSyncIterator, AttrCanNotBeReentrant)
 
 HELPERCALLCHK(AsyncYieldIsReturn,       Js::JavascriptOperators::OP_AsyncYieldIsReturn, AttrCanNotBeReentrant)
@@ -538,6 +540,12 @@ HELPERCALLCHK(ResumeYield,              Js::JavascriptOperators::OP_ResumeYield,
 HELPERCALL(AsyncYieldStar,              Js::InterpreterStackFrame::OP_AsyncYieldStar, AttrCanNotBeReentrant)
 HELPERCALL(AsyncYield,                  Js::InterpreterStackFrame::OP_AsyncYield, AttrCanNotBeReentrant)
 HELPERCALL(Await,                       Js::InterpreterStackFrame::OP_Await, AttrCanNotBeReentrant)
+
+HELPERCALL(CreateInterpreterStackFrameForGenerator, Js::InterpreterStackFrame::CreateInterpreterStackFrameForGenerator, AttrCanNotBeReentrant)
+
+#ifdef ENABLE_DEBUG_CONFIG_OPTIONS
+HELPERCALL(OutputGeneratorBailInTrace, Js::JavascriptGenerator::OutputBailInTrace, AttrCanNotBeReentrant)
+#endif
 
 #if DBG
 HELPERCALL(IntRangeCheckFailure, Js::JavascriptNativeOperators::IntRangeCheckFailure, AttrCanNotBeReentrant)

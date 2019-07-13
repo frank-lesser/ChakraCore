@@ -2386,6 +2386,10 @@ void AddVarsToScope(ParseNode *vars, ByteCodeGenerator *byteCodeGenerator)
                 {
                     funcInfo->SetNewTargetSymbol(sym);
                 }
+                else if (sym->IsImportMeta())
+                {
+                    funcInfo->SetImportMetaSymbol(sym);
+                }
                 else if (sym->IsSuper())
                 {
                     funcInfo->SetSuperSymbol(sym);
@@ -2939,6 +2943,10 @@ FuncInfo* PostVisitFunction(ParseNodeFnc* pnodeFnc, ByteCodeGenerator* byteCodeG
         if (top->GetSuperConstructorSymbol())
         {
             byteCodeGenerator->AssignRegister(top->GetSuperConstructorSymbol());
+        }
+        if (top->GetImportMetaSymbol())
+        {
+            byteCodeGenerator->AssignRegister(top->GetImportMetaSymbol());
         }
 
         Assert(!funcExprWithName || sym);
@@ -4888,9 +4896,14 @@ void AssignRegisters(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator)
 
     case knopForOf:
     case knopForAwaitOf:
-        byteCodeGenerator->AssignNullConstRegister();
-        byteCodeGenerator->AssignUndefinedConstRegister();
-        CheckMaybeEscapedUse(pnode->AsParseNodeForInOrForOf()->pnodeObj, byteCodeGenerator);
+        {
+            ParseNodeForInOrForOf* pnodeForOf = pnode->AsParseNodeForInOrForOf();
+            byteCodeGenerator->AssignNullConstRegister();
+            byteCodeGenerator->AssignUndefinedConstRegister();
+            pnodeForOf->shouldCallReturnFunctionLocation = byteCodeGenerator->NextVarRegister();
+            pnodeForOf->shouldCallReturnFunctionLocationFinally = byteCodeGenerator->NextVarRegister();
+            CheckMaybeEscapedUse(pnodeForOf->pnodeObj, byteCodeGenerator);
+        }
         break;
 
     case knopTrue:
@@ -5169,6 +5182,8 @@ void AssignRegisters(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator)
         CheckMaybeEscapedUse(pnode->AsParseNodeUni()->pnode1, byteCodeGenerator);
         break;
     case knopYieldStar:
+        // Reserve a local for our YieldStar loop so that the backend doesn't complain
+        pnode->location = byteCodeGenerator->NextVarRegister();
         byteCodeGenerator->AssignNullConstRegister();
         byteCodeGenerator->AssignUndefinedConstRegister();
         CheckMaybeEscapedUse(pnode->AsParseNodeUni()->pnode1, byteCodeGenerator);

@@ -1036,7 +1036,8 @@ bool IR::Instr::IsStFldVariant() const
         this->m_opcode == Js::OpCode::StLocalFld ||
         this->m_opcode == Js::OpCode::StRootFld ||
         this->m_opcode == Js::OpCode::StRootFldStrict ||
-        this->m_opcode == Js::OpCode::StSuperFld;
+        this->m_opcode == Js::OpCode::StSuperFld ||
+        this->m_opcode == Js::OpCode::StSuperFldStrict;
 }
 
 bool IR::Instr::IsStElemVariant() const
@@ -1044,6 +1045,13 @@ bool IR::Instr::IsStElemVariant() const
     return this->m_opcode == Js::OpCode::StElemI_A ||
         this->m_opcode == Js::OpCode::StElemI_A_Strict ||
         this->m_opcode == Js::OpCode::StElemC;
+}
+
+bool IR::Instr::DontHoistBailOnNoProfileAboveInGeneratorFunction() const
+{
+    return this->m_opcode == Js::OpCode::ResumeYield ||
+        this->m_opcode == Js::OpCode::ResumeYieldStar ||
+        this->m_opcode == Js::OpCode::GeneratorCreateInterpreterStackFrame;
 }
 
 bool IR::Instr::CanChangeFieldValueWithoutImplicitCall() const

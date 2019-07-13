@@ -105,7 +105,12 @@ namespace Js
                 bool didThrow;
             public:
                 GeneratorStateHelper(JavascriptGenerator* g) : g(g), didThrow(true) { g->SetState(GeneratorState::Executing); }
-                ~GeneratorStateHelper() { g->SetState(didThrow || g->frame == nullptr ? GeneratorState::Completed : GeneratorState::Suspended); }
+                ~GeneratorStateHelper()
+                {
+                    // If the generator is jit'd, we set its interpreter frame to nullptr at the end right before the epilogue
+                    // to signal that the generator has completed
+                    g->SetState(didThrow || g->frame == nullptr ? GeneratorState::Completed : GeneratorState::Suspended);
+                }
                 void DidNotThrow() { didThrow = false; }
             } helper(this);
 
@@ -320,8 +325,9 @@ namespace Js
 
         AsyncGeneratorNextProcessor* resumeNextReturnProcessor = VarTo<AsyncGeneratorNextProcessor>(function);
 
-        ResumeYieldData yieldData(args[1], RecyclerNew(scriptContext->GetRecycler(), JavascriptExceptionObject, args[1], scriptContext, nullptr));
-        resumeNextReturnProcessor->GetGenerator()->CallAsyncGenerator(&yieldData);
+        Var data = args[1];
+        JavascriptExceptionObject* exceptionObj = RecyclerNew(scriptContext->GetRecycler(), JavascriptExceptionObject, args[1], scriptContext, nullptr);
+        resumeNextReturnProcessor->GetGenerator()->CallAsyncGenerator(data, exceptionObj);
         return scriptContext->GetLibrary()->GetUndefined();
     }
 
@@ -335,22 +341,23 @@ namespace Js
 
         AsyncGeneratorNextProcessor* resumeNextReturnProcessor = VarTo<AsyncGeneratorNextProcessor>(function);
 
-        ResumeYieldData yieldData(args.Values[1], nullptr);
-        resumeNextReturnProcessor->GetGenerator()->CallAsyncGenerator(&yieldData);
+        Var data = args.Values[1];
+        JavascriptExceptionObject* exceptionObj = nullptr;
+        resumeNextReturnProcessor->GetGenerator()->CallAsyncGenerator(data, exceptionObj);
         return scriptContext->GetLibrary()->GetUndefined();
     }
 
-    void JavascriptGenerator::CallAsyncGenerator(ResumeYieldData* yieldData)
+    void JavascriptGenerator::CallAsyncGenerator(Var data, JavascriptExceptionObject* exceptionObj)
     {
         AssertOrFailFastMsg(isAsync, "Should not call CallAsyncGenerator on a non-async generator");
         ScriptContext* scriptContext = this->GetScriptContext();
         Var result = nullptr;
         JavascriptExceptionObject *exception = nullptr;
-        yieldData->generator = this;
 
         SetState(GeneratorState::Executing);
 
-        Var thunkArgs[] = { this, yieldData };
+        ResumeYieldData yieldData(data, exceptionObj, this);
+        Var thunkArgs[] = { this, &yieldData };
         Arguments arguments(_countof(thunkArgs), thunkArgs);
         try
         {
@@ -375,7 +382,7 @@ namespace Js
                 return;
             }
         }
-        else
+        else if (frame != nullptr)
         {
             int nextOffset = this->frame->GetReader()->GetCurrentOffset();
             int endOffset = this->frame->GetFunctionBody()->GetByteCode()->GetLength();
@@ -384,9 +391,9 @@ namespace Js
             {
                 return;
             }
-            SetState(GeneratorState::Completed);
         }
 
+        SetState(GeneratorState::Completed);
         ProcessAsyncGeneratorReturn(result, scriptContext);
     }
 
@@ -552,8 +559,7 @@ namespace Js
         SetState(GeneratorState::Executing);
         // 17. Push genContext onto the execution context stack; genContext is now the running execution context.
         // 18. Resume the suspended evaluation of genContext using completion as the result of the operation that suspended it. Let result be the completion record returned by the resumed computation.
-        ResumeYieldData data(next->data, next->exceptionObj);
-        CallAsyncGenerator(&data);
+        CallAsyncGenerator(next->data, next->exceptionObj);
         // 19. Assert: result is never an abrupt completion.
         // 20. Assert: When we return here, genContext has already been removed from the execution context stack and callerContext is the currently running execution context.
         // 21. Return undefined.
@@ -569,7 +575,8 @@ namespace Js
         RecyclableObject* onFulfilled = library->CreateAsyncGeneratorResumeNextReturnProcessorFunction(this, false);
         RecyclableObject* onRejected = library->CreateAsyncGeneratorResumeNextReturnProcessorFunction(this, true);
 
-        JavascriptPromise::CreateThenPromise(promise, onFulfilled, onRejected, scriptContext);
+        JavascriptPromiseCapability* unused = JavascriptPromise::UnusedPromiseCapability(scriptContext);
+        JavascriptPromise::PerformPromiseThen(promise, unused, onFulfilled, onRejected, scriptContext);
     }
 
     RuntimeFunction* JavascriptGenerator::EnsureAwaitYieldStarFunction()
@@ -665,6 +672,28 @@ namespace Js
         resumeNextReturnProcessor->GetGenerator()->AsyncGeneratorReject(args[1]);
         return  function->GetScriptContext()->GetLibrary()->GetUndefined();
     }
+
+#ifdef ENABLE_DEBUG_CONFIG_OPTIONS
+    void JavascriptGenerator::OutputBailInTrace(JavascriptGenerator* generator)
+    {
+        char16 debugStringBuffer[MAX_FUNCTION_BODY_DEBUG_STRING_SIZE];
+        FunctionBody *fnBody = generator->scriptFunction->GetFunctionBody();
+        Output::Print(_u("BailIn: function: %s (%s) offset: #%04x\n"), fnBody->GetDisplayName(), fnBody->GetDebugNumberSet(debugStringBuffer), generator->frame->m_reader.GetCurrentOffset());
+
+        if (generator->bailInSymbolsTraceArrayCount == 0)
+        {
+            Output::Print(_u("BailIn: No symbols reloaded\n"), fnBody->GetDisplayName(), fnBody->GetDebugNumberSet(debugStringBuffer));
+        }
+        else
+        {
+            for (int i = 0; i < generator->bailInSymbolsTraceArrayCount; i++)
+            {
+                const JavascriptGenerator::BailInSymbol& symbol = generator->bailInSymbolsTraceArray[i];
+                Output::Print(_u("BailIn: Register #%4d, value: 0x%p\n"), symbol.id, symbol.value);
+            }
+        }
+    }
+#endif
 
     template <> bool VarIsImpl<AsyncGeneratorNextProcessor>(RecyclableObject* obj)
     {

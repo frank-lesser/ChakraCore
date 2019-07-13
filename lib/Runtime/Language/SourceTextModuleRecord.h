@@ -35,6 +35,7 @@ namespace Js
         bool ModuleDeclarationInstantiation() override;
         void GenerateRootFunction();
         Var ModuleEvaluation() override;
+        bool ModuleEvaluationPrepass();
         virtual ModuleNamespace* GetNamespace();
         virtual void SetNamespace(ModuleNamespace* moduleNamespace);
 
@@ -61,11 +62,15 @@ namespace Js
 
         bool WasParsed() const { return wasParsed; }
         void SetWasParsed() { wasParsed = true; }
+        bool WasEvaluationPrepassed() const { return wasPrepassed; }
+        void SetEvaluationPrepassed() { wasPrepassed = true; }
         bool WasDeclarationInitialized() const { return wasDeclarationInitialized; }
         void SetWasDeclarationInitialized() { wasDeclarationInitialized = true; }
         void SetIsRootModule() { isRootModule = true; }
         JavascriptPromise *GetPromise() { return this->promise; }
         void SetPromise(JavascriptPromise *value) { this->promise = value; }
+
+        Var GetImportMetaObject();
 
         void SetImportRecordList(ModuleImportOrExportEntryList* importList) { importRecordList = importList; }
         void SetLocalExportRecordList(ModuleImportOrExportEntryList* localExports) { localExportRecordList = localExports; }
@@ -120,11 +125,13 @@ namespace Js
         // This is the parsed tree resulted from compilation.
         Field(bool) confirmedReady = false;
         Field(bool) notifying = false;
+        Field(bool) wasPrepassed = false;
         Field(bool) wasParsed;
         Field(bool) wasDeclarationInitialized;
         Field(bool) parentsNotified;
         Field(bool) isRootModule;
         Field(bool) hadNotifyHostReady;
+        Field(JavascriptGenerator*) generator;
         Field(ParseNodeProg *) parseTree;
         Field(Utf8SourceInfo*) pSourceInfo;
         Field(uint) sourceIndex;
@@ -157,6 +164,8 @@ namespace Js
 
         Field(ModuleNameRecord) namespaceRecord;
         Field(JavascriptPromise*) promise;
+
+        Field(Var) importMetaObject;
 
         HRESULT PostParseProcess();
         HRESULT PrepareForModuleDeclarationInitialization();

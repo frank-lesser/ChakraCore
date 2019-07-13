@@ -88,18 +88,24 @@ BackwardPass::DoMarkTempNumbers() const
 }
 
 bool
-BackwardPass::DoMarkTempObjects() const
-{
-    // only mark temp object on the backward store phase
-    return (tag == Js::BackwardPhase) && !PHASE_OFF(Js::MarkTempPhase, this->func) &&
-        !PHASE_OFF(Js::MarkTempObjectPhase, this->func) && func->DoGlobOpt() && func->GetHasTempObjectProducingInstr() &&
-        !func->IsJitInDebugMode() &&
-        func->DoGlobOptsForGeneratorFunc();
+BackwardPass::SatisfyMarkTempObjectsConditions() const {
+    return !PHASE_OFF(Js::MarkTempPhase, this->func) &&
+           !PHASE_OFF(Js::MarkTempObjectPhase, this->func) &&
+           func->DoGlobOpt() && func->GetHasTempObjectProducingInstr() &&
+           !func->IsJitInDebugMode() &&
+           func->DoGlobOptsForGeneratorFunc();
 
     // Why MarkTempObject is disabled under debugger:
     //   We add 'identified so far dead non-temp locals' to byteCodeUpwardExposedUsed in ProcessBailOutInfo,
     //   this may cause MarkTempObject to convert some temps back to non-temp when it sees a 'transferred exposed use'
     //   from a temp to non-temp. That's in general not a supported conversion (while non-temp -> temp is fine).
+}
+
+bool
+BackwardPass::DoMarkTempObjects() const
+{
+    // only mark temp object on the backward store phase
+    return (tag == Js::BackwardPhase) && SatisfyMarkTempObjectsConditions();
 }
 
 bool
@@ -113,8 +119,7 @@ bool
 BackwardPass::DoMarkTempObjectVerify() const
 {
     // only mark temp object on the backward store phase
-    return (tag == Js::DeadStorePhase) && !PHASE_OFF(Js::MarkTempPhase, this->func) &&
-        !PHASE_OFF(Js::MarkTempObjectPhase, this->func) && func->DoGlobOpt() && func->GetHasTempObjectProducingInstr();
+    return (tag == Js::DeadStorePhase) && SatisfyMarkTempObjectsConditions();
 }
 #endif
 
@@ -2462,7 +2467,7 @@ BackwardPass::DeadStoreImplicitCallBailOut(IR::Instr * instr, bool hasLiveFields
 }
 
 bool
-BackwardPass::UpdateImplicitCallBailOutKind(IR::Instr *const instr, bool needsBailOutOnImplicitCall, bool needsLazyBailOut)
+BackwardPass::UpdateImplicitCallBailOutKind(IR::Instr* const instr, bool needsBailOutOnImplicitCall, bool needsLazyBailOut)
 {
     Assert(instr);
     Assert(instr->HasBailOutInfo());
@@ -2476,7 +2481,7 @@ BackwardPass::UpdateImplicitCallBailOutKind(IR::Instr *const instr, bool needsBa
         "The lazy bailout bit should be present at this point. We might have removed it incorrectly."
     );
 
-    const IR::BailOutKind bailOutKindWithBits = instr->GetBailOutKind();
+    IR::BailOutKind bailOutKindWithBits = instr->GetBailOutKind();
 
     const bool hasMarkTempObject = bailOutKindWithBits & IR::BailOutMarkTempObject;
 
@@ -2485,7 +2490,8 @@ BackwardPass::UpdateImplicitCallBailOutKind(IR::Instr *const instr, bool needsBa
     // of `needsBailOutOnImplicitCall`.
     if (hasMarkTempObject)
     {
-        instr->SetBailOutKind(bailOutKindWithBits & ~IR::BailOutMarkTempObject);
+        bailOutKindWithBits &= ~IR::BailOutMarkTempObject;
+        instr->SetBailOutKind(bailOutKindWithBits);
     }
 
     if (needsBailOutOnImplicitCall)
@@ -2513,9 +2519,10 @@ BackwardPass::UpdateImplicitCallBailOutKind(IR::Instr *const instr, bool needsBa
     }
 
     const IR::BailOutKind bailOutKindWithoutBits = instr->GetBailOutKindNoBits();
-
-    if (hasMarkTempObject)
+    if (!instr->GetBailOutInfo()->canDeadStore)
     {
+        // revisit if canDeadStore is used for anything other than BailOutMarkTempObject
+        Assert(hasMarkTempObject);
         // Don't remove the implicit call pre op bailout for mark temp object.
         Assert(bailOutKindWithoutBits == IR::BailOutOnImplicitCallsPreOp);
         return true;
@@ -3016,6 +3023,11 @@ BackwardPass::ProcessBlock(BasicBlock * block)
 
         bool hasLiveFields = (block->upwardExposedFields && !block->upwardExposedFields->IsEmpty());
 
+        if (this->tag == Js::DeadStorePhase && block->stackSymToFinalType != nullptr)
+        {
+            this->InsertTypeTransitionsAtPotentialKills();
+        }
+
         IR::Opnd * opnd = instr->GetDst();
         if (opnd != nullptr)
         {
@@ -3062,11 +3074,6 @@ BackwardPass::ProcessBlock(BasicBlock * block)
             TrackBitWiseOrNumberOp(instr);
 
             TrackFloatSymEquivalence(instr);
-        }
-
-        if (this->tag == Js::DeadStorePhase && block->stackSymToFinalType != nullptr)
-        {
-            this->InsertTypeTransitionsAtPotentialKills();
         }
 
         opnd = instr->GetSrc1();
@@ -3442,6 +3449,7 @@ BackwardPass::ProcessBlock(BasicBlock * block)
                 case Js::OpCode::StSlotBoxTemp:
                 case Js::OpCode::StSlotChkUndecl:
                 case Js::OpCode::StSuperFld:
+                case Js::OpCode::StSuperFldStrict:
                 case Js::OpCode::ProfiledStElemI_A:
                 case Js::OpCode::ProfiledStElemI_A_Strict:
                 case Js::OpCode::ProfiledStFld:
@@ -3450,6 +3458,7 @@ BackwardPass::ProcessBlock(BasicBlock * block)
                 case Js::OpCode::ProfiledStRootFld:
                 case Js::OpCode::ProfiledStRootFldStrict:
                 case Js::OpCode::ProfiledStSuperFld:
+                case Js::OpCode::ProfiledStSuperFldStrict:
                     // Unfortunately, being fed into a store means that we could have aliasing, and the
                     // consequence is that it may be re-read and then dereferenced. Note that we can do
                     // this case if we poison any array symbol that we store to on the way out, but the
@@ -7707,7 +7716,7 @@ BackwardPass::ProcessDef(IR::Opnd * opnd)
         PropertySym *propertySym = sym->AsPropertySym();
         ProcessStackSymUse(propertySym->m_stackSym, isJITOptimizedReg);
 
-        if(IsCollectionPass())
+        if (IsCollectionPass())
         {
             return false;
         }
@@ -7794,7 +7803,7 @@ BackwardPass::ProcessDef(IR::Opnd * opnd)
             }
         }
 
-        if(IsCollectionPass())
+        if (IsCollectionPass())
         {
             return false;
         }
@@ -8245,9 +8254,20 @@ BackwardPass::ProcessBailOnNoProfile(IR::Instr *instr, BasicBlock *block)
         return false;
     }
 
+    // For generator functions, we don't want to move the BailOutOnNoProfile above
+    // certain instructions such as ResumeYield/ResumeYieldStar/CreateInterpreterStackFrameForGenerator
+    // This indicates the insertion point for the BailOutOnNoProfile in such cases.
+    IR::Instr *insertionPointForGenerator = nullptr;
+
     // Don't hoist if we see calls with profile data (recursive calls)
     while(!curInstr->StartsBasicBlock())
     {
+        if (curInstr->DontHoistBailOnNoProfileAboveInGeneratorFunction())
+        {
+            Assert(insertionPointForGenerator == nullptr);
+            insertionPointForGenerator = curInstr;
+        }
+
         // If a function was inlined, it must have had profile info.
         if (curInstr->m_opcode == Js::OpCode::InlineeEnd || curInstr->m_opcode == Js::OpCode::InlineBuiltInEnd || curInstr->m_opcode == Js::OpCode::InlineNonTrackingBuiltInEnd
             || curInstr->m_opcode == Js::OpCode::InlineeStart || curInstr->m_opcode == Js::OpCode::EndCallForPolymorphicInlinee)
@@ -8318,7 +8338,8 @@ BackwardPass::ProcessBailOnNoProfile(IR::Instr *instr, BasicBlock *block)
     // Now try to move this up the flowgraph to the predecessor blocks
     FOREACH_PREDECESSOR_BLOCK(pred, block)
     {
-        bool hoistBailToPred = true;
+        // Don't hoist BailOnNoProfile up past blocks containing ResumeYield/ResumeYieldStar
+        bool hoistBailToPred = (insertionPointForGenerator == nullptr);
 
         if (block->isLoopHeader && pred->loop == block->loop)
         {
@@ -8394,10 +8415,19 @@ BackwardPass::ProcessBailOnNoProfile(IR::Instr *instr, BasicBlock *block)
 #if DBG
         blockHeadInstr->m_noHelperAssert = true;
 #endif
-        block->beginsBailOnNoProfile = true;
 
         instr->m_func = curInstr->m_func;
-        curInstr->InsertAfter(instr);
+
+        if (insertionPointForGenerator != nullptr)
+        {
+            insertionPointForGenerator->InsertAfter(instr);
+            block->beginsBailOnNoProfile = false;
+        }
+        else
+        {
+            curInstr->InsertAfter(instr);
+            block->beginsBailOnNoProfile = true;
+        }
 
         bool setLastInstr = (curInstr == block->GetLastInstr());
         if (setLastInstr)

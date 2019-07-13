@@ -5533,7 +5533,6 @@ Case0:
         {
             JS_REENTRANT_UNLOCK(jsReentLock, return JavascriptArray::ReverseHelper(pArr, nullptr, obj, length.GetSmallIndex(), scriptContext));
         }
-        Assert(pArr == nullptr || length.IsUint32Max()); // if pArr is not null lets make sure length is safe to cast, which will only happen if length is a uint32max
 
         JS_REENTRANT_UNLOCK(jsReentLock, return JavascriptArray::ReverseHelper(pArr, nullptr, obj, length.GetBigIndex(), scriptContext));
         JIT_HELPER_END(Array_Reverse);
@@ -5624,6 +5623,7 @@ Case0:
 
         if (useNoSideEffectReverse)
         {
+            Assert(length <= JavascriptArray::MaxArrayLength);
             Recycler * recycler = scriptContext->GetRecycler();
 
             if (length <= 1)
@@ -5774,9 +5774,8 @@ Case0:
 
             failFastOnError.Completed();
         }
-        else if (typedArrayBase)
+        else if (typedArrayBase && length <= JavascriptArray::MaxArrayLength)
         {
-            Assert(length <= JavascriptArray::MaxArrayLength);
             if (typedArrayBase->GetLength() == length)
             {
                 // If typedArrayBase->length == length then we know that the TypedArray will have all items < length
@@ -9391,9 +9390,10 @@ Case0:
         Assert(args.Info.Count > 0);
 
         JavascriptLibrary* library = scriptContext->GetLibrary();
+        bool isTypedArrayEntryPoint = typedArrayBase != nullptr;
 
         // If we came from Array.prototype.fill and source object is not a JavascriptArray, source could be a TypedArray
-        if (typedArrayBase == nullptr && pArr == nullptr && VarIs<TypedArrayBase>(obj))
+        if (!isTypedArrayEntryPoint && pArr == nullptr && VarIs<TypedArrayBase>(obj))
         {
             typedArrayBase = UnsafeVarTo<TypedArrayBase>(obj);
         }
@@ -9403,6 +9403,10 @@ Case0:
         if (args.Info.Count > 1)
         {
             fillValue = args[1];
+            if (isTypedArrayEntryPoint)
+            {
+                JS_REENTRANT_UNLOCK(jsReentLock, fillValue = JavascriptNumber::ToVarNoCheck(JavascriptConversion::ToNumber(fillValue, scriptContext), scriptContext));
+            }
         }
         else
         {

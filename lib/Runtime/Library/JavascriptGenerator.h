@@ -8,24 +8,25 @@ namespace Js
 {
     // Helper struct used to communicate to a yield point whether it was resumed via next(), return(), or throw()
     // and provide the data necessary for the corresponding action taken (see OP_ResumeYield)
+    // `data` stores the value that was passed in as parameter to .next()
     struct ResumeYieldData
     {
-        Var data;
-        JavascriptExceptionObject* exceptionObj;
-        JavascriptGenerator* generator = nullptr;
+        Var const data;
+        JavascriptExceptionObject* const exceptionObj;
+        JavascriptGenerator* const generator;
 
-        ResumeYieldData(Var data, JavascriptExceptionObject* exceptionObj) : data(data), exceptionObj(exceptionObj) { }
+        ResumeYieldData(Var data, JavascriptExceptionObject* exceptionObj, JavascriptGenerator* generator = nullptr) :
+            data(data), exceptionObj(exceptionObj), generator(generator) {}
     };
 
     struct AsyncGeneratorRequest
     {
-        Field(Var) data;
-        Field(JavascriptExceptionObject*) exceptionObj;
-        Field(JavascriptPromise*) promise;
+        Field(Var) const data;
+        Field(JavascriptExceptionObject*) const exceptionObj;
+        Field(JavascriptPromise*) const promise;
 
         AsyncGeneratorRequest(Var data, JavascriptExceptionObject* exceptionObj, JavascriptPromise* promise)
-             : data(data), exceptionObj(exceptionObj), promise(promise) { }
-
+             : data(data), exceptionObj(exceptionObj), promise(promise) {}
     };
 
     typedef JsUtil::List<AsyncGeneratorRequest*, Recycler> AsyncGeneratorQueue;
@@ -48,13 +49,15 @@ namespace Js
 
         void SetState(GeneratorState state) {
             this->state = state;
-            if(state == GeneratorState::Completed)
+            if (state == GeneratorState::Completed)
             {
                 frame = nullptr;
                 args.Values = nullptr;
                 scriptFunction = nullptr;
             }
         }
+
+        Var CallGenerator(ResumeYieldData* yieldData, const char16* apiNameForErrorMessage);
 
     private:
         Field(InterpreterStackFrame*) frame;
@@ -73,7 +76,6 @@ namespace Js
         DEFINE_VTABLE_CTOR_MEMBER_INIT(JavascriptGenerator, DynamicObject, args);
         DEFINE_MARSHAL_OBJECT_TO_SCRIPT_CONTEXT(JavascriptGenerator);
 
-        Var CallGenerator(ResumeYieldData* yieldData, const char16* apiNameForErrorMessage);
         JavascriptGenerator(DynamicType* type, Arguments& args, ScriptFunction* scriptFunction);
 
     public:
@@ -113,7 +115,7 @@ namespace Js
         void AsyncGeneratorResumeNext();
         void AsyncGeneratorReject(Var reason);
         void AsyncGeneratorResolve(Var value, bool done);
-        void CallAsyncGenerator(ResumeYieldData* yieldData);
+        void CallAsyncGenerator(Var data, JavascriptExceptionObject* exceptionObj);
         void InitialiseAsyncGenerator(ScriptContext* scriptContext);
 
         void SetScriptFunction(ScriptFunction* sf)
@@ -161,6 +163,23 @@ namespace Js
         virtual TTD::NSSnapObjects::SnapObjectType GetSnapTag_TTD() const override;
         virtual void ExtractSnapObjectDataInto(TTD::NSSnapObjects::SnapObject* objData, TTD::SlabAllocator& alloc) override;
         //virtual void ProcessCorePaths() override;
+#endif
+
+#ifdef ENABLE_DEBUG_CONFIG_OPTIONS
+    public:
+        struct BailInSymbol {
+            uint32 id;
+            Var value;
+            static uint32 GetBailInSymbolIdOffset() { return offsetof(BailInSymbol, id); }
+            static uint32 GetBailInSymbolValueOffset() { return offsetof(BailInSymbol, value); }
+        };
+
+        Field(BailInSymbol*) bailInSymbolsTraceArray = nullptr;
+        Field(int) bailInSymbolsTraceArrayCount = 0;
+
+        static uint32 GetBailInSymbolsTraceArrayOffset() { return offsetof(JavascriptGenerator, bailInSymbolsTraceArray); }
+        static uint32 GetBailInSymbolsTraceArrayCountOffset() { return offsetof(JavascriptGenerator, bailInSymbolsTraceArrayCount); }
+        static void OutputBailInTrace(JavascriptGenerator* generator);
 #endif
     };
 

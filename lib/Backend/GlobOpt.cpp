@@ -2675,7 +2675,7 @@ GlobOpt::OptInstr(IR::Instr *&instr, bool* isInstrRemoved)
         !(instr->IsJitProfilingInstr()) &&
         this->currentBlock->loop && !IsLoopPrePass() &&
         !func->IsJitInDebugMode() &&
-        (func->HasProfileInfo() && !func->GetReadOnlyProfileInfo()->IsMemOpDisabled()) &&
+        !func->IsMemOpDisabled() &&
         this->currentBlock->loop->doMemOp)
     {
         CollectMemOpInfo(instrPrev, instr, src1Val, src2Val);
@@ -4704,6 +4704,14 @@ GlobOpt::ValueNumberDst(IR::Instr **pInstr, Value *src1Val, Value *src2Val)
     case Js::OpCode::Coerce_Str:
         AssertMsg(instr->GetDst()->GetValueType().IsString(),
             "Creator of this instruction should have set the type");
+
+        // Due to fall through and the fact that Ld_A only takes one source,
+        // free the other source here.
+        if (instr->GetSrc2() && !(this->IsLoopPrePass() || src1ValueInfo == nullptr || !src1ValueInfo->IsString()))
+        {
+            instr->FreeSrc2();
+        }
+
         // fall-through
     case Js::OpCode::Coerce_StrOrRegex:
         // We don't set the ValueType of src1 for Coerce_StrOrRegex, hence skip the ASSERT
@@ -13636,6 +13644,7 @@ GlobOpt::CheckJsArrayKills(IR::Instr *const instr)
         case Js::OpCode::StFld:
         case Js::OpCode::StFldStrict:
         case Js::OpCode::StSuperFld:
+        case Js::OpCode::StSuperFldStrict:
         {
             Assert(instr->GetDst());
 
@@ -16855,6 +16864,7 @@ GlobOpt::GenerateBailOutMarkTempObjectIfNeeded(IR::Instr * instr, IR::Opnd * opn
         if (instr->HasBailOutInfo())
         {
             instr->SetBailOutKind(instr->GetBailOutKind() | IR::BailOutMarkTempObject);
+            instr->GetBailOutInfo()->canDeadStore = false;
         }
         else
         {
@@ -16864,6 +16874,11 @@ GlobOpt::GenerateBailOutMarkTempObjectIfNeeded(IR::Instr * instr, IR::Opnd * opn
                 || (instr->m_opcode == Js::OpCode::FromVar && !opnd->GetValueType().IsPrimitive())
                 || propertySymOpnd == nullptr
                 || !propertySymOpnd->IsTypeCheckProtected())
+            {
+                this->GenerateBailAtOperation(&instr, IR::BailOutMarkTempObject);
+                instr->GetBailOutInfo()->canDeadStore = false;
+            }
+            else if (propertySymOpnd->MayHaveImplicitCall())
             {
                 this->GenerateBailAtOperation(&instr, IR::BailOutMarkTempObject);
             }
@@ -17004,7 +17019,14 @@ GlobOpt::GenerateInductionVariableChangeForMemOp(Loop *loop, byte unroll, IR::In
     }
     else
     {
-        uint size = (loopCount->LoopCountMinusOneConstantValue() + 1)  * unroll;
+        int32 loopCountMinusOnePlusOne;
+        int32 size;
+        if (Int32Math::Add(loopCount->LoopCountMinusOneConstantValue(), 1, &loopCountMinusOnePlusOne) ||
+            Int32Math::Mul(loopCountMinusOnePlusOne, unroll, &size))
+        {
+            throw Js::RejitException(RejitReason::MemOpDisabled);
+        }
+        Assert(size > 0);
         sizeOpnd = IR::IntConstOpnd::New(size, IRType::TyUint32, localFunc);
     }
     loop->memOpInfo->inductionVariableOpndPerUnrollMap->Add(unroll, sizeOpnd);

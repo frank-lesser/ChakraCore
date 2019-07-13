@@ -2697,8 +2697,19 @@ CommonNumber:
         *result = FALSE;
         Var setterValueOrProxy = nullptr;
         DescriptorFlags flags = None;
+        bool receiverNonWritable = false;
+
+        if (receiver != object && !isRoot)
+        {
+            Var receiverSetter = nullptr;
+            PropertyValueInfo receiverInfo;
+            DescriptorFlags receiverFlags = VarTo<RecyclableObject>(receiver)->GetSetter(propertyId, &receiverSetter, &receiverInfo, requestContext);
+            receiverNonWritable = ((receiverFlags & Data) == Data && (receiverFlags & Writable) == None);
+        }
+
         if ((isRoot && JavascriptOperators::CheckPrototypesForAccessorOrNonWritableRootProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext)) ||
-            (!isRoot && JavascriptOperators::CheckPrototypesForAccessorOrNonWritableProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext)))
+            (!isRoot && (JavascriptOperators::CheckPrototypesForAccessorOrNonWritableProperty(object, propertyId, &setterValueOrProxy, &flags, info, requestContext) ||
+            receiverNonWritable)))
         {
             if ((flags & Accessor) == Accessor)
             {
@@ -2746,7 +2757,7 @@ CommonNumber:
             }
             else
             {
-                Assert((flags & Data) == Data && (flags & Writable) == None);
+                Assert(((flags & Data) == Data && (flags & Writable) == None) || receiverNonWritable);
                 if (!allowUndecInConsoleScope)
                 {
                     if (flags & Const)
@@ -7265,6 +7276,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         *addr = value;
     }
 
+    Var JavascriptOperators::OP_LdImportMeta(uint moduleIndex, ScriptContext* scriptContext)
+    {
+        JIT_HELPER_REENTRANT_HEADER(LdImportMeta);
+        return scriptContext->GetLibrary()->GetModuleRecord(moduleIndex)->GetImportMetaObject();
+        JIT_HELPER_END(LdImportMeta);
+    }
+
     void JavascriptOperators::OP_InitClassMemberSetComputedName(Var object, Var elementName, Var value, ScriptContext* scriptContext, PropertyOperationFlags flags)
     {
         JIT_HELPER_REENTRANT_HEADER(Op_InitClassMemberSetComputedName);
@@ -10260,7 +10278,8 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         // 7. Let onRejected be CreateBuiltinFunction(stepsRejected, << [[AsyncContext]] >>).
         // 8. Set onRejected.[[AsyncContext]] to asyncContext.
         // 9. Perform ! PerformPromiseThen(promise, onFulfilled, onRejected).
-        JavascriptPromise::CreateThenPromise(promise, generator->GetAwaitNextFunction(), generator->GetAwaitThrowFunction(), scriptContext);
+        JavascriptPromiseCapability* unused = JavascriptPromise::UnusedPromiseCapability(scriptContext);
+        JavascriptPromise::PerformPromiseThen(promise, unused, generator->GetAwaitNextFunction(), generator->GetAwaitThrowFunction(), scriptContext);
         // 10. Remove asyncContext from the execution context stack and restore the execution context that is at the top of the execution context stack as the running execution context.
         // 11. Set the code evaluation state of asyncContext such that when evaluation is resumed with a Completion completion, the following steps of the algorithm that invoked Await will be performed, with completion available.   
     }
@@ -10270,14 +10289,16 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
     {
         JavascriptPromise* promise = JavascriptPromise::InternalPromiseResolve(value, scriptContext);
 
-        JavascriptPromise::CreateThenPromise(promise, generator->EnsureAwaitYieldStarFunction(), generator->GetAwaitThrowFunction(), scriptContext);   
+        JavascriptPromiseCapability* unused = JavascriptPromise::UnusedPromiseCapability(scriptContext);
+        JavascriptPromise::PerformPromiseThen(promise, unused, generator->EnsureAwaitYieldStarFunction(), generator->GetAwaitThrowFunction(), scriptContext);
     }
 
     void JavascriptOperators::OP_AsyncYield(JavascriptGenerator* generator, Var value, ScriptContext* scriptContext)
     {
         JavascriptPromise* promise = JavascriptPromise::InternalPromiseResolve(value, scriptContext);
 
-        JavascriptPromise::CreateThenPromise(promise, generator->GetAwaitYieldFunction(), generator->GetAwaitThrowFunction(), scriptContext);   
+        JavascriptPromiseCapability* unused = JavascriptPromise::UnusedPromiseCapability(scriptContext);
+        JavascriptPromise::PerformPromiseThen(promise, unused, generator->GetAwaitYieldFunction(), generator->GetAwaitThrowFunction(), scriptContext);
     }
 
     Var JavascriptOperators::OP_AsyncYieldIsReturn(ResumeYieldData* yieldData)

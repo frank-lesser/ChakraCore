@@ -12,6 +12,7 @@ void EmitAssignment(ParseNode *asgnNode, ParseNode *lhs, Js::RegSlot rhsLocation
 void EmitLoad(ParseNode *rhs, ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo);
 void EmitCall(ParseNodeCall* pnodeCall, ByteCodeGenerator* byteCodeGenerator, FuncInfo* funcInfo, BOOL fReturnValue, BOOL fEvaluateComponents, Js::RegSlot overrideThisLocation = Js::Constants::NoRegister, Js::RegSlot newTargetLocation = Js::Constants::NoRegister);
 void EmitYield(Js::RegSlot inputLocation, Js::RegSlot resultLocation, ByteCodeGenerator* byteCodeGenerator, FuncInfo* funcInfo, bool isAsync = false, bool isAwait = false, Js::RegSlot yieldStarIterator = Js::Constants::NoRegister);
+void EmitDummyYield(ByteCodeGenerator* byteCodeGenerator, FuncInfo* funcInfo);
 
 void EmitUseBeforeDeclaration(Symbol *sym, ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo);
 void EmitUseBeforeDeclarationRuntimeError(ByteCodeGenerator *byteCodeGenerator, Js::RegSlot location);
@@ -1079,7 +1080,7 @@ void ByteCodeGenerator::DefineCachedFunctions(FuncInfo *funcInfoParent)
     auto fillEntries = [&](ParseNode *pnodeFnc)
     {
         Symbol *sym = pnodeFnc->AsParseNodeFnc()->GetFuncSymbol();
-        if (sym != nullptr && (pnodeFnc->AsParseNodeFnc()->IsDeclaration()))
+        if (sym != nullptr && (pnodeFnc->AsParseNodeFnc()->IsDeclaration() || pnodeFnc->AsParseNodeFnc()->IsDefaultModuleExport()))
         {
             AssertMsg(!pnodeFnc->AsParseNodeFnc()->IsGenerator(), "Generator functions are not supported by InitCachedFuncs but since they always escape they should disable function caching");
             Js::FuncInfoEntry *entry = &info->elements[slotCount];
@@ -1146,7 +1147,7 @@ void ByteCodeGenerator::DefineUncachedFunctions(FuncInfo *funcInfoParent)
         //    after the assignment. Might save register.
         //
 
-        if (pnodeFnc->AsParseNodeFnc()->IsDeclaration())
+        if (pnodeFnc->AsParseNodeFnc()->IsDeclaration() || pnodeFnc->AsParseNodeFnc()->IsDefaultModuleExport())
         {
             this->DefineOneFunction(pnodeFnc->AsParseNodeFnc(), funcInfoParent);
             // The "x = function() {...}" case is being generated on the fly, during emission,
@@ -2071,6 +2072,11 @@ void ByteCodeGenerator::LoadAllConstants(FuncInfo *funcInfo)
         this->LoadSuperConstructorObject(funcInfo);
     }
 
+    if (funcInfo->GetImportMetaSymbol())
+    {
+        this->LoadImportMetaObject(funcInfo);
+    }
+
     //
     // If the function is a function expression with a name,
     // load the function object at runtime to its activation object.
@@ -2228,6 +2234,14 @@ void ByteCodeGenerator::LoadNewTargetObject(FuncInfo *funcInfo)
     {
         m_writer.Reg1(Js::OpCode::LdNewTarget, newTargetSym->GetLocation());
     }
+}
+
+void ByteCodeGenerator::LoadImportMetaObject(FuncInfo* funcInfo)
+{
+    Symbol* importMetaSym = funcInfo->GetImportMetaSymbol();
+    Assert(importMetaSym);
+
+    m_writer.Reg1Unsigned1(Js::OpCode::LdImportMeta, importMetaSym->GetLocation(), this->GetModuleID());
 }
 
 void ByteCodeGenerator::LoadSuperConstructorObject(FuncInfo *funcInfo)
@@ -3043,12 +3057,9 @@ void ByteCodeGenerator::EmitOneFunction(ParseNodeFnc *pnodeFnc)
         // (that is when the function is called). This yield opcode is to mark the  begining of the function body.
         // TODO: Inserting a yield should have almost no impact on perf as it is a direct return from the function. But this needs
         // to be verified. Ideally if the function has simple parameter list then we can avoid inserting the opcode and the additional call.
-        if (pnodeFnc->IsGenerator())
+        if (pnodeFnc->IsGenerator() && !pnodeFnc->IsModule())
         {
-            Js::RegSlot tempReg = funcInfo->AcquireTmpRegister();
-            EmitYield(funcInfo->AssignUndefinedConstRegister(), tempReg, this, funcInfo);
-            m_writer.Reg1(Js::OpCode::Unused, tempReg);
-            funcInfo->ReleaseTmpRegister(tempReg);
+            EmitDummyYield(this, funcInfo);
         }
 
         DefineUserVars(funcInfo);
@@ -3062,6 +3073,12 @@ void ByteCodeGenerator::EmitOneFunction(ParseNodeFnc *pnodeFnc)
         {
             // This only handles function declarations, which param scope cannot have any.
             DefineFunctions(funcInfo);
+        }
+
+        // insert a yield at the top of a module body so that function definitions can be hoisted accross modules
+        if (pnodeFnc->IsModule())
+        {
+            EmitDummyYield(this, funcInfo);
         }
 
         if (pnodeFnc->HasNonSimpleParameterList() || !funcInfo->IsBodyAndParamScopeMerged())
@@ -7006,7 +7023,8 @@ void EmitAssignment(
             Js::RegSlot tmpReg = byteCodeGenerator->EmitLdObjProto(Js::OpCode::LdHomeObjProto, lhs->AsParseNodeBin()->pnode1->location, funcInfo);
             funcInfo->ReleaseLoc(lhs->AsParseNodeSuperReference()->pnodeThis);
             uint cacheId = funcInfo->FindOrAddInlineCacheId(tmpReg, propertyId, false, true);
-            byteCodeGenerator->Writer()->PatchablePropertyWithThisPtr(Js::OpCode::StSuperFld, rhsLocation, tmpReg, lhs->AsParseNodeSuperReference()->pnodeThis->location, cacheId);
+            Js::OpCode stFldOpCode = funcInfo->GetIsStrictMode() ? Js::OpCode::StSuperFldStrict : Js::OpCode::StSuperFld;
+            byteCodeGenerator->Writer()->PatchablePropertyWithThisPtr(stFldOpCode, rhsLocation, tmpReg, lhs->AsParseNodeSuperReference()->pnodeThis->location, cacheId);
         }
         else
         {
@@ -8209,8 +8227,10 @@ void EmitNew(ParseNode* pnode, ByteCodeGenerator* byteCodeGenerator, FuncInfo* f
 
             Js::AuxArray<uint32> *spreadIndices = nullptr;
 
+            // Emit argouts at end for generators so that we don't need to restore them when bailing in
+            bool emitArgOutsAtEnd = pnode->AsParseNodeCall()->hasDestructuring || (funcInfo->byteCodeFunction->IsCoroutine() && pnode->AsParseNodeCall()->pnodeArgs != nullptr);
             actualArgCount = EmitArgList(pnode->AsParseNodeCall()->pnodeArgs, Js::Constants::NoRegister, Js::Constants::NoRegister,
-                false, true, byteCodeGenerator, funcInfo, callSiteId, argCount, pnode->AsParseNodeCall()->hasDestructuring, emitProfiledArgouts, pnode->AsParseNodeCall()->spreadArgCount, &spreadIndices);
+                false, true, byteCodeGenerator, funcInfo, callSiteId, argCount, emitArgOutsAtEnd, emitProfiledArgouts, pnode->AsParseNodeCall()->spreadArgCount, &spreadIndices);
 
             funcInfo->ReleaseLoc(pnode->AsParseNodeCall()->pnodeTarget);
 
@@ -8347,8 +8367,11 @@ void EmitCall(
 
     // Only emit profiled argouts if we're going to allocate callSiteInfo (on the DynamicProfileInfo) for this call.
     bool emitProfiledArgouts = callSiteId != byteCodeGenerator->GetCurrentCallSiteId();
+
+    // Emit argouts at end for generators so that we don't need to restore them when bailing in
+    bool emitArgOutsAtEnd = pnodeCall->hasDestructuring || (funcInfo->byteCodeFunction->IsCoroutine() && pnodeCall->pnodeArgs != nullptr);
     Js::AuxArray<uint32> *spreadIndices;
-    EmitArgList(pnodeArgs, thisLocation, newTargetLocation, fIsEval, fEvaluateComponents, byteCodeGenerator, funcInfo, callSiteId, (Js::ArgSlot)argCount, pnodeCall->hasDestructuring, emitProfiledArgouts, spreadArgCount, &spreadIndices);
+    EmitArgList(pnodeArgs, thisLocation, newTargetLocation, fIsEval, fEvaluateComponents, byteCodeGenerator, funcInfo, callSiteId, (Js::ArgSlot)argCount, emitArgOutsAtEnd, emitProfiledArgouts, spreadArgCount, &spreadIndices);
 
     if (!fEvaluateComponents)
     {
@@ -9680,12 +9703,12 @@ void EmitForInOrForOf(ParseNodeForInOrForOf *loopNode, ByteCodeGenerator *byteCo
     Js::RegSlot regException = Js::Constants::NoRegister;
     Js::RegSlot regOffset = Js::Constants::NoRegister;
 
-    // These two temp variables store the information of return function to be called or not.
-    // one variable is used for catch block and one is used for finally block. These variable will be set to true when we think that return function
-    // to be called on abrupt loop break.
-    // Why two variables? since these are temps and JIT does like not flow if single variable is used in multiple blocks.
-    Js::RegSlot shouldCallReturnFunctionLocation = funcInfo->AcquireTmpRegister();
-    Js::RegSlot shouldCallReturnFunctionLocationFinally = funcInfo->AcquireTmpRegister();
+    // These two temp variables track whether the return method of the source iterator should
+    // be called. One variable is used for catch block and one is used for finally block.
+    // Non-temps are used so that when jitting loop bodies, writes to these variables are not
+    // mistaken for dead stores.
+    Js::RegSlot shouldCallReturnFunctionLocation = loopNode->shouldCallReturnFunctionLocation;
+    Js::RegSlot shouldCallReturnFunctionLocationFinally = loopNode->shouldCallReturnFunctionLocationFinally;
 
     bool isCoroutine = funcInfo->byteCodeFunction->IsCoroutine();
 
@@ -10222,6 +10245,18 @@ void ByteCodeGenerator::EmitTryBlockHeadersAfterYield()
     }
 }
 
+void EmitDummyYield(ByteCodeGenerator* byteCodeGenerator, FuncInfo* funcInfo)
+{
+    byteCodeGenerator->EmitLeaveOpCodesBeforeYield();
+    byteCodeGenerator->Writer()->Reg1(Js::OpCode::LdUndef, funcInfo->yieldRegister);
+    byteCodeGenerator->Writer()->Reg2(Js::OpCode::Yield, funcInfo->yieldRegister, funcInfo->yieldRegister);
+    byteCodeGenerator->EmitTryBlockHeadersAfterYield();
+    Js::RegSlot unusedResult = funcInfo->AcquireTmpRegister();
+    byteCodeGenerator->Writer()->Reg2(Js::OpCode::ResumeYield, unusedResult, funcInfo->yieldRegister);
+    byteCodeGenerator->Writer()->Reg1(Js::OpCode::Unused, unusedResult);
+    funcInfo->ReleaseTmpRegister(unusedResult);
+}
+
 void EmitYield(Js::RegSlot inputLocation, Js::RegSlot resultLocation, ByteCodeGenerator* byteCodeGenerator, FuncInfo* funcInfo, bool isAsync, bool isAwait, Js::RegSlot yieldStarIterator)
 {
     // If the bytecode emitted by this function is part of 'yield*', inputLocation is the object
@@ -10270,8 +10305,6 @@ void EmitYield(Js::RegSlot inputLocation, Js::RegSlot resultLocation, ByteCodeGe
 
 void EmitYieldStar(ParseNodeUni* yieldStarNode, ByteCodeGenerator* byteCodeGenerator, FuncInfo* funcInfo)
 {
-    funcInfo->AcquireLoc(yieldStarNode);
-
     Js::ByteCodeLabel loopEntrance = byteCodeGenerator->Writer()->DefineLabel();
     Js::ByteCodeLabel continuePastLoop = byteCodeGenerator->Writer()->DefineLabel();
 
