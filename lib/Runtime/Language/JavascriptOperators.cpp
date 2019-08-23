@@ -2225,7 +2225,7 @@ CommonNumber:
     Var JavascriptOperators::OP_UnwrapWithObj(Var aValue)
     {
         JIT_HELPER_NOT_REENTRANT_NOLOCK_HEADER(Op_UnwrapWithObj);
-        return VarTo<RecyclableObject>(aValue)->GetThisObjectOrUnWrap();
+        return VarTo<UnscopablesWrapperObject>(aValue)->GetWrappedObject();
         JIT_HELPER_END(Op_UnwrapWithObj);
     }
     Var JavascriptOperators::OP_GetInstanceScoped(FrameDisplay *pScope, PropertyId propertyId, Var rootObject, Var* thisVar, ScriptContext* scriptContext)
@@ -2241,14 +2241,12 @@ CommonNumber:
         {
             RecyclableObject *obj = (RecyclableObject*)pScope->GetItem(i);
 
-
             if (JavascriptOperators::HasProperty(obj, propertyId))
             {
                 // HasProperty will call UnscopablesWrapperObject's HasProperty which will do the filtering
                 // All we have to do here is unwrap the object hence the api call
 
-                *thisVar = obj->GetThisObjectOrUnWrap();
-                return *thisVar;
+                return obj->GetThisAndUnwrappedInstance(thisVar);
             }
         }
 
@@ -2495,11 +2493,14 @@ CommonNumber:
                     }
                     if (setterValueOrProxy)
                     {
-                        if (!VarIs<UnscopablesWrapperObject>(receiver) && info->GetPropertyRecordUsageCache() && !JavascriptOperators::IsUndefinedAccessor(setterValueOrProxy, requestContext))
+                        if (VarIs<UnscopablesWrapperObject>(receiver))
+                        {
+                            receiver = (UnsafeVarTo<UnscopablesWrapperObject>(receiver))->GetWrappedObject();
+                        }
+                        else if (info->GetPropertyRecordUsageCache() && !JavascriptOperators::IsUndefinedAccessor(setterValueOrProxy, requestContext))
                         {
                             CacheOperators::CachePropertyWrite(VarTo<RecyclableObject>(receiver), false, object->GetType(), info->GetPropertyRecordUsageCache()->GetPropertyRecord()->GetPropertyId(), info, requestContext);
                         }
-                        receiver = (VarTo<RecyclableObject>(receiver))->GetThisObjectOrUnWrap();
                         RecyclableObject* func = VarTo<RecyclableObject>(setterValueOrProxy);
 
                         JavascriptOperators::CallSetter(func, receiver, newValue, requestContext);
@@ -2726,7 +2727,7 @@ CommonNumber:
 
                     if (VarIs<UnscopablesWrapperObject>(receiver))
                     {
-                        receiver = (VarTo<RecyclableObject>(receiver))->GetThisObjectOrUnWrap();
+                        receiver = (UnsafeVarTo<UnscopablesWrapperObject>(receiver))->GetWrappedObject();
                     }
                     else if (!JavascriptOperators::IsUndefinedAccessor(setterValueOrProxy, requestContext))
                     {
@@ -5396,6 +5397,14 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JIT_HELPER_END(Op_DeleteElementI);
     }
 
+    Var JavascriptOperators::OP_ToPropertyKey(Js::Var argument, ScriptContext* scriptContext)
+    {
+        JIT_HELPER_REENTRANT_HEADER(Op_ConvPropertyKey);
+        PropertyRecord const* unused = nullptr;
+        return JavascriptConversion::ToPropertyKey(argument, scriptContext, &unused, nullptr);
+        JIT_HELPER_END(Op_ConvPropertyKey);
+    }
+
     Var JavascriptOperators::OP_GetLength(Var instance, ScriptContext* scriptContext)
     {
         return JavascriptOperators::OP_GetProperty(instance, PropertyIds::length, scriptContext);
@@ -5519,20 +5528,6 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
             TryLoadRoot(thisVar, typeId, moduleID, scriptContext);
             return thisVar;
         }
-    }
-
-    Var JavascriptOperators::OP_StrictGetThis(Var thisVar, ScriptContext* scriptContext)
-    {
-        JIT_HELPER_NOT_REENTRANT_HEADER(StrictLdThis, reentrancylock, scriptContext->GetThreadContext());
-        TypeId typeId = JavascriptOperators::GetTypeId(thisVar);
-
-        if (typeId == TypeIds_ActivationObject)
-        {
-            return scriptContext->GetLibrary()->GetUndefined();
-        }
-
-        return thisVar;
-        JIT_HELPER_END(StrictLdThis);
     }
 
     BOOL JavascriptOperators::GetRemoteTypeId(Var aValue, __out TypeId* typeId)
@@ -6336,7 +6331,8 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
         JavascriptProxy * proxy = JavascriptOperators::TryFromVar<JavascriptProxy>(instance);
         if (proxy)
         {
-            Arguments args(CallInfo(CallFlags_New, 1), &instance);
+            Var dummy = nullptr;
+            Arguments args(CallInfo(CallFlags_New, 1), &dummy);
             return requestContext->GetThreadContext()->ExecuteImplicitCall(proxy, Js::ImplicitCall_Accessor, [=]()->Js::Var
             {
                 return proxy->ConstructorTrap(args, requestContext, 0);
@@ -9083,7 +9079,13 @@ SetElementIHelper_INDEX_TYPE_IS_NUMBER:
                         BOOL tempResult = obj->SetPropertyWithAttributes(propId, filledDescriptor.GetValue(), filledDescriptor.GetAttributes(), nullptr);
                         if (!obj->IsExternal() && !tempResult)
                         {
-                            Assert(VarIs<TypedArrayBase>(obj)); // typed array returns false when canonical numeric index is not integer or out of range
+                            Assert(
+                                // Arrays return false when length property is non-writable and property is numeric
+                                // and greater than or equal to length
+                                DynamicObject::IsAnyArray(obj) ||
+                                // Typed arrays return false when canonical numeric index is not integer or out of range
+                                DynamicObject::IsAnyTypedArray(obj)
+                            );
                             return FALSE;
                         }
                     }

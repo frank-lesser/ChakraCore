@@ -419,7 +419,6 @@ namespace Js
         static Var OP_GetLength(Var instance, ScriptContext* scriptContext);
         static Var OP_GetThis(Var thisVar, int moduleID, ScriptContextInfo* scriptContext);
         static Var OP_GetThisNoFastPath(Var thisVar, int moduleID, ScriptContext* scriptContext);
-        static Var OP_StrictGetThis(Var thisVar, ScriptContext* scriptContext);
         static bool IsThisSelf(TypeId typeId);
         static Var GetThisHelper(Var thisVar, TypeId typeId, int moduleID, ScriptContextInfo *scriptContext);
         static Var GetThisFromModuleRoot(Var thisVar);
@@ -459,6 +458,8 @@ namespace Js
         static Var OP_CmLe_A(Js::Var a,Js::Var b,ScriptContext* scriptContext);
         static Var OP_CmGt_A(Js::Var a,Js::Var b,ScriptContext* scriptContext);
         static Var OP_CmGe_A(Js::Var a,Js::Var b,ScriptContext* scriptContext);
+
+        static Var OP_ToPropertyKey(Js::Var argument, ScriptContext* scriptContext);
 
         static FunctionInfo * GetConstructorFunctionInfo(Var instance, ScriptContext * scriptContext);
         // Detach the type array buffer, if possible, and returns the state of the object which can be used to initialize another object

@@ -572,10 +572,7 @@ namespace Js
         symbolTypeStatic = StaticType::New(scriptContext, TypeIds_Symbol, symbolPrototype, nullptr);
         symbolTypeDynamic = DynamicType::New(scriptContext, TypeIds_SymbolObject, symbolPrototype, nullptr, NullTypeHandler<false>::GetDefaultInstance(), true, true);
 
-        if (config->IsES6UnscopablesEnabled())
-        {
-            withType = StaticType::New(scriptContext, TypeIds_UnscopablesWrapperObject, GetNull(), nullptr);
-        }
+        withType = StaticType::New(scriptContext, TypeIds_UnscopablesWrapperObject, GetNull(), nullptr);
 
         if (config->IsES6SpreadEnabled())
         {
@@ -1379,7 +1376,7 @@ namespace Js
 
         if (globalObject->GetScriptContext()->GetConfig()->IsESGlobalThisEnabled())
         {
-            AddMember(globalObject, PropertyIds::globalThis, globalObject, PropertyConfigurable | PropertyWritable);
+            AddMember(globalObject, PropertyIds::globalThis, globalObject->ToThis(), PropertyConfigurable | PropertyWritable);
         }
         AddMember(globalObject, PropertyIds::NaN, nan, PropertyNone);
         AddMember(globalObject, PropertyIds::Infinity, positiveInfinite, PropertyNone);
@@ -1523,7 +1520,10 @@ namespace Js
         AddFunction(globalObject, PropertyIds::String, stringConstructor);
         regexConstructorType = DynamicType::New(scriptContext, TypeIds_Function, functionPrototype, JavascriptRegExp::NewInstance,
             DeferredTypeHandler<InitializeRegexConstructor>::GetDefaultInstance());
-        regexConstructor = RecyclerNewEnumClass(recycler, EnumFunctionClass, JavascriptRegExpConstructor, regexConstructorType);
+        regexConstructor = RecyclerNewEnumClass(recycler, EnumFunctionClass,
+            JavascriptRegExpConstructor,
+            regexConstructorType,
+            builtInConstructorCache);
         AddFunction(globalObject, PropertyIds::RegExp, regexConstructor);
 
         arrayBufferConstructor = CreateBuiltinConstructor(&ArrayBuffer::EntryInfo::NewInstance,
@@ -2012,20 +2012,17 @@ namespace Js
             /* No inlining                Array_Every          */ library->AddFunctionToLibraryObject(arrayPrototype, PropertyIds::every, &JavascriptArray::EntryInfo::Every, 1);
         }
 
-        if (scriptContext->GetConfig()->IsES6UnscopablesEnabled())
-        {
-            DynamicType* dynamicType = DynamicType::New(scriptContext, TypeIds_Object, library->nullValue, nullptr, NullTypeHandler<false>::GetDefaultInstance(), false);
-            DynamicObject* unscopablesList = DynamicObject::New(library->GetRecycler(), dynamicType);
-            unscopablesList->SetProperty(PropertyIds::find,       JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::findIndex,  JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::fill,       JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::copyWithin, JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::entries,    JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::includes,   JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::keys,       JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            unscopablesList->SetProperty(PropertyIds::values,     JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
-            library->AddMember(arrayPrototype, PropertyIds::_symbolUnscopables, unscopablesList, PropertyConfigurable);
-        }
+        DynamicType* dynamicType = DynamicType::New(scriptContext, TypeIds_Object, library->nullValue, nullptr, NullTypeHandler<false>::GetDefaultInstance(), false);
+        DynamicObject* unscopablesList = DynamicObject::New(library->GetRecycler(), dynamicType);
+        unscopablesList->SetProperty(PropertyIds::find,       JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::findIndex,  JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::fill,       JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::copyWithin, JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::entries,    JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::includes,   JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::keys,       JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        unscopablesList->SetProperty(PropertyIds::values,     JavascriptBoolean::ToVar(true, scriptContext), PropertyOperation_None, nullptr);
+        library->AddMember(arrayPrototype, PropertyIds::_symbolUnscopables, unscopablesList, PropertyConfigurable);
 
         /* No inlining            Array_Fill           */ library->AddFunctionToLibraryObject(arrayPrototype, PropertyIds::fill, &JavascriptArray::EntryInfo::Fill, 1);
         /* No inlining            Array_CopyWithin     */ library->AddFunctionToLibraryObject(arrayPrototype, PropertyIds::copyWithin, &JavascriptArray::EntryInfo::CopyWithin, 2);

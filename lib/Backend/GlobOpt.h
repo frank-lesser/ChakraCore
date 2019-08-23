@@ -720,6 +720,7 @@ private:
 private:
     void                    CaptureNoImplicitCallUses(IR::Opnd *opnd, const bool usesNoMissingValuesInfo, IR::Instr *const includeCurrentInstr = nullptr);
     void                    InsertNoImplicitCallUses(IR::Instr *const instr);
+    void                    ProcessNoImplicitCallArrayUses(IR::RegOpnd * baseOpnd, IR::ArrayRegOpnd * baseArrayOpnd, IR::Instr * instr, bool isLikelyJsArray, bool useNoMissingValues);
     void                    PrepareLoopArrayCheckHoist();
 
 public:
@@ -742,7 +743,7 @@ private:
     void                    InsertCloneStrs(BasicBlock *toBlock, GlobOptBlockData *toData, GlobOptBlockData *fromData);
     void                    InsertValueCompensation(BasicBlock *const predecessor, BasicBlock *const successor, const SymToValueInfoMap *symsRequiringCompensationToMergedValueInfoMap);
     IR::Instr *             ToVarUses(IR::Instr *instr, IR::Opnd *opnd, bool isDst, Value *val);
-    void                    ToVar(BVSparse<JitArenaAllocator> *bv, BasicBlock *block);
+    void                    ToVar(BVSparse<JitArenaAllocator> *bv, BasicBlock *block, IR::Instr* insertBeforeInstr = nullptr);
     IR::Instr *             ToVar(IR::Instr *instr, IR::RegOpnd *regOpnd, BasicBlock *block, Value *val, bool needsUpdate);
     void                    ToInt32(BVSparse<JitArenaAllocator> *bv, BasicBlock *block, bool lossy, IR::Instr *insertBeforeInstr = nullptr);
     void                    ToFloat64(BVSparse<JitArenaAllocator> *bv, BasicBlock *block);
@@ -772,7 +773,7 @@ private:
                                                 const bool lossy = false, const bool forceInvariantHoisting = false, IR::BailOutKind bailoutKind = IR::BailOutInvalid);
     void                    HoistInvariantValueInfo(ValueInfo *const invariantValueInfoToHoist, Value *const valueToUpdate, BasicBlock *const targetBlock);
     void                    OptHoistUpdateValueType(Loop* loop, IR::Instr* instr, IR::Opnd** srcOpndPtr, Value *const srcVal);
-    bool                    IsNonNumericRegOpnd(IR::RegOpnd *opnd, bool inGlobOpt) const;
+    bool                    IsNonNumericRegOpnd(IR::RegOpnd *opnd, bool inGlobOpt, bool *isSafeToTransferInPrepass = nullptr) const;
 
 public:
     static bool             IsTypeSpecPhaseOff(Func const * func);
@@ -870,6 +871,7 @@ private:
     void                    ProcessInlineeEnd(IR::Instr * instr);
     void                    TrackCalls(IR::Instr * instr);
     void                    RecordInlineeFrameInfo(IR::Instr* instr);
+    void                    ClearInlineeFrameInfo(IR::Instr* instr);
     void                    EndTrackCall(IR::Instr * instr);
     void                    EndTrackingOfArgObjSymsForInlinee();
     void                    FillBailOutInfo(BasicBlock *block, BailOutInfo *bailOutInfo);

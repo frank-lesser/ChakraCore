@@ -1193,14 +1193,7 @@ BailOutRecord::BailOutInlinedCommon(Js::JavascriptCallStackLayout * layout, Bail
     BailOutReturnValue bailOutReturnValue;
     Js::ScriptFunction * innerMostInlinee = nullptr;
     BailOutInlinedHelper(layout, currentBailOutRecord, bailOutOffset, returnAddress, bailOutKind, registerSaves, &bailOutReturnValue, &innerMostInlinee, false, branchValue);
-
-    bool * hasBailedOutBitPtr = layout->functionObject->GetScriptContext()->GetThreadContext()->GetHasBailedOutBitPtr();
-    Assert(!bailOutRecord->ehBailoutData || hasBailedOutBitPtr ||
-        bailOutRecord->ehBailoutData->ht == Js::HandlerType::HT_Finally /* When we bailout from inlinee in non exception finally, we maynot see hasBailedOutBitPtr*/);
-    if (hasBailedOutBitPtr && bailOutRecord->ehBailoutData && bailOutRecord->ehBailoutData->ht != Js::HandlerType::HT_Finally)
-    {
-        *hasBailedOutBitPtr = true;
-    }
+    SetHasBailedOutBit(bailOutRecord, layout->functionObject->GetScriptContext());
     Js::Var result = BailOutCommonNoCodeGen(layout, currentBailOutRecord, currentBailOutRecord->bailOutOffset, returnAddress, bailOutKind, branchValue,
         registerSaves, &bailOutReturnValue);
     ScheduleFunctionCodeGen(Js::VarTo<Js::ScriptFunction>(layout->functionObject), innerMostInlinee, currentBailOutRecord, bailOutKind, bailOutOffset, savedImplicitCallFlags, returnAddress);
@@ -1239,18 +1232,38 @@ BailOutRecord::BailOutFromLoopBodyInlinedCommon(Js::JavascriptCallStackLayout * 
     BailOutReturnValue bailOutReturnValue;
     Js::ScriptFunction * innerMostInlinee = nullptr;
     BailOutInlinedHelper(layout, currentBailOutRecord, bailOutOffset, returnAddress, bailOutKind, registerSaves, &bailOutReturnValue, &innerMostInlinee, true, branchValue);
-    bool * hasBailedOutBitPtr = layout->functionObject->GetScriptContext()->GetThreadContext()->GetHasBailedOutBitPtr();
-    Assert(!bailOutRecord->ehBailoutData || hasBailedOutBitPtr ||
-        bailOutRecord->ehBailoutData->ht == Js::HandlerType::HT_Finally /* When we bailout from inlinee in non exception finally, we maynot see hasBailedOutBitPtr*/);
-    if (hasBailedOutBitPtr && bailOutRecord->ehBailoutData)
-    {
-        *hasBailedOutBitPtr = true;
-    }
-
+    SetHasBailedOutBit(bailOutRecord, layout->functionObject->GetScriptContext());
     uint32 result = BailOutFromLoopBodyHelper(layout, currentBailOutRecord, currentBailOutRecord->bailOutOffset,
         bailOutKind, nullptr, registerSaves, &bailOutReturnValue);
     ScheduleLoopBodyCodeGen(Js::VarTo<Js::ScriptFunction>(layout->functionObject), innerMostInlinee, currentBailOutRecord, bailOutKind);
     return result;
+}
+
+void
+BailOutRecord::SetHasBailedOutBit(BailOutRecord const * bailOutRecord, Js::ScriptContext * scriptContext)
+{
+    Js::EHBailoutData * ehBailoutData = bailOutRecord->ehBailoutData;
+    if (!ehBailoutData)
+    {
+        return;
+    }
+
+    // When a bailout occurs within a finally region, the hasBailedOutBitPtr associated with the
+    // try-catch-finally or try-finally has already been removed from the stack. In that case,
+    // we set the hasBailedOutBitPtr for the nearest enclosing try or catch region within the
+    // function.
+    while (ehBailoutData->ht == Js::HandlerType::HT_Finally)
+    {
+        if (!ehBailoutData->parent || ehBailoutData->parent->nestingDepth < 0)
+        {
+            return;
+        }
+        ehBailoutData = ehBailoutData->parent;
+    }
+
+    bool * hasBailedOutBitPtr = scriptContext->GetThreadContext()->GetHasBailedOutBitPtr();
+    Assert(hasBailedOutBitPtr);
+    *hasBailedOutBitPtr = true;
 }
 
 void
@@ -1277,8 +1290,6 @@ BailOutRecord::BailOutInlinedHelper(Js::JavascriptCallStackLayout * layout, Bail
     }
 
     // Let's restore the inline stack - so that in case of a stack walk we have it available
-    InlinedFrameLayout *inlinedFrameToRestore = nullptr;
-    Js::ArgSlot clearedCallInfoCount = 0;
     if (entryPointInfo->HasInlinees())
     {
         InlineeFrameRecord* inlineeFrameRecord = entryPointInfo->FindInlineeFrame(returnAddress);
@@ -1288,7 +1299,7 @@ BailOutRecord::BailOutInlinedHelper(Js::JavascriptCallStackLayout * layout, Bail
             // object, the cached version (that was previously boxed) will be reused to maintain pointer identity and correctness
             // after the transition to the interpreter.
             InlinedFrameLayout* outerMostFrame = (InlinedFrameLayout *)(((uint8 *)Js::JavascriptCallStackLayout::ToFramePointer(layout)) - entryPointInfo->GetFrameHeight());
-            inlineeFrameRecord->RestoreFrames(functionBody, outerMostFrame, layout, true /*boxArgs*/, &inlinedFrameToRestore, &clearedCallInfoCount);
+            inlineeFrameRecord->RestoreFrames(functionBody, outerMostFrame, layout, true /*boxArgs*/);
         }
     }
 
@@ -1296,12 +1307,6 @@ BailOutRecord::BailOutInlinedHelper(Js::JavascriptCallStackLayout * layout, Bail
     {
         InlinedFrameLayout *inlinedFrame = (InlinedFrameLayout *)(((char *)layout) + currentBailOutRecord->globalBailOutRecordTable->firstActualStackOffset);
         Js::InlineeCallInfo inlineeCallInfo = inlinedFrame->callInfo;
-        if (inlinedFrameToRestore == inlinedFrame)
-        {
-            // Restore the frame's callinfo count prior to using it to create an interpreter instance
-            Assert(inlineeCallInfo.Count == 0);
-            inlineeCallInfo.Count = clearedCallInfoCount;
-        }
         Assert((Js::ArgSlot)inlineeCallInfo.Count == currentBailOutRecord->actualCount);
 
         Js::CallFlags callFlags = Js::CallFlags_Value;
@@ -3041,4 +3046,3 @@ void  GlobalBailOutRecordDataTable::AddOrUpdateRow(JitArenaAllocator *allocator,
     rowToInsert->regSlot = regSlot;
     *lastUpdatedRowIndex = length++;
 }
-

@@ -161,8 +161,9 @@ MACRO_WMS(              BrSrEq_A,           BrReg2,         OpSideEffect|OpOpndH
 MACRO_WMS(              BrSrNeq_A,          BrReg2,         OpSideEffect|OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources)        // Branch if '!=='  (not strict equals)   (NOTE: May have DOM implicit calls)
 MACRO_EXTEND(           BrOnHasProperty,    BrProperty,     OpSideEffect|OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources)        // Branch if object has the given property (NOTE: May have DOM implicit calls)
 MACRO(                  BrOnNoProperty,     BrProperty,     OpSideEffect|OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources)        // Branch if object does not have the given property (NOTE: May have DOM implicit calls)
-MACRO(                  BrOnNoLocalProperty,BrLocalProperty,OpSideEffect|OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources)        // Branch if object does not have the given property (NOTE: May have DOM implicit calls)
-MACRO(                  BrOnNoEnvProperty,  BrEnvProperty,  OpSideEffect|OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources)        // Branch if object does not have the given property (NOTE: May have DOM implicit calls)
+MACRO(                  BrOnNoLocalProperty,BrLocalProperty,OpSideEffect|OpTempNumberSources|OpTempObjectSources)                              // Branch if object does not have the given property (NOTE: May have DOM implicit calls)
+MACRO_EXTEND(           BrOnNoEnvProperty,  BrEnvProperty,  OpSideEffect|OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources)        // Branch if object does not have the given property (NOTE: May have DOM implicit calls)
+MACRO(                  BrOnNoLocalEnvProperty,  BrEnvProperty,  OpSideEffect|OpTempNumberSources|OpTempObjectSources)                     // Branch if object does not have the given property (NOTE: May have DOM implicit calls)
 MACRO_WMS(              BrOnObject_A,       BrReg1,         OpSideEffect|OpTempNumberSources|OpTempObjectSources)                          // Branch if typeId is not primitive type (i.e. > TypeIds_LastJavascriptPrimitiveType)
 MACRO_WMS(              BrNotNull_A,        BrReg1,         OpSideEffect|OpTempNumberSources|OpTempObjectSources)                          // Branch if not NULL
 MACRO_EXTEND_WMS(       BrNotUndecl_A,      BrReg1,         OpSideEffect|OpTempNumberSources|OpTempObjectSources)                          // Branch if source reg is NEQ to Undecl
@@ -324,6 +325,8 @@ MACRO_BACKEND_ONLY(     CmUnGe_I4,          Reg3,           OpTempNumberSources|
 MACRO_WMS(              Conv_Num,           Reg2,           OpSideEffect|OpTempNumberProducing|OpTempNumberTransfer|OpTempObjectSources|OpOpndHasImplicitCall|OpProducesNumber) // Convert to Number. [[ToNumber()]]
 // Operation ToString(str)
 MACRO_EXTEND_WMS(       Conv_Str,           Reg2,           OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources|OpCanCSE|OpPostOpDbgBailOut)
+// Operation ToPropertyKey(var)
+MACRO_EXTEND_WMS(       Conv_Prop,          Reg2,           OpOpndHasImplicitCall|OpTempNumberSources|OpTempObjectSources|OpCanCSE|OpPostOpDbgBailOut)
 
 // Conv_Obj:
 //      OpSideEffect - May throw exception on null/undefined.
@@ -549,9 +552,7 @@ MACRO_WMS(              LdHeapArgsCached,   Reg1,           OpSideEffect)   // L
 MACRO_EXTEND_WMS(       LdLetHeapArgsCached,Reg1,           OpSideEffect)   // Load the heap-based "arguments" object in a cached scope (formals are let-like instead of var-like)
 MACRO_EXTEND_WMS(       LdStackArgPtr,      Reg1,           OpSideEffect)   // Load the address of the base of the input parameter area
 MACRO_WMS_PROFILED_OP(  LdThis,       Reg2Int1,       OpOpndHasImplicitCall|OpTempNumberTransfer)        // Load this object     (NOTE: TryLoadRoot exit scripts on host dispatch, but otherwise, no side effect)
-MACRO_WMS_PROFILED_OP(  StrictLdThis, Reg2,           OpOpndHasImplicitCall|OpTempNumberTransfer)        // Load this object in strict mode
 MACRO_BACKEND_ONLY(     CheckThis,          Reg1,           OpCanCSE|OpBailOutRec)
-MACRO_BACKEND_ONLY(     StrictCheckThis,    Reg1,           OpCanCSE|OpBailOutRec)
 MACRO_BACKEND_ONLY(     LdHandlerScope,     Reg1,           OpHasImplicitCall)     // Load a scope stack for an event handler (both "this" and parent scopes)
 MACRO_BACKEND_ONLY(     LdFrameDisplay,     Reg3,           None)           // Set up a frame display for this function and its parent frames
 #if DBG
@@ -857,8 +858,8 @@ MACRO_BACKEND_ONLY(GeneratorOutputBailInTrace,              Empty,  OpSideEffect
 MACRO_BACKEND_ONLY(GeneratorOutputBailInTraceLabel,         Empty,  None)
 MACRO_BACKEND_ONLY(GeneratorBailInLabel,                    Empty,  None)
 MACRO_BACKEND_ONLY(GeneratorResumeYieldLabel,               Empty,  None)
-MACRO_BACKEND_ONLY(GeneratorEpilogueFrameNullOut,           Empty,  None)
-MACRO_BACKEND_ONLY(GeneratorEpilogueNoFrameNullOut,         Empty,  None)
+MACRO_BACKEND_ONLY(GeneratorEpilogueFrameNullOutLabel,      Empty,  None)
+MACRO_BACKEND_ONLY(GeneratorEpilogueNoFrameNullOutLabel,    Empty,  None)
 
 // All SIMD ops are backend only for non-asmjs.
 #define MACRO_SIMD(opcode, asmjsLayout, opCodeAttrAsmJs, OpCodeAttr, ...) MACRO_BACKEND_ONLY(opcode, Empty, OpCodeAttr)

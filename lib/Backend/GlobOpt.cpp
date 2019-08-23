@@ -838,14 +838,19 @@ GlobOpt::TryTailDup(IR::BranchInstr *tailBranch)
 }
 
 void
-GlobOpt::ToVar(BVSparse<JitArenaAllocator> *bv, BasicBlock *block)
+GlobOpt::ToVar(BVSparse<JitArenaAllocator> *bv, BasicBlock *block, IR::Instr* insertBeforeInstr /* = nullptr */)
 {
     FOREACH_BITSET_IN_SPARSEBV(id, bv)
     {
         StackSym *stackSym = this->func->m_symTable->FindStackSym(id);
         IR::RegOpnd *newOpnd = IR::RegOpnd::New(stackSym, TyVar, this->func);
-        IR::Instr *lastInstr = block->GetLastInstr();
-        if (lastInstr->IsBranchInstr() || lastInstr->m_opcode == Js::OpCode::BailTarget)
+        IR::Instr* lastInstr = block->GetLastInstr();
+
+        if (insertBeforeInstr != nullptr)
+        {
+            this->ToVar(insertBeforeInstr, newOpnd, block, nullptr, false);
+        }
+        else if (lastInstr->IsBranchInstr() || lastInstr->m_opcode == Js::OpCode::BailTarget)
         {
             // If branch is using this symbol, hoist the operand as the ToVar load will get
             // inserted right before the branch.
@@ -2427,15 +2432,15 @@ GlobOpt::OptInstr(IR::Instr *&instr, bool* isInstrRemoved)
         return instrNext;
     }
 
-    if (!instr->IsRealInstr() || instr->IsByteCodeUsesInstr() || instr->m_opcode == Js::OpCode::Conv_Bool)
-    {
-        return instrNext;
-    }
-
     if (instr->m_opcode == Js::OpCode::Yield)
     {
         // TODO[generators][ianhall]: Can this and the FillBailOutInfo call below be moved to after Src1 and Src2 so that Yield can be optimized right up to the actual yield?
-        CurrentBlockData()->KillStateForGeneratorYield();
+        this->ProcessKills(instr);
+    }
+
+    if (!instr->IsRealInstr() || instr->IsByteCodeUsesInstr() || instr->m_opcode == Js::OpCode::Conv_Bool)
+    {
+        return instrNext;
     }
 
     if (!IsLoopPrePass())
@@ -2751,7 +2756,7 @@ GlobOpt::OptInstr(IR::Instr *&instr, bool* isInstrRemoved)
 }
 
 bool
-GlobOpt::IsNonNumericRegOpnd(IR::RegOpnd *opnd, bool inGlobOpt) const
+GlobOpt::IsNonNumericRegOpnd(IR::RegOpnd* opnd, bool inGlobOpt, bool* isSafeToTransferInPrepass /*=nullptr*/) const
 {
     if (opnd == nullptr)
     {
@@ -2781,12 +2786,18 @@ GlobOpt::IsNonNumericRegOpnd(IR::RegOpnd *opnd, bool inGlobOpt) const
         {
             return true;
         }
+
+        bool isSafeToTransfer = this->IsSafeToTransferInPrepass(opnd->m_sym, opndValueInfo);
+        if (isSafeToTransferInPrepass != nullptr)
+        {
+            *isSafeToTransferInPrepass = isSafeToTransfer;
+        }
         if (this->prePassLoop->preservesNumberValue->Test(opnd->m_sym->m_id))
         {
             return false;
         }
 
-        return !this->IsSafeToTransferInPrepass(opnd->m_sym, opndValueInfo);
+        return !isSafeToTransfer;
     }
 
     return true;
@@ -3033,13 +3044,11 @@ GlobOpt::OptDst(
         else if (dstVal)
         {
             opnd->SetValueType(dstVal->GetValueInfo()->Type());
-
-            if(currentBlock->loop &&
+            if (currentBlock->loop &&
                 !IsLoopPrePass() &&
                 (instr->m_opcode == Js::OpCode::Ld_A || instr->m_opcode == Js::OpCode::Ld_I4) &&
                 instr->GetSrc1()->IsRegOpnd() &&
-                !func->IsJitInDebugMode() &&
-                func->DoGlobOptsForGeneratorFunc())
+                !func->IsJitInDebugMode())
             {
                 // Look for the following patterns:
                 //
@@ -3393,6 +3402,7 @@ GlobOpt::OptSrc(IR::Opnd *opnd, IR::Instr * *pInstr, Value **indirIndexValRef, I
         case Js::OpCode::ScopedDeleteFldStrict:
         case Js::OpCode::LdMethodFromFlags:
         case Js::OpCode::BrOnNoProperty:
+        case Js::OpCode::BrOnNoLocalProperty:
         case Js::OpCode::BrOnHasProperty:
         case Js::OpCode::LdMethodFldPolyInlineMiss:
         case Js::OpCode::StSlotChkUndecl:
@@ -3654,15 +3664,6 @@ GlobOpt::CopyProp(IR::Opnd *opnd, IR::Instr *instr, Value *val, IR::IndirOpnd *p
     if (this->IsLoopPrePass())
     {
         // Transformations are not legal in prepass...
-        return opnd;
-    }
-
-    if (!this->func->DoGlobOptsForGeneratorFunc())
-    {
-        // Don't copy prop in generator functions because non-bytecode temps that span a yield
-        // cannot be saved and restored by the current bail-out mechanics utilized by generator
-        // yield/resume.
-        // TODO[generators][ianhall]: Enable copy-prop at least for in between yields.
         return opnd;
     }
 
@@ -13380,6 +13381,37 @@ GlobOpt::OptArraySrc(IR::Instr ** const instrRef, Value ** src1Val, Value ** src
 }
 
 void
+GlobOpt::ProcessNoImplicitCallArrayUses(IR::RegOpnd * baseOpnd, IR::ArrayRegOpnd * baseArrayOpnd, IR::Instr * instr, bool isLikelyJsArray, bool useNoMissingValues)
+{
+    if (isLikelyJsArray)
+    {
+        // Insert an instruction to indicate to the dead-store pass that implicit calls need to be kept disabled until this
+        // instruction. Operations other than LdElem, StElem and IsIn don't benefit much from arrays having no missing values,
+        // so no need to ensure that the array still has no missing values. For a particular array, if none of the accesses
+        // benefit much from the no-missing-values information, it may be beneficial to avoid checking for no missing
+        // values, especially in the case for a single array access, where the cost of the check could be relatively
+        // significant. An StElem has to do additional checks in the common path if the array may have missing values, and
+        // a StElem that operates on an array that has no missing values is more likely to keep the no-missing-values info
+        // on the array more precise, so it still benefits a little from the no-missing-values info.
+        this->CaptureNoImplicitCallUses(baseOpnd, isLikelyJsArray);
+    }
+    else if (baseArrayOpnd && baseArrayOpnd->HeadSegmentLengthSym())
+    {
+        // A typed array's array buffer may be transferred to a web worker as part of an implicit call, in which case the typed
+        // array's length is set to zero. Insert an instruction to indicate to the dead-store pass that implicit calls need to
+        // be disabled until this instruction.
+        IR::RegOpnd *const headSegmentLengthOpnd =
+            IR::RegOpnd::New(
+                baseArrayOpnd->HeadSegmentLengthSym(),
+                baseArrayOpnd->HeadSegmentLengthSym()->GetType(),
+                instr->m_func);
+
+        const IR::AutoReuseOpnd autoReuseHeadSegmentLengthOpnd(headSegmentLengthOpnd, instr->m_func);
+        this->CaptureNoImplicitCallUses(headSegmentLengthOpnd, false);
+    }
+}
+
+void
 GlobOpt::OptStackArgLenAndConst(IR::Instr* instr, Value** src1Val)
 {
     if (!PHASE_OFF(Js::StackArgLenConstOptPhase, instr->m_func) && instr->m_func->IsStackArgsEnabled() && instr->usesStackArgumentsObject && instr->IsInlined())
@@ -14554,6 +14586,10 @@ swap_srcs:
 void
 GlobOpt::ProcessKills(IR::Instr *instr)
 {
+    if (instr->m_opcode == Js::OpCode::Yield)
+    {
+        this->CurrentBlockData()->KillStateForGeneratorYield(instr);
+    }
     this->ProcessFieldKills(instr);
     this->ProcessValueKills(instr);
     this->ProcessArrayValueKills(instr);
@@ -15694,7 +15730,7 @@ GlobOpt::DoConstFold() const
 bool
 GlobOpt::IsTypeSpecPhaseOff(Func const *func)
 {
-    return PHASE_OFF(Js::TypeSpecPhase, func) || func->IsJitInDebugMode() || !func->DoGlobOptsForGeneratorFunc();
+    return PHASE_OFF(Js::TypeSpecPhase, func) || func->IsJitInDebugMode();
 }
 
 bool
@@ -15801,8 +15837,7 @@ GlobOpt::DoArrayCheckHoist(Func const * const func)
     return
         !PHASE_OFF(Js::ArrayCheckHoistPhase, func) &&
         !func->IsArrayCheckHoistDisabled() &&
-        !func->IsJitInDebugMode() && // StElemI fast path is not allowed when in debug mode, so it cannot have bailout
-        func->DoGlobOptsForGeneratorFunc();
+        !func->IsJitInDebugMode(); // StElemI fast path is not allowed when in debug mode, so it cannot have bailout
 }
 
 bool
@@ -17364,11 +17399,27 @@ GlobOpt::EmitMemop(Loop * loop, LoopCount *loopCount, const MemOpEmitData* emitD
     }
 #endif
 
+    Assert(noImplicitCallUsesToInsert->Count() == 0);
+    bool isLikelyJsArray;
+    if (emitData->stElemInstr->GetDst()->IsIndirOpnd())
+    {
+        baseOpnd = emitData->stElemInstr->GetDst()->AsIndirOpnd()->GetBaseOpnd();
+        isLikelyJsArray = baseOpnd->GetValueType().IsLikelyArrayOrObjectWithArray();
+        ProcessNoImplicitCallArrayUses(baseOpnd, baseOpnd->IsArrayRegOpnd() ? baseOpnd->AsArrayRegOpnd() : nullptr, emitData->stElemInstr, isLikelyJsArray, true);
+    }
     RemoveMemOpSrcInstr(memopInstr, emitData->stElemInstr, emitData->block);
     if (!isMemset)
     {
+        if (((MemCopyEmitData*)emitData)->ldElemInstr->GetSrc1()->IsIndirOpnd())
+        {
+            baseOpnd = ((MemCopyEmitData*)emitData)->ldElemInstr->GetSrc1()->AsIndirOpnd()->GetBaseOpnd();
+            isLikelyJsArray = baseOpnd->GetValueType().IsLikelyArrayOrObjectWithArray();
+            ProcessNoImplicitCallArrayUses(baseOpnd, baseOpnd->IsArrayRegOpnd() ? baseOpnd->AsArrayRegOpnd() : nullptr, emitData->stElemInstr, isLikelyJsArray, true);
+        }
         RemoveMemOpSrcInstr(memopInstr, ((MemCopyEmitData*)emitData)->ldElemInstr, emitData->block);
     }
+    InsertNoImplicitCallUses(memopInstr);
+    noImplicitCallUsesToInsert->Clear();
 }
 
 bool

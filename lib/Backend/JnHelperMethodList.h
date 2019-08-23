@@ -60,7 +60,6 @@ HELPERCALLCHK(OP_CloneInnerScopeSlots, Js::JavascriptOperators::OP_CloneScopeSlo
 HELPERCALLCHK(OP_CloneBlockScope, Js::JavascriptOperators::OP_CloneBlockScope, AttrCanNotBeReentrant)
 HELPERCALLCHK(LdThis, Js::JavascriptOperators::OP_GetThis, AttrCanThrow)
 HELPERCALLCHK(LdThisNoFastPath, Js::JavascriptOperators::OP_GetThisNoFastPath, 0)
-HELPERCALLCHK(StrictLdThis, Js::JavascriptOperators::OP_StrictGetThis, AttrCanNotBeReentrant)
 HELPERCALLCHK(Op_LdElemUndef, Js::JavascriptOperators::OP_LoadUndefinedToElement, AttrCanNotBeReentrant)
 HELPERCALLCHK(Op_LdElemUndefDynamic, Js::JavascriptOperators::OP_LoadUndefinedToElementDynamic, AttrCanNotBeReentrant)
 HELPERCALLCHK(Op_LdElemUndefScoped, Js::JavascriptOperators::OP_LoadUndefinedToElementScoped, AttrCanNotBeReentrant)
@@ -135,6 +134,7 @@ HELPERCALL_MATH(Op_MaxInAnArray, Js::JavascriptMath::MaxInAnArray, AttrCanThrow)
 HELPERCALL_MATH(Op_MinInAnArray, Js::JavascriptMath::MinInAnArray, AttrCanThrow)
 
 HELPERCALLCHK(Op_ConvString, Js::JavascriptConversion::ToString, AttrCanThrow)
+HELPERCALLCHK(Op_ConvPropertyKey, Js::JavascriptOperators::OP_ToPropertyKey, AttrCanThrow)
 HELPERCALLCHK(Op_CoerseString, Js::JavascriptConversion::CoerseString, AttrCanThrow)
 HELPERCALLCHK(Op_CoerseRegex, (Js::JavascriptRegExp* (*) (Js::Var aValue, Js::Var options, Js::ScriptContext *scriptContext))Js::JavascriptRegExp::CreateRegEx, AttrCanThrow)
 
@@ -424,7 +424,6 @@ HELPERCALLCHK(SimpleProfileCall_DefaultInlineCacheIndex, Js::SimpleJitHelpers::P
 HELPERCALLCHK(SimpleProfileCall, Js::SimpleJitHelpers::ProfileCall, AttrCanNotBeReentrant)
 HELPERCALLCHK(SimpleProfileReturnTypeCall, Js::SimpleJitHelpers::ProfileReturnTypeCall, AttrCanNotBeReentrant)
 //HELPERCALLCHK(SimpleProfiledLdLen, Js::SimpleJitHelpers::ProfiledLdLen_A, AttrCanThrow) //Can throw because it mirrors OP_GetProperty
-HELPERCALLCHK(SimpleProfiledStrictLdThis, Js::SimpleJitHelpers::ProfiledStrictLdThis, AttrCanNotBeReentrant)
 HELPERCALLCHK(SimpleProfiledLdThis, Js::SimpleJitHelpers::ProfiledLdThis, AttrCanNotBeReentrant)
 HELPERCALLCHK(SimpleProfiledSwitch, Js::SimpleJitHelpers::ProfiledSwitch, AttrCanNotBeReentrant)
 HELPERCALLCHK(SimpleProfiledDivide, Js::SimpleJitHelpers::ProfiledDivide, AttrCanThrow)

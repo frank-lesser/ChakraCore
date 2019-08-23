@@ -173,7 +173,6 @@ private:
     void            GenerateIsDynamicObject(IR::RegOpnd *regOpnd, IR::Instr *insertInstr, IR::LabelInstr *labelHelper, bool fContinueLabel = false);
     void            GenerateIsRecyclableObject(IR::RegOpnd *regOpnd, IR::Instr *insertInstr, IR::LabelInstr *labelHelper, bool checkObjectAndDynamicObject = true);
     bool            GenerateLdThisCheck(IR::Instr * instr);
-    bool            GenerateLdThisStrict(IR::Instr * instr);
     bool            GenerateFastIsInst(IR::Instr * instr);
     void            GenerateFastArrayIsIn(IR::Instr * instr);
     void            GenerateFastObjectIsIn(IR::Instr * instr);
@@ -679,6 +678,8 @@ private:
     void            LowerConvPrimStr(IR::Instr * instr);
     void            LowerConvStrCommon(IR::JnHelperMethod helper, IR::Instr * instr);
 
+    void            LowerConvPropertyKey(IR::Instr* instr);
+
     void            GenerateRecyclerAlloc(IR::JnHelperMethod allocHelper, size_t allocSize, IR::RegOpnd* newObjDst, IR::Instr* insertionPointInstr, bool inOpHelper = false);
 
     template <typename ArrayType>
@@ -886,7 +887,7 @@ private:
         // They could still be hit if an active generator object had been paused at such a yield point when
         // the function body was JITed. So safe guard such a case by having the native code simply jump back
         // to the interpreter for such yield points.
-        void InsertBailOutForElidedYield();
+        IR::LabelInstr* InsertBailOutForElidedYield();
 
         void LowerGeneratorResumeJumpTable(IR::Instr* jumpTableInstr);
         void LowerCreateInterpreterStackFrameForGenerator(IR::Instr* instr);

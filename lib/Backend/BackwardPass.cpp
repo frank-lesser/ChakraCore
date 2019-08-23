@@ -10,7 +10,6 @@
 BackwardPass::BackwardPass(Func * func, GlobOpt * globOpt, Js::Phase tag)
     : func(func), globOpt(globOpt), tag(tag), currentPrePassLoop(nullptr), tempAlloc(nullptr),
     preOpBailOutInstrToProcess(nullptr),
-    considerSymAsRealUseInNoImplicitCallUses(nullptr),
     isCollectionPass(false), currentRegion(nullptr),
     collectionPassSubPhase(CollectionPassSubPhase::None),
     isLoopPrepass(false)
@@ -90,10 +89,9 @@ BackwardPass::DoMarkTempNumbers() const
 bool
 BackwardPass::SatisfyMarkTempObjectsConditions() const {
     return !PHASE_OFF(Js::MarkTempPhase, this->func) &&
-           !PHASE_OFF(Js::MarkTempObjectPhase, this->func) &&
-           func->DoGlobOpt() && func->GetHasTempObjectProducingInstr() &&
-           !func->IsJitInDebugMode() &&
-           func->DoGlobOptsForGeneratorFunc();
+        !PHASE_OFF(Js::MarkTempObjectPhase, this->func) &&
+        func->DoGlobOpt() && func->GetHasTempObjectProducingInstr() &&
+        !func->IsJitInDebugMode();
 
     // Why MarkTempObject is disabled under debugger:
     //   We add 'identified so far dead non-temp locals' to byteCodeUpwardExposedUsed in ProcessBailOutInfo,
@@ -156,8 +154,7 @@ BackwardPass::DoDeadStore(Func* func, StackSym* sym)
     // Dead store is disabled under debugger for non-temp local vars.
     return
         DoDeadStore(func) &&
-        !(func->IsJitInDebugMode() && sym->HasByteCodeRegSlot() && func->IsNonTempLocalVar(sym->GetByteCodeRegSlot())) &&
-        func->DoGlobOptsForGeneratorFunc();
+        !(func->IsJitInDebugMode() && sym->HasByteCodeRegSlot() && func->IsNonTempLocalVar(sym->GetByteCodeRegSlot()));
 }
 
 bool
@@ -168,8 +165,7 @@ BackwardPass::DoTrackNegativeZero() const
         !PHASE_OFF(Js::TrackNegativeZeroPhase, func) &&
         func->DoGlobOpt() &&
         !IsPrePass() &&
-        !func->IsJitInDebugMode() &&
-        func->DoGlobOptsForGeneratorFunc();
+        !func->IsJitInDebugMode();
 }
 
 bool
@@ -181,8 +177,7 @@ BackwardPass::DoTrackBitOpsOrNumber() const
         tag == Js::BackwardPhase &&
         func->DoGlobOpt() &&
         !IsPrePass() &&
-        !func->IsJitInDebugMode() &&
-        func->DoGlobOptsForGeneratorFunc();
+        !func->IsJitInDebugMode();
 #else
     return false;
 #endif
@@ -197,8 +192,7 @@ BackwardPass::DoTrackIntOverflow() const
         tag == Js::BackwardPhase &&
         !IsPrePass() &&
         globOpt->DoLossyIntTypeSpec() &&
-        !func->IsJitInDebugMode() &&
-        func->DoGlobOptsForGeneratorFunc();
+        !func->IsJitInDebugMode();
 }
 
 bool
@@ -421,6 +415,8 @@ BackwardPass::Optimize()
     candidateSymsRequiredToBeInt = &localCandidateSymsRequiredToBeInt;
     BVSparse<JitArenaAllocator> localCandidateSymsRequiredToBeLossyInt(tempAlloc);
     candidateSymsRequiredToBeLossyInt = &localCandidateSymsRequiredToBeLossyInt;
+    BVSparse<JitArenaAllocator> localConsiderSymsAsRealUsesInNoImplicitCallUses(tempAlloc);
+    considerSymsAsRealUsesInNoImplicitCallUses = &localConsiderSymsAsRealUsesInNoImplicitCallUses;
     intOverflowCurrentlyMattersInRange = true;
 
     FloatSymEquivalenceMap localFloatSymEquivalenceMap(tempAlloc);
@@ -2566,6 +2562,30 @@ BackwardPass::NeedBailOutOnImplicitCallsForTypedArrayStore(IR::Instr* instr)
 }
 
 IR::Instr*
+BackwardPass::ProcessPendingPreOpBailOutInfoForYield(IR::Instr* const currentInstr)
+{
+    Assert(currentInstr->m_opcode == Js::OpCode::Yield);
+    IR::GeneratorBailInInstr* bailInInstr = currentInstr->m_next->m_next->AsGeneratorBailInInstr();
+
+    BailOutInfo* bailOutInfo = currentInstr->GetBailOutInfo();
+
+    // Make a copy of all detected constant values before we actually process
+    // the bailout info since we will then remove any values that don't need
+    // to be restored for the normal bailout cases. As for yields, we still
+    // need them for our bailin code.
+    bailInInstr->SetConstantValues(bailOutInfo->capturedValues->constantValues);
+
+    IR::Instr* ret = this->ProcessPendingPreOpBailOutInfo(currentInstr);
+
+    // We will need list of symbols that have been copy-prop'd to map the correct
+    // symbols to restore during bail-in. Since this list is cleared during
+    // FillBailOutRecord, make a copy of it now.
+    bailInInstr->SetCopyPropSyms(bailOutInfo->usedCapturedValues->copyPropSyms);
+
+    return ret;
+}
+
+IR::Instr*
 BackwardPass::ProcessPendingPreOpBailOutInfo(IR::Instr *const currentInstr)
 {
     Assert(!IsCollectionPass());
@@ -2675,10 +2695,9 @@ BackwardPass::ProcessBailOutInfo(IR::Instr * instr, BailOutInfo * bailOutInfo)
                 uint32 targetOffset = target->GetByteCodeOffset();
 
                 // If the instr's label has the same bytecode offset as the instr then move the targetOffset
-                // to the next bytecode instr. This condition can be true on conditional branches, ex: a
-                // while loop with no body (passing the loop's condition would branch the IP back to executing
-                // the loop's condition), in these cases do not move the targetOffset.
-                if (targetOffset == instr->GetByteCodeOffset() && branchInstr->IsUnconditional())
+                // to the next bytecode instr. This can happen when we have airlock blocks or compensation
+                // code, but also for infinite loops. Don't do it for the latter.
+                if (targetOffset == instr->GetByteCodeOffset() && block != target->GetBasicBlock())
                 {
                     // This can happen if the target is a break or airlock block.
                     Assert(
@@ -2993,6 +3012,11 @@ BackwardPass::ProcessBlock(BasicBlock * block)
 
         this->currentInstr = instr;
         this->currentRegion = this->currentBlock->GetFirstInstr()->AsLabelInstr()->GetRegion();
+
+        if (instr->m_opcode == Js::OpCode::Yield && !this->IsCollectionPass())
+        {
+            this->DisallowMarkTempAcrossYield(this->currentBlock->byteCodeUpwardExposedUsed);
+        }
 
         IR::Instr * insertedInstr = TryChangeInstrForStackArgOpt();
         if (insertedInstr != nullptr)
@@ -3856,7 +3880,24 @@ BackwardPass::ProcessBlock(BasicBlock * block)
             }
         }
 #endif
-        instrPrev = ProcessPendingPreOpBailOutInfo(instr);
+
+        // Make a copy of upwardExposedUses for our bail-in code, note that we have
+        // to do it at the bail-in instruction (right after yield) and not at the yield point
+        // since the yield instruction might use some symbols as operands that we don't need when
+        // bail-in
+        if (instr->IsGeneratorBailInInstr() && this->currentBlock->upwardExposedUses)
+        {
+            instr->AsGeneratorBailInInstr()->SetUpwardExposedUses(*this->currentBlock->upwardExposedUses);
+        }
+
+        if (instr->m_opcode == Js::OpCode::Yield)
+        {
+            instrPrev = ProcessPendingPreOpBailOutInfoForYield(instr);
+        }
+        else
+        {
+            instrPrev = ProcessPendingPreOpBailOutInfo(instr);
+        }
 
 #if DBG_DUMP
         TraceInstrUses(block, instr, false);
@@ -3982,7 +4023,7 @@ BackwardPass::ProcessBlock(BasicBlock * block)
         block->loop->regAlloc.liveOnBackEdgeSyms = block->upwardExposedUses->CopyNew(this->func->m_alloc);
     }
 
-    Assert(!considerSymAsRealUseInNoImplicitCallUses);
+    Assert(considerSymsAsRealUsesInNoImplicitCallUses->IsEmpty());
 
 #if DBG_DUMP
     TraceBlockUses(block, false);
@@ -4403,9 +4444,8 @@ BackwardPass::ProcessNoImplicitCallUses(IR::Instr *const instr)
             {
                 IR::RegOpnd *const regSrc = src->AsRegOpnd();
                 sym = regSrc->m_sym;
-                if(considerSymAsRealUseInNoImplicitCallUses && considerSymAsRealUseInNoImplicitCallUses == sym)
+                if(considerSymsAsRealUsesInNoImplicitCallUses->TestAndClear(sym->m_id))
                 {
-                    considerSymAsRealUseInNoImplicitCallUses = nullptr;
                     ProcessStackSymUse(sym->AsStackSym(), true);
                 }
                 if(regSrc->IsArrayRegOpnd())
@@ -4823,7 +4863,6 @@ BackwardPass::ProcessArrayRegOpndUse(IR::Instr *const instr, IR::ArrayRegOpnd *c
             // ProcessNoImplicitCallUses automatically marks JS array reg opnds and their corresponding syms as live. A typed
             // array's head segment length sym also needs to be marked as live at its use in the NoImplicitCallUses instruction,
             // but it is just in a reg opnd. Flag the opnd to have the sym be marked as live when that instruction is processed.
-            Assert(!considerSymAsRealUseInNoImplicitCallUses);
             IR::Opnd *const use =
                 FindNoImplicitCallUse(
                     instr,
@@ -4834,7 +4873,7 @@ BackwardPass::ProcessArrayRegOpndUse(IR::Instr *const instr, IR::ArrayRegOpnd *c
                     });
             if(use)
             {
-                considerSymAsRealUseInNoImplicitCallUses = arrayRegOpnd->HeadSegmentLengthSym();
+                considerSymsAsRealUsesInNoImplicitCallUses->Set(arrayRegOpnd->HeadSegmentLengthSym()->m_id);
             }
         }
     }
@@ -6315,6 +6354,27 @@ BackwardPass::ProcessPropertySymUse(PropertySym *propertySym)
 }
 
 void
+BackwardPass::DisallowMarkTempAcrossYield(BVSparse<JitArenaAllocator>* bytecodeUpwardExposed)
+{
+    Assert(!this->IsCollectionPass());
+    BasicBlock* block = this->currentBlock;
+    if (this->DoMarkTempNumbers())
+    {
+        block->tempNumberTracker->DisallowMarkTempAcrossYield(bytecodeUpwardExposed);
+    }
+    if (this->DoMarkTempObjects())
+    {
+        block->tempObjectTracker->DisallowMarkTempAcrossYield(bytecodeUpwardExposed);
+    }
+#if DBG
+    if (this->DoMarkTempObjectVerify())
+    {
+        block->tempObjectVerifyTracker->DisallowMarkTempAcrossYield(bytecodeUpwardExposed);
+    }
+#endif
+}
+
+void
 BackwardPass::MarkTemp(StackSym * sym)
 {
     Assert(!IsCollectionPass());
@@ -6743,6 +6803,7 @@ BackwardPass::TrackIntUsage(IR::Instr *const instr)
             case Js::OpCode::Coerce_Regex:
             case Js::OpCode::Coerce_StrOrRegex:
             case Js::OpCode::Conv_PrimStr:
+            case Js::OpCode::Conv_Prop:
                 // These instructions don't generate -0, and their behavior is the same for any src that is -0 or +0
                 SetNegativeZeroDoesNotMatterIfLastUse(instr->GetSrc1());
                 SetNegativeZeroDoesNotMatterIfLastUse(instr->GetSrc2());
@@ -8088,7 +8149,6 @@ BackwardPass::ProcessInlineeStart(IR::Instr* inlineeStart)
     inlineeStart->m_func->SetFirstArgOffset(inlineeStart);
 
     IR::Instr* startCallInstr = nullptr;
-    bool noImplicitCallsInInlinee = false;
     // Inlinee has no bailouts or implicit calls.  Get rid of the inline overhead.
     auto removeInstr = [&](IR::Instr* argInstr)
     {
@@ -8110,7 +8170,6 @@ BackwardPass::ProcessInlineeStart(IR::Instr* inlineeStart)
     // If there are no implicit calls - bailouts/throws - we can remove all inlining overhead.
     if (!inlineeStart->m_func->GetHasImplicitCalls())
     {
-        noImplicitCallsInInlinee = true;
         inlineeStart->IterateArgInstrs(removeInstr);
 
         inlineeStart->IterateMetaArgs([](IR::Instr* metArg)
@@ -8119,6 +8178,7 @@ BackwardPass::ProcessInlineeStart(IR::Instr* inlineeStart)
             return false;
         });
         inlineeStart->m_func->m_hasInlineArgsOpt = false;
+        inlineeStart->m_func->m_hasInlineOverheadRemoved = true;
         removeInstr(inlineeStart);
         return true;
     }
