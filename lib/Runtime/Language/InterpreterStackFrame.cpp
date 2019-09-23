@@ -8161,7 +8161,12 @@ skipThunk:
     void InterpreterStackFrame::OP_SimdLdArrGeneric(const unaligned T* playout)
     {
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
-        const uint64 index = ((uint64)(uint32)GetRegRawInt(playout->SlotIndex) + playout->Offset /* WASM only */) & (int64)(int)ArrayBufferView::ViewMask[playout->ViewType];
+
+        if (GetRegRawInt(playout->SlotIndex) < 0) {
+            JavascriptError::ThrowRangeError(scriptContext, JSERR_ArgumentOutOfRange, _u("Simd typed array access"));
+        }
+
+        const uint64 index = (uint64)GetRegRawInt(playout->SlotIndex) + playout->Offset;
 
         ArrayBufferBase* arr =
 #ifdef ENABLE_WASM_SIMD
@@ -8209,7 +8214,12 @@ skipThunk:
     void InterpreterStackFrame::OP_SimdStArrGeneric(const unaligned T* playout)
     {
         Assert(playout->ViewType < Js::ArrayBufferView::TYPE_COUNT);
-        const uint64 index = ((uint64)(uint32)GetRegRawInt(playout->SlotIndex) + playout->Offset /* WASM only */) & (int64)(int)ArrayBufferView::ViewMask[playout->ViewType];
+
+        if (GetRegRawInt(playout->SlotIndex) < 0)
+        {
+            JavascriptError::ThrowRangeError(scriptContext, JSERR_ArgumentOutOfRange, _u("Simd typed array access"));
+        }
+        const uint64 index = (uint64)GetRegRawInt(playout->SlotIndex) + playout->Offset;
 
         ArrayBufferBase* arr =
 #ifdef ENABLE_WASM_SIMD
@@ -8570,10 +8580,10 @@ skipThunk:
             this->m_functionBody->GetReferencedPropertyId(propertyIdIndex), scriptContext);
     }
 
-    BOOL InterpreterStackFrame::OP_BrOnNoEnvProperty(Var envInstance, int32 slotIndex, uint propertyIdIndex, ScriptContext* scriptContext)
+    BOOL InterpreterStackFrame::OP_BrOnHasEnvProperty(Var envInstance, int32 slotIndex, uint propertyIdIndex, ScriptContext* scriptContext)
     {
         Var instance = OP_LdFrameDisplaySlot(envInstance, slotIndex);
-        return !JavascriptOperators::OP_HasProperty(instance,
+        return JavascriptOperators::OP_HasProperty(instance,
             this->m_functionBody->GetReferencedPropertyId(propertyIdIndex), scriptContext);
     }
 
